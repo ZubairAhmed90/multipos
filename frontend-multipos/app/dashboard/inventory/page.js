@@ -279,17 +279,6 @@ function InventoryPage() {
     // Removed warehouse loading for warehouse keepers - they only see their own warehouse
   }, [dispatch, user])
 
-  // Debug branch settings
-  useEffect(() => {
-    if (user?.role === 'CASHIER') {
-    }
-  }, [user, branchSettings])
-
-  // Debug warehouse settings
-  useEffect(() => {
-    if (user?.role === 'WAREHOUSE_KEEPER') {
-    }
-  }, [user, warehouseSettings])
 
   // Form dialog handlers
   const handleAdd = () => {

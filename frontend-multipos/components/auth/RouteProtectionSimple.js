@@ -2,20 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
-import { useSelector, useDispatch } from 'react-redux'
+import { useSelector } from 'react-redux'
 import { Box, Typography, CircularProgress, Button } from '@mui/material'
-import { initializeAuth } from '../../app/store/slices/authSlice'
 
 const RouteProtection = ({ children }) => {
   const router = useRouter()
   const pathname = usePathname()
-  const dispatch = useDispatch()
   const { user, isAuthenticated, isLoading } = useSelector((state) => state.auth)
-
-  // Initialize authentication on mount
-  useEffect(() => {
-    dispatch(initializeAuth())
-  }, [dispatch])
 
   // Track if auth initialization has completed
   const [authInitialized, setAuthInitialized] = useState(false)
@@ -124,7 +117,7 @@ const RouteProtection = ({ children }) => {
         <CircularProgress size={40} />
         <Typography variant="h6">Redirecting to dashboard...</Typography>
         <Typography variant="body2" color="textSecondary">
-          Welcome back, {user.name}!
+          Welcome back, {user.username || user.email}!
         </Typography>
         <Button 
           variant="outlined" 

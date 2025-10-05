@@ -16,7 +16,6 @@ import {
   useTheme,
   InputAdornment,
   IconButton,
-  Snackbar,
 } from '@mui/material'
 import {
   Visibility,
@@ -27,8 +26,16 @@ import {
 import { loginUser, clearError } from '../store/slices/authSlice'
 
 const schema = yup.object({
-  email: yup.string().email('Invalid email').required('Email is required'),
-  password: yup.string().min(6, 'Password must be at least 6 characters').required('Password is required'),
+  email: yup.string()
+    .email('Please enter a valid email address')
+    .required('Email address is required'),
+  password: yup.string()
+    .min(6, 'Password must be at least 6 characters')
+    .matches(
+      /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/,
+      'Password must contain at least one uppercase letter, one lowercase letter, and one number'
+    )
+    .required('Password is required'),
 })
 
 export default function LoginPage() {
@@ -40,18 +47,6 @@ export default function LoginPage() {
   // Password visibility state
   const [showPassword, setShowPassword] = useState(false)
   
-  // Snackbar state for notifications
-  const [snackbar, setSnackbar] = useState({
-    open: false,
-    message: '',
-    severity: 'error'
-  })
-  
-  // Debug auth state
-  useEffect(() => {
-    // Auth state monitoring removed for production
-  }, [isLoading, error, isAuthenticated, user])
-
   const {
     register,
     handleSubmit,
@@ -63,10 +58,12 @@ export default function LoginPage() {
   // Redirect if already authenticated
   useEffect(() => {
     if (isAuthenticated && user) {
-      // Small delay to ensure auth state is fully updated
-      setTimeout(() => {
+      // Add a small delay to ensure auth state is fully updated
+      const timer = setTimeout(() => {
         router.push('/dashboard')
-      }, 100)
+      }, 500)
+      
+      return () => clearTimeout(timer)
     }
   }, [isAuthenticated, user, router])
 
@@ -77,40 +74,13 @@ export default function LoginPage() {
     }
   }, [dispatch])
 
-  // Handle error notifications
-  useEffect(() => {
-    if (error) {
-      setSnackbar({
-        open: true,
-        message: error,
-        severity: 'error'
-      })
-    }
-  }, [error])
-
-  // Handle success notifications
-  useEffect(() => {
-    if (isAuthenticated && user) {
-      setSnackbar({
-        open: true,
-        message: `Welcome back, ${user.username || user.email}! Login successful.`,
-        severity: 'success'
-      })
-    }
-  }, [isAuthenticated, user])
-
   const handleTogglePasswordVisibility = () => {
     setShowPassword(!showPassword)
-  }
-
-  const handleCloseSnackbar = () => {
-    setSnackbar(prev => ({ ...prev, open: false }))
   }
 
   const onSubmit = (data) => {
     // Clear any existing error before submitting
     dispatch(clearError())
-    setSnackbar(prev => ({ ...prev, open: false }))
     dispatch(loginUser(data))
   }
 
@@ -214,6 +184,40 @@ export default function LoginPage() {
               </Typography>
             </Box>
 
+            {/* Form validation errors */}
+            {(errors.email || errors.password) && (
+              <Alert 
+                severity="error" 
+                sx={{ 
+                  mb: 3, 
+                  borderRadius: '12px',
+                  background: theme.palette.mode === 'dark'
+                    ? 'rgba(211, 47, 47, 0.12)'
+                    : 'rgba(211, 47, 47, 0.06)',
+                  border: `2px solid ${theme.palette.mode === 'dark' ? 'rgba(211, 47, 47, 0.35)' : 'rgba(211, 47, 47, 0.25)'}`,
+                  boxShadow: theme.palette.mode === 'dark'
+                    ? '0 4px 16px rgba(211, 47, 47, 0.15)'
+                    : '0 4px 16px rgba(211, 47, 47, 0.1)',
+                  '& .MuiAlert-icon': {
+                    color: theme.palette.error.main,
+                    fontSize: '1.4rem',
+                  },
+                  '& .MuiAlert-message': {
+                    fontWeight: 500,
+                    fontSize: '0.95rem',
+                  }
+                }}
+              >
+                <Typography variant="body1" sx={{ fontWeight: 600, mb: 0.5 }}>
+                  Form Validation Error
+                </Typography>
+                <Typography variant="body2" sx={{ opacity: 0.9 }}>
+                  Please fix the form errors below to continue.
+                </Typography>
+              </Alert>
+            )}
+
+            {/* API error messages */}
             {error && (
               <Alert 
                 severity="error" 
@@ -221,12 +225,28 @@ export default function LoginPage() {
                   mb: 3, 
                   borderRadius: '12px',
                   background: theme.palette.mode === 'dark'
-                    ? 'rgba(211, 47, 47, 0.1)'
-                    : 'rgba(211, 47, 47, 0.05)',
-                  border: `1px solid ${theme.palette.mode === 'dark' ? 'rgba(211, 47, 47, 0.3)' : 'rgba(211, 47, 47, 0.2)'}`,
+                    ? 'rgba(211, 47, 47, 0.15)'
+                    : 'rgba(211, 47, 47, 0.08)',
+                  border: `2px solid ${theme.palette.mode === 'dark' ? 'rgba(211, 47, 47, 0.4)' : 'rgba(211, 47, 47, 0.3)'}`,
+                  boxShadow: theme.palette.mode === 'dark'
+                    ? '0 4px 16px rgba(211, 47, 47, 0.2)'
+                    : '0 4px 16px rgba(211, 47, 47, 0.15)',
+                  '& .MuiAlert-icon': {
+                    color: theme.palette.error.main,
+                    fontSize: '1.5rem',
+                  },
+                  '& .MuiAlert-message': {
+                    fontWeight: 500,
+                    fontSize: '1rem',
+                  }
                 }}
               >
-                {error}
+                <Typography variant="body1" sx={{ fontWeight: 600, mb: 0.5 }}>
+                  Login Failed
+                </Typography>
+                <Typography variant="body2" sx={{ opacity: 0.9 }}>
+                  {error}
+                </Typography>
               </Alert>
             )}
 
@@ -270,6 +290,10 @@ export default function LoginPage() {
                       boxShadow: theme.palette.mode === 'dark'
                         ? '0 8px 24px rgba(102, 126, 234, 0.3)'
                         : '0 8px 24px rgba(102, 126, 234, 0.2)',
+                    },
+                    '&.Mui-error': {
+                      borderColor: theme.palette.error.main,
+                      boxShadow: `0 0 0 2px ${theme.palette.error.main}20`,
                     }
                   }
                 }}
@@ -326,6 +350,10 @@ export default function LoginPage() {
                       boxShadow: theme.palette.mode === 'dark'
                         ? '0 8px 24px rgba(102, 126, 234, 0.3)'
                         : '0 8px 24px rgba(102, 126, 234, 0.2)',
+                    },
+                    '&.Mui-error': {
+                      borderColor: theme.palette.error.main,
+                      boxShadow: `0 0 0 2px ${theme.palette.error.main}20`,
                     }
                   }
                 }}
@@ -374,53 +402,6 @@ export default function LoginPage() {
           </Box>
         </Box>
       </Container>
-      
-      {/* Snackbar for notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={snackbar.severity === 'success' ? 3000 : 6000}
-        onClose={handleCloseSnackbar}
-        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
-        sx={{
-          '& .MuiSnackbarContent-root': {
-            borderRadius: '12px',
-            background: snackbar.severity === 'success' 
-              ? theme.palette.mode === 'dark'
-                ? 'linear-gradient(135deg, rgba(46, 125, 50, 0.9) 0%, rgba(56, 142, 60, 0.9) 100%)'
-                : 'linear-gradient(135deg, rgba(46, 125, 50, 0.9) 0%, rgba(56, 142, 60, 0.9) 100%)'
-              : theme.palette.mode === 'dark'
-                ? 'linear-gradient(135deg, rgba(211, 47, 47, 0.9) 0%, rgba(198, 40, 40, 0.9) 100%)'
-                : 'linear-gradient(135deg, rgba(211, 47, 47, 0.9) 0%, rgba(198, 40, 40, 0.9) 100%)',
-            backdropFilter: 'blur(10px)',
-            border: `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(255, 255, 255, 0.2)'}`,
-            boxShadow: snackbar.severity === 'success'
-              ? theme.palette.mode === 'dark'
-                ? '0 8px 32px rgba(46, 125, 50, 0.3)'
-                : '0 8px 32px rgba(46, 125, 50, 0.2)'
-              : theme.palette.mode === 'dark'
-                ? '0 8px 32px rgba(211, 47, 47, 0.3)'
-                : '0 8px 32px rgba(211, 47, 47, 0.2)',
-          }
-        }}
-      >
-        <Alert
-          onClose={handleCloseSnackbar}
-          severity={snackbar.severity}
-          sx={{
-            width: '100%',
-            background: 'transparent',
-            color: 'white',
-            '& .MuiAlert-icon': {
-              color: 'white',
-            },
-            '& .MuiAlert-action': {
-              color: 'white',
-            }
-          }}
-        >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
     </Box>
   )
 }
