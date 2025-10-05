@@ -1,23 +1,46 @@
 {
-  "name": "backend-multipos",
+  "name": "multipos-backend",
   "version": "1.0.0",
-  "description": "Node.js Express backend with MySQL for multi-POS system",
+  "description": "Scalable Node.js backend API for comprehensive multi-POS management system",
   "main": "server.js",
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "prod": "NODE_ENV=production node server.js",
+    "cpanel": "NODE_ENV=production node server.js",
+    "test": "NODE_ENV=test jest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "seed": "node scripts/seedadmin.js",
-    "seed:comprehensive": "node scripts/comprehensive-seed.js"
+    "seed:comprehensive": "node scripts/comprehensive-seed.js",
+    "build": "echo 'Backend build completed - Node.js application ready for production'"
   },
   "keywords": [
-    "nodejs",
+    "pos",
+    "point-of-sale",
+    "inventory-management",
+    "multi-branch",
+    "warehouse-management",
+    "pos-system",
     "express",
     "mysql",
-    "pos",
-    "backend"
+    "rest-api",
+    "nodejs"
   ],
-  "author": "",
+  "author": "PetZone Development Team",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/petzone/multipos-backend.git"
+  },
+  "bugs": {
+    "url": "https://github.com/petzone/multipos-backend/issues"
+  },
+  "homepage": "https://github.com/petzone/multipos-backend#readme",
   "dependencies": {
     "axios": "^1.12.1",
     "bcrypt": "^5.1.1",
@@ -34,6 +57,8 @@
     "sequelize": "^6.37.7"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "nodemon": "^3.0.2",
+    "jest": "^29.7.0",
+    "eslint": "^8.57.0"
   }
 }

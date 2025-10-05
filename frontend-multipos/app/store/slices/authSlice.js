@@ -109,7 +109,6 @@ const authSlice = createSlice({
           
         }
       } catch (error) {
-        console.error('Auth initialization error:', error)
         // Clear everything on error
         authAPI.clearTokens()
         state.isAuthenticated = false

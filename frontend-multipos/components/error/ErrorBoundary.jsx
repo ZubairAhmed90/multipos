@@ -60,11 +60,6 @@ class ErrorBoundary extends React.Component {
     })
 
     // Log to console for debugging
-    console.group('🚨 React Error Boundary')
-    console.error('Error:', error)
-    console.error('Error Info:', errorInfo)
-    console.error('Component Stack:', errorInfo.componentStack)
-    console.groupEnd()
   }
 
   handleRetry = () => {
@@ -88,7 +83,6 @@ class ErrorBoundary extends React.Component {
     }
 
     // In a real application, you would send this to an error reporting service
-    console.log('Error Report:', errorReport)
     
     // Example: Send to error reporting service
     // errorReportingService.reportError(errorReport)

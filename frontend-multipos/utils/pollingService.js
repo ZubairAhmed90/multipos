@@ -5,9 +5,7 @@
 // Safe logging utility
 const safeLog = (message, ...args) => {
   try {
-    if (typeof console !== 'undefined' && console.log) {
-      console.log(message, ...args)
-    }
+    // Logging disabled for production
   } catch (error) {
     // Silently fail if logging is not available
   }
@@ -15,11 +13,7 @@ const safeLog = (message, ...args) => {
 
 const safeError = (message, ...args) => {
   try {
-    if (typeof console !== 'undefined' && console.error) {
-      console.error(message, ...args)
-    } else if (typeof console !== 'undefined' && console.log) {
-      console.log('ERROR:', message, ...args)
-    }
+    // Error logging disabled for production
   } catch (error) {
     // Silently fail if logging is not available
   }

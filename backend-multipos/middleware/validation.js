@@ -255,7 +255,17 @@ const branchValidation = [
   body('settings.allowReturnsByWarehouseKeeper')
     .optional()
     .isBoolean()
-    .withMessage('Allow returns by warehouse keeper must be a boolean')
+    .withMessage('Allow returns by warehouse keeper must be a boolean'),
+  
+  body('settings.allowCashierSalesEdit')
+    .optional()
+    .isBoolean()
+    .withMessage('Allow cashier sales edit must be a boolean'),
+  
+  body('settings.allowCashierSalesDelete')
+    .optional()
+    .isBoolean()
+    .withMessage('Allow cashier sales delete must be a boolean'),
 ];
 
 // Warehouse validation
@@ -312,8 +322,8 @@ const inventoryItemUpdateValidation = [
     .trim()
     .isLength({ min: 1, max: 20 })
     .withMessage('SKU must be between 1 and 20 characters')
-    .matches(/^[A-Z0-9-]+$/)
-    .withMessage('SKU can only contain uppercase letters, numbers, and hyphens'),
+    .matches(/^[A-Za-z0-9-]+$/)
+    .withMessage('SKU can only contain letters, numbers, and hyphens'),
   
   body('barcode')
     .optional()
@@ -390,8 +400,8 @@ const inventoryItemValidation = [
     .trim()
     .isLength({ min: 1, max: 20 })
     .withMessage('SKU must be between 1 and 20 characters')
-    .matches(/^[A-Z0-9-]+$/)
-    .withMessage('SKU can only contain uppercase letters, numbers, and hyphens'),
+    .matches(/^[A-Za-z0-9-]+$/)
+    .withMessage('SKU can only contain letters, numbers, and hyphens'),
   
   body('barcode')
     .optional()
@@ -578,8 +588,8 @@ const validateSale = [
   
   body('paymentStatus')
     .optional()
-    .isIn(['PENDING', 'COMPLETED', 'FAILED', 'REFUNDED'])
-    .withMessage('Payment status must be PENDING, COMPLETED, FAILED, or REFUNDED'),
+    .isIn(['PENDING', 'COMPLETED', 'FAILED', 'REFUNDED', 'PARTIAL'])
+    .withMessage('Payment status must be PENDING, COMPLETED, FAILED, REFUNDED, or PARTIAL'),
   
   body('status')
     .optional()
@@ -589,6 +599,21 @@ const validateSale = [
   body('paymentMethod')
     .isIn(['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT'])
     .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, or MOBILE_PAYMENT'),
+  
+  body('paymentAmount')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Payment amount must be a non-negative number'),
+  
+  body('creditAmount')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Credit amount must be a non-negative number'),
+  
+  body('creditStatus')
+    .optional()
+    .isIn(['NONE', 'PENDING', 'PAID', 'OVERDUE'])
+    .withMessage('Credit status must be NONE, PENDING, PAID, or OVERDUE'),
   
   body('customerInfo.name')
     .optional()
@@ -670,8 +695,8 @@ const validateSaleUpdate = [
   
   body('paymentStatus')
     .optional()
-    .isIn(['PENDING', 'COMPLETED', 'FAILED', 'REFUNDED'])
-    .withMessage('Payment status must be PENDING, COMPLETED, FAILED, or REFUNDED'),
+    .isIn(['PENDING', 'COMPLETED', 'FAILED', 'REFUNDED', 'PARTIAL'])
+    .withMessage('Payment status must be PENDING, COMPLETED, FAILED, REFUNDED, or PARTIAL'),
   
   body('status')
     .optional()

@@ -1,4 +1,4 @@
-# 🏪 MultiPOS Frontend
+1# 🏪 MultiPOS Frontend
 
 A comprehensive React-based frontend application for multi-location point-of-sale operations.
 

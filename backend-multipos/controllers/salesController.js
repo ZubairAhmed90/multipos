@@ -10,6 +10,7 @@ const { pool } = require('../config/database');
 // @route   POST /api/sales
 // @access  Private (Admin, Cashier)
 const createSale = async (req, res, next) => {
+  
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -20,7 +21,8 @@ const createSale = async (req, res, next) => {
       });
     }
 
-    const { items, scopeType, scopeId, paymentMethod, customerInfo, notes, subtotal, tax, discount, total, paymentStatus, status } = req.body;
+    const { items, scopeType, scopeId, paymentMethod, customerInfo, notes, subtotal, tax, discount, total, paymentStatus, status, paymentAmount, creditAmount, creditStatus } = req.body;
+
 
     // Validate items
     if (!items || items.length === 0) {
@@ -87,6 +89,17 @@ const createSale = async (req, res, next) => {
     // Generate invoice number
     const invoiceNo = `INV-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
 
+    // Extract customer name and phone from customerInfo
+    const customerName = customerInfo?.name || '';
+    const customerPhone = customerInfo?.phone || '';
+    
+    // Calculate payment amounts
+    const finalPaymentAmount = paymentAmount !== undefined ? parseFloat(paymentAmount) : finalTotal;
+    const finalCreditAmount = creditAmount !== undefined ? parseFloat(creditAmount) : 0;
+    const finalCreditStatus = creditStatus || (finalCreditAmount > 0 ? 'PENDING' : 'NONE');
+    const finalPaymentStatus = paymentStatus || (finalCreditAmount > 0 ? 'PARTIAL' : 'COMPLETED');
+    
+    
     // Create sale
     const saleData = {
       invoiceNo,
@@ -99,8 +112,14 @@ const createSale = async (req, res, next) => {
       discount: finalDiscount,
       total: finalTotal,
       paymentMethod,
-      paymentStatus: paymentStatus || 'PENDING',
+      paymentStatus: finalPaymentStatus,
       customerInfo: customerInfo ? JSON.stringify(customerInfo) : null,
+      customerName,
+      customerPhone,
+      paymentAmount: finalPaymentAmount,
+      creditAmount: finalCreditAmount,
+      creditStatus: finalCreditStatus,
+      creditDueDate: finalCreditAmount > 0 ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : null, // 30 days from now
       notes,
       status: status || 'COMPLETED',
       items: items.map(item => ({
@@ -113,6 +132,7 @@ const createSale = async (req, res, next) => {
         total: (item.unitPrice * item.quantity) - (item.discount || 0)
       }))
     };
+
 
     const sale = await Sale.create(saleData);
 
@@ -150,7 +170,7 @@ const createSale = async (req, res, next) => {
 // @access  Private (Admin, Cashier)
 const getSales = async (req, res, next) => {
   try {
-    const { scopeType, scopeId, startDate, endDate, paymentMethod, status, retailerId } = req.query;
+    const { scopeType, scopeId, startDate, endDate, paymentMethod, status, retailerId, customerPhone, creditStatus } = req.query;
     let whereConditions = [];
     let params = [];
 
@@ -205,6 +225,16 @@ const getSales = async (req, res, next) => {
     if (retailerId && retailerId !== 'all') {
       whereConditions.push('JSON_EXTRACT(customer_info, "$.id") = ?');
       params.push(retailerId);
+    }
+
+    if (customerPhone) {
+      whereConditions.push('customer_phone = ?');
+      params.push(customerPhone);
+    }
+
+    if (creditStatus) {
+      whereConditions.push('credit_status = ?');
+      params.push(creditStatus);
     }
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
@@ -339,6 +369,18 @@ const updateSale = async (req, res, next) => {
           message: 'Access denied'
         });
       }
+      
+      // Check if cashier has permission to edit sales
+      if (req.user.role === 'CASHIER') {
+        const Branch = require('../models/Branch');
+        const branchSettings = await Branch.getSettings(sale.scopeId);
+        if (!branchSettings?.allowCashierSalesEdit) {
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have permission to edit sales. Contact your administrator.'
+          });
+        }
+      }
     }
 
     // Only allow certain fields to be updated
@@ -400,24 +442,62 @@ const deleteSale = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Only admin can delete sales
+    // Check permissions
     if (req.user.role !== 'ADMIN') {
-      return res.status(403).json({
-        success: false,
-        message: 'Only administrators can delete sales'
-      });
+      if (req.user.role === 'CASHIER') {
+        // Get sale to check scope and user
+        const [saleRows] = await connection.execute('SELECT * FROM sales WHERE id = ?', [id]);
+        if (saleRows.length === 0) {
+          await connection.rollback();
+          return res.status(404).json({
+            success: false,
+            message: 'Sale not found'
+          });
+        }
+        
+        const sale = saleRows[0];
+        
+        // Check if cashier can only delete their own sales
+        if (sale.user_id !== req.user.id) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: 'You can only delete your own sales'
+          });
+        }
+        
+        // Check if cashier has permission to delete sales
+        const Branch = require('../models/Branch');
+        const branchSettings = await Branch.getSettings(sale.scope_id);
+        if (!branchSettings?.allowCashierSalesDelete) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have permission to delete sales. Contact your administrator.'
+          });
+        }
+      } else {
+        await connection.rollback();
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied'
+        });
+      }
     }
 
     await connection.beginTransaction();
 
-    // Get sale and sale items in the same transaction
-    const [saleRows] = await connection.execute('SELECT * FROM sales WHERE id = ?', [id]);
-    if (saleRows.length === 0) {
-      await connection.rollback();
-      return res.status(404).json({
-        success: false,
-        message: 'Sale not found'
-      });
+    // Get sale and sale items in the same transaction (if not already fetched)
+    let saleRows;
+    if (req.user.role === 'ADMIN') {
+      [saleRows] = await connection.execute('SELECT * FROM sales WHERE id = ?', [id]);
+      if (saleRows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({
+          success: false,
+          message: 'Sale not found'
+        });
+      }
     }
 
     const [saleItemRows] = await connection.execute('SELECT * FROM sale_items WHERE sale_id = ?', [id]);

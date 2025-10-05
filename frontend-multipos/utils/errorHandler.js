@@ -158,13 +158,6 @@ class ErrorHandler {
 
   // Log error for debugging
   logError(errorDetails) {
-    console.group('🚨 Error Handler')
-    console.error('Error Type:', errorDetails.type)
-    console.error('Severity:', errorDetails.severity)
-    console.error('User Message:', errorDetails.userMessage)
-    console.error('Context:', errorDetails.context)
-    console.error('Original Error:', errorDetails.originalError)
-    console.groupEnd()
 
     // In production, you might want to send this to an error tracking service
     if (process.env.NODE_ENV === 'production') {

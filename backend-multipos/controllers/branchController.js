@@ -328,7 +328,6 @@ const updateBranchSettings = async (req, res, next) => {
         };
       }
     } catch (findError) {
-      console.error('Error fetching updated branch:', findError);
       // If we can't fetch the updated branch, return success with the updated settings
       updatedBranch = {
         id: parseInt(id),
@@ -342,7 +341,6 @@ const updateBranchSettings = async (req, res, next) => {
       data: updatedBranch
     });
   } catch (error) {
-    console.error('Update branch settings error:', error);
     res.status(500).json({
       success: false,
       message: 'Error updating branch settings',
@@ -399,7 +397,6 @@ const deleteBranch = async (req, res, next) => {
       message: 'Branch deleted successfully'
     });
   } catch (error) {
-    console.error('Delete branch error:', error);
     res.status(500).json({
       success: false,
       message: 'Error deleting branch',
@@ -470,7 +467,6 @@ const getBranchStats = async (req, res, next) => {
       }
     });
   } catch (error) {
-    console.error('Get branch stats error:', error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving branch statistics',
@@ -521,7 +517,6 @@ const getBranchInventory = async (req, res, next) => {
       data: inventoryItems
     });
   } catch (error) {
-    console.error('Get branch inventory error:', error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving branch inventory',
@@ -583,7 +578,6 @@ const getBranchSales = async (req, res, next) => {
       data: sales
     });
   } catch (error) {
-    console.error('Get branch sales error:', error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving branch sales',

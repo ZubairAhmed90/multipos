@@ -21,7 +21,6 @@ export const fetchSalesSummary = createAsyncThunk(
       const response = await api.get('/dashboard/sales-summary', params)
       return response.data
     } catch (error) {
-      console.error('Sales summary fetch error:', error)
       if (error.code === 'ECONNABORTED') {
         return rejectWithValue('Request timeout - backend server may be slow or unavailable')
       }
@@ -40,7 +39,6 @@ export const fetchInventorySummary = createAsyncThunk(
       const response = await api.get('/dashboard/inventory-summary', params)
       return response.data
     } catch (error) {
-      console.error('Inventory summary fetch error:', error)
       if (error.code === 'ECONNABORTED') {
         return rejectWithValue('Request timeout - backend server may be slow or unavailable')
       }
@@ -59,7 +57,6 @@ export const fetchFinancialSummary = createAsyncThunk(
       const response = await api.get('/dashboard/financial-summary', params)
       return response.data
     } catch (error) {
-      console.error('Financial summary fetch error:', error)
       if (error.code === 'ECONNABORTED') {
         return rejectWithValue('Request timeout - backend server may be slow or unavailable')
       }

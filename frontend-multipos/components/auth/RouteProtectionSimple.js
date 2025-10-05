@@ -34,7 +34,7 @@ const RouteProtection = ({ children }) => {
     isAuthenticated,
     hasUser: !!user,
     userRole: user?.role
-  }), [pathname, isLoading, isAuthenticated, user?.role])
+  }), [pathname, isLoading, isAuthenticated, user])
 
   useEffect(() => {
     // Skip protection for login/register pages

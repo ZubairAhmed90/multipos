@@ -591,7 +591,6 @@ const RetailersPage = () => {
               } else if (createRetailer.rejected.match(result)) {
               }
             } catch (error) {
-              console.error('Error creating retailer:', error)
             }
           }}
           loading={loading}

@@ -281,19 +281,16 @@ export const logger = {
   },
   
   warn: (message, context = {}) => {
-    console.warn(`[WARN] ${message}`, context)
     monitoringService.recordMetric('log_warn', 1, { message: message.substring(0, 100) })
   },
   
   error: (message, context = {}) => {
-    console.error(`[ERROR] ${message}`, context)
     monitoringService.recordMetric('log_error', 1, { message: message.substring(0, 100) })
     monitoringUtils.error.capture(new Error(message), context)
   },
   
   debug: (message, context = {}) => {
     if (process.env.NODE_ENV === 'development') {
-      console.debug(`[DEBUG] ${message}`, context)
     }
   }
 }

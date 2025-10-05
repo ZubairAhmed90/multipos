@@ -42,6 +42,7 @@ const getBranchSettings = async (req, res) => {
     const defaultSettings = {
       allowCashierInventoryEdit: false,
       allowCashierSalesEdit: false,
+      allowCashierSalesDelete: false,
       allowCashierReturns: false,
       allowCashierCustomers: false,
       allowCashierPOS: false,

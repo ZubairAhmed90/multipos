@@ -130,7 +130,6 @@ class ApiCacheService {
       this.metrics.compressions++
       return jsonString
     } catch (error) {
-      console.warn('Compression failed:', error)
       return data
     }
   }
@@ -140,7 +139,6 @@ class ApiCacheService {
     try {
       return JSON.parse(compressedData)
     } catch (error) {
-      console.warn('Decompression failed:', error)
       return compressedData
     }
   }
@@ -164,7 +162,6 @@ class ApiCacheService {
       // Return cached data if available (even if expired)
       const expiredCached = this.cache.get(key)
       if (expiredCached) {
-        console.warn('API call failed, returning expired cached data')
         return expiredCached.compressed ? this.decompress(expiredCached.data) : expiredCached.data
       }
       throw error
@@ -208,7 +205,6 @@ class ApiCacheService {
       await Promise.all(promises)
 (`Preloaded ${urls.length} API endpoints`)
     } catch (error) {
-      console.warn('Preloading failed:', error)
     }
   }
 
@@ -227,7 +223,6 @@ class ApiCacheService {
       await Promise.all(promises)
 (`Cache warmed up with ${endpoints.length} endpoints`)
     } catch (error) {
-      console.warn('Cache warmup failed:', error)
     }
   }
 

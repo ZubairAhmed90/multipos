@@ -14,48 +14,100 @@ import { fetchAdminUsers, createAdminUser, updateAdminUser, deleteAdminUser } fr
 import { fetchAllBranches } from '../../../store/slices/branchesSlice'
 import { fetchWarehouses } from '../../../store/slices/warehousesSlice'
 
-// Validation schemas
+// Validation schemas - matches backend validation exactly
 const createUserSchema = yup.object({
-  username: yup.string().required('Username is required'),
-  email: yup.string().email('Invalid email').required('Email is required'),
+  username: yup.string()
+    .trim()
+    .min(3, 'Username must be between 3 and 30 characters')
+    .max(30, 'Username must be between 3 and 30 characters')
+    .matches(/^[a-zA-Z0-9_]+$/, 'Username can only contain letters, numbers, and underscores')
+    .required('Username is required'),
+  email: yup.string()
+    .email('Please provide a valid email address')
+    .required('Email is required'),
   password: yup.string()
-    .min(6, 'Password must be at least 6 characters')
+    .min(6, 'Password must be at least 6 characters long')
     .matches(
       /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/,
       'Password must contain at least one lowercase letter, one uppercase letter, and one number'
     )
     .required('Password is required'),
-  role: yup.string().required('Role is required'),
-  branchId: yup.mixed().nullable().transform((value) => {
-    if (value === '' || value === null || value === undefined) return null
-    return parseInt(value)
-  }),
-  warehouseId: yup.mixed().nullable().transform((value) => {
-    if (value === '' || value === null || value === undefined) return null
-    return parseInt(value)
-  }),
-  shift: yup.string().nullable().transform((value) => {
-    if (value === '' || value === null || value === undefined) return null
-    return value
-  }),
+  role: yup.string()
+    .oneOf(['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'], 'Role must be ADMIN, WAREHOUSE_KEEPER, or CASHIER')
+    .required('Role is required'),
+  branchId: yup.mixed()
+    .nullable()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      const num = parseInt(value)
+      if (isNaN(num) || num < 1) {
+        throw new yup.ValidationError('Branch ID must be a valid positive integer', value, 'branchId')
+      }
+      return num
+    }),
+  warehouseId: yup.mixed()
+    .nullable()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      const num = parseInt(value)
+      if (isNaN(num) || num < 1) {
+        throw new yup.ValidationError('Warehouse ID must be a valid positive integer', value, 'warehouseId')
+      }
+      return num
+    }),
+  shift: yup.string()
+    .nullable()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      if (!['MORNING', 'AFTERNOON', 'NIGHT'].includes(value)) {
+        throw new yup.ValidationError('Shift must be MORNING, AFTERNOON, or NIGHT', value, 'shift')
+      }
+      return value
+    }),
 })
 
 const updateUserSchema = yup.object({
-  username: yup.string().required('Username is required'),
-  email: yup.string().email('Invalid email').required('Email is required'),
-  role: yup.string().required('Role is required'),
-  branchId: yup.mixed().nullable().transform((value) => {
-    if (value === '' || value === null || value === undefined) return null
-    return parseInt(value)
-  }),
-  warehouseId: yup.mixed().nullable().transform((value) => {
-    if (value === '' || value === null || value === undefined) return null
-    return parseInt(value)
-  }),
-  shift: yup.string().nullable().transform((value) => {
-    if (value === '' || value === null || value === undefined) return null
-    return value
-  }),
+  username: yup.string()
+    .trim()
+    .min(3, 'Username must be between 3 and 30 characters')
+    .max(30, 'Username must be between 3 and 30 characters')
+    .matches(/^[a-zA-Z0-9_]+$/, 'Username can only contain letters, numbers, and underscores')
+    .required('Username is required'),
+  email: yup.string()
+    .email('Please provide a valid email address')
+    .required('Email is required'),
+  role: yup.string()
+    .oneOf(['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'], 'Role must be ADMIN, WAREHOUSE_KEEPER, or CASHIER')
+    .required('Role is required'),
+  branchId: yup.mixed()
+    .nullable()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      const num = parseInt(value)
+      if (isNaN(num) || num < 1) {
+        throw new yup.ValidationError('Branch ID must be a valid positive integer', value, 'branchId')
+      }
+      return num
+    }),
+  warehouseId: yup.mixed()
+    .nullable()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      const num = parseInt(value)
+      if (isNaN(num) || num < 1) {
+        throw new yup.ValidationError('Warehouse ID must be a valid positive integer', value, 'warehouseId')
+      }
+      return num
+    }),
+  shift: yup.string()
+    .nullable()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      if (!['MORNING', 'AFTERNOON', 'NIGHT'].includes(value)) {
+        throw new yup.ValidationError('Shift must be MORNING, AFTERNOON, or NIGHT', value, 'shift')
+      }
+      return value
+    }),
 })
 
 function AdminUsersPage() {

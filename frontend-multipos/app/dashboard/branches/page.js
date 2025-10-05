@@ -10,34 +10,91 @@ import ConfirmationDialog from '../../../components/crud/ConfirmationDialog'
 import useEntityCRUD from '../../../hooks/useEntityCRUD'
 import { fetchBranches, createBranch, updateBranch, deleteBranch } from '../../store/slices/branchesSlice'
 
-// Validation schema
+// Validation schema - matches backend validation exactly
 const branchSchema = yup.object({
-  name: yup.string().required('Branch name is required'),
-  code: yup.string().required('Branch code is required'),
-  location: yup.string().required('Location is required'),
-  phone: yup.string().nullable(),
-  email: yup.string().nullable().test('email', 'Invalid email format', function(value) {
-    if (!value || value.trim() === '') {
-      return true; // Allow empty or null values
-    }
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-  }),
-  managerName: yup.string().nullable(),
-  managerPhone: yup.string().nullable(),
-  managerEmail: yup.string().nullable().test('email', 'Invalid email format', function(value) {
-    if (!value || value.trim() === '') {
-      return true; // Allow empty or null values
-    }
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-  }),
-  linkedWarehouseId: yup.number().nullable().transform((value, originalValue) => {
-    if (originalValue === '' || originalValue === null || originalValue === undefined) {
-      return null;
-    }
-    const num = Number(originalValue);
-    return isNaN(num) ? null : num;
-  }),
-  status: yup.string().oneOf(['active', 'inactive', 'maintenance']).default('active')
+  name: yup.string()
+    .trim()
+    .min(1, 'Branch name must be between 1 and 100 characters')
+    .max(100, 'Branch name must be between 1 and 100 characters')
+    .required('Branch name is required'),
+  code: yup.string()
+    .trim()
+    .min(1, 'Branch code must be between 1 and 10 characters')
+    .max(10, 'Branch code must be between 1 and 10 characters')
+    .matches(/^[a-zA-Z0-9\-_]+$/, 'Branch code can only contain letters, numbers, hyphens, and underscores')
+    .required('Branch code is required'),
+  location: yup.string()
+    .trim()
+    .min(1, 'Location must be between 1 and 200 characters')
+    .max(200, 'Location must be between 1 and 200 characters')
+    .required('Location is required'),
+  phone: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('phone-length', 'Phone must not exceed 20 characters', function(value) {
+      if (!value || value.trim() === '') return true
+      return value.length <= 20
+    }),
+  email: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('email-format', 'Email must be a valid email address', function(value) {
+      if (!value || value.trim() === '') return true
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+    }),
+  managerName: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('manager-name-length', 'Manager name must not exceed 100 characters', function(value) {
+      if (!value || value.trim() === '') return true
+      return value.length <= 100
+    }),
+  managerPhone: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('manager-phone-length', 'Manager phone must not exceed 20 characters', function(value) {
+      if (!value || value.trim() === '') return true
+      return value.length <= 20
+    }),
+  managerEmail: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('manager-email-format', 'Manager email must be a valid email address', function(value) {
+      if (!value || value.trim() === '') return true
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+    }),
+  linkedWarehouseId: yup.mixed()
+    .nullable()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      const num = parseInt(value)
+      if (isNaN(num) || num < 1) {
+        throw new yup.ValidationError('Linked warehouse ID must be a valid positive integer', value, 'linkedWarehouseId')
+      }
+      return num
+    }),
+  status: yup.string()
+    .oneOf(['active', 'inactive', 'maintenance'], 'Status must be active, inactive, or maintenance')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.openAccount': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.allowCashierInventoryEdit': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.allowWarehouseInventoryEdit': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.allowWarehouseKeeperCompanyAdd': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.allowReturnsByCashier': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.allowReturnsByWarehouseKeeper': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
 })
 
 // Table columns configuration

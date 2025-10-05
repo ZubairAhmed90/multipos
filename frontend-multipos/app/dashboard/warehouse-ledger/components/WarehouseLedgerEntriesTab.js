@@ -57,7 +57,6 @@ const columns = [
       try {
         return new Date(params.value);
       } catch (error) {
-        console.warn('Invalid date value:', params.value);
         return null;
       }
     }

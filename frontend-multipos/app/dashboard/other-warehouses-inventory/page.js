@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useSelector, useDispatch } from 'react-redux'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
 import RoleGuard from '../../../components/auth/RoleGuard'
@@ -48,7 +48,7 @@ function OtherWarehousesInventoryPage() {
   const [filteredInventory, setFilteredInventory] = useState([])
   
   // Ensure inventory is always an array
-  const safeInventory = Array.isArray(inventory) ? inventory : []
+  const safeInventory = useMemo(() => Array.isArray(inventory) ? inventory : [], [inventory])
   
   // Load data on component mount
   useEffect(() => {

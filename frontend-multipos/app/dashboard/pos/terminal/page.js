@@ -1,7 +1,8 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import api from '../../../../utils/axios'
 import {
   Box,
   Paper,
@@ -32,7 +33,15 @@ import {
   Tooltip,
   Fade,
   Slide,
-  MenuItem
+  MenuItem,
+  Checkbox,
+  FormControlLabel,
+  Card,
+  CardContent,
+  List,
+  ListItem,
+  ListItemText,
+  ListItemSecondaryAction
 } from '@mui/material'
 import {
   QrCodeScanner as ScannerIcon,
@@ -55,14 +64,19 @@ import {
   TrendingUp as TrendingIcon,
   Refresh as RefreshIcon,
   Visibility as ViewIcon,
-  Edit as EditIcon
+  Edit as EditIcon,
+  CheckCircle as CheckIcon,
+  Error as ErrorIcon,
+  AccountBalance as OutstandingIcon,
+  CheckBox as CheckBoxIcon,
+  CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon
 } from '@mui/icons-material'
 import PrintDialog from '../../../../components/print/PrintDialog'
 import DashboardLayout from '../../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../../components/auth/RouteGuard'
-import BarcodeScanner from '../../../../components/pos/BarcodeScanner'
+import PhysicalScanner from '../../../../components/pos/PhysicalScanner'
 import { fetchInventory } from '../../../../app/store/slices/inventorySlice'
-import { createSale } from '../../../../app/store/slices/salesSlice'
+import { createSale, fetchSales } from '../../../../app/store/slices/salesSlice'
 
 // Tab management utilities
 const generateTabId = () => `tab_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -73,6 +87,7 @@ function POSTerminal() {
   const dispatch = useDispatch()
   const { user } = useSelector((state) => state.auth)
   const { data: inventoryItems, loading: inventoryLoading, error: inventoryError } = useSelector((state) => state.inventory)
+  const salesData = useSelector((state) => state.sales.data) || []
   
   // Tab management state
   const [tabs, setTabs] = useState([])
@@ -84,9 +99,16 @@ function POSTerminal() {
   const [manualInput, setManualInput] = useState('')
   const [isScanning, setIsScanning] = useState(false)
   const [customerName, setCustomerName] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [paymentMethod, setPaymentMethod] = useState('CASH')
+  const [paymentAmount, setPaymentAmount] = useState('')
+  const [creditAmount, setCreditAmount] = useState('')
+  const [isPartialPayment, setIsPartialPayment] = useState(false)
+  const [customerSearchResults, setCustomerSearchResults] = useState([])
+  const [showCustomerSearch, setShowCustomerSearch] = useState(false)
   const [searchResults, setSearchResults] = useState([])
   const [showSearchResults, setShowSearchResults] = useState(false)
-  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false)
+  const [showPhysicalScanner, setShowPhysicalScanner] = useState(false)
   const [taxRate, setTaxRate] = useState(0) // Tax rate as percentage (0-100)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('all')
@@ -96,13 +118,122 @@ function POSTerminal() {
   const [showSettings, setShowSettings] = useState(false)
   const [showPrintDialog, setShowPrintDialog] = useState(false)
   const [printData, setPrintData] = useState(null)
+  const [scannerStatus, setScannerStatus] = useState({
+    connected: false,
+    lastScan: null,
+    scanCount: 0,
+    errors: []
+  })
+  
+  // Outstanding payments state
+  const [outstandingPayments, setOutstandingPayments] = useState([])
+  const [selectedOutstandingPayments, setSelectedOutstandingPayments] = useState([])
+  const [isSearchingOutstanding, setIsSearchingOutstanding] = useState(false)
   
   const barcodeInputRef = useRef(null)
   const manualInputRef = useRef(null)
+  const lastScanTimeRef = useRef(0)
+
+  // Enhanced barcode input handling for physical scanner
+  useEffect(() => {
+    const handlePhysicalScanner = (event) => {
+      // Check if it's rapid keystrokes (typical of scanner)
+      const now = Date.now()
+      const timeDiff = now - (lastScanTimeRef.current || 0)
+      
+      // Update scanner status
+      setScannerStatus(prev => ({
+        ...prev,
+        connected: true,
+        lastScan: now
+      }))
+      
+      if (timeDiff < 50 && event.key !== 'Enter') {
+        // Rapid keystrokes - likely scanner input
+        lastScanTimeRef.current = now
+        return
+      }
+      
+      // Handle Enter key from scanner
+      if (event.key === 'Enter' && barcodeInput.trim().length > 0) {
+        event.preventDefault()
+        
+        // Update scanner status
+        setScannerStatus(prev => ({
+          ...prev,
+          scanCount: prev.scanCount + 1,
+          lastScan: now
+        }))
+        
+        handleBarcodeScan(barcodeInput.trim())
+        setBarcodeInput('')
+        return
+      }
+    }
+
+    // Add event listener for physical scanner
+    document.addEventListener('keydown', handlePhysicalScanner)
+    
+    return () => {
+      document.removeEventListener('keydown', handlePhysicalScanner)
+    }
+  }, [barcodeInput])
 
   // Get current tab data
   const currentTab = tabs.find(tab => tab.id === activeTabId)
   const currentCart = currentTab?.cart || []
+
+  // Create new tab
+  const createNewTab = useCallback(() => {
+    const newTab = {
+      id: generateTabId(),
+      name: generateTabName(tabCounter),
+      cart: [],
+      customerName: '',
+      customerPhone: '',
+      createdAt: new Date(),
+      modifiedAt: new Date()
+    }
+    
+    setTabs(prev => [...prev, newTab])
+    setActiveTabId(newTab.id)
+    setTabCounter(prev => prev + 1)
+    
+    // Clear outstanding payments when creating new tab
+    setOutstandingPayments([])
+    setSelectedOutstandingPayments([])
+  }, [tabCounter])
+
+  // Load available printers
+  const loadAvailablePrinters = async () => {
+    try {
+      // Use Web API to get available printers
+      if (navigator.serial) {
+        // For serial printers (thermal printers)
+        const ports = await navigator.serial.getPorts()
+        setAvailablePrinters(ports.map(port => ({
+          id: port.getInfo().usbVendorId,
+          name: `Thermal Printer ${port.getInfo().usbVendorId}`,
+          type: 'thermal'
+        })))
+      }
+      
+      // Add default printer options
+      setAvailablePrinters(prev => [
+        ...prev,
+        { id: 'default', name: 'Default Printer', type: 'default' },
+        { id: 'thermal-80mm', name: 'Thermal 80mm', type: 'thermal' },
+        { id: 'thermal-58mm', name: 'Thermal 58mm', type: 'thermal' }
+      ])
+    } catch (error) {
+      // Fallback to default printers
+      setAvailablePrinters([
+        { id: 'default', name: 'Default Printer', type: 'default' },
+        { id: 'thermal-80mm', name: 'Thermal 80mm', type: 'thermal' },
+        { id: 'thermal-58mm', name: 'Thermal 58mm', type: 'thermal' }
+      ])
+    }
+  }
 
   // Initialize with first tab and load inventory
   useEffect(() => {
@@ -127,41 +258,26 @@ function POSTerminal() {
       dispatch(fetchInventory(params))
     }
     
+    // Load sales data for customer search
+    dispatch(fetchSales())
+    
     // Load available printers
     loadAvailablePrinters()
-  }, [dispatch, user, tabs.length])
+  }, [dispatch, user, tabs.length, createNewTab])
 
-  // Load available printers
-  const loadAvailablePrinters = async () => {
-    try {
-      // Use Web API to get available printers
-      if (navigator.serial) {
-        // For serial printers (thermal printers)
-        const ports = await navigator.serial.getPorts()
-        setAvailablePrinters(ports.map(port => ({
-          id: port.getInfo().usbVendorId,
-          name: `Thermal Printer ${port.getInfo().usbVendorId}`,
-          type: 'thermal'
-        })))
+  // Search for outstanding payments when phone number changes
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (customerPhone && customerPhone.trim().length >= 3) {
+        searchOutstandingPayments(customerPhone.trim())
+      } else {
+        setOutstandingPayments([])
+        setSelectedOutstandingPayments([])
       }
-      
-      // Add default printer options
-      setAvailablePrinters(prev => [
-        ...prev,
-        { id: 'default', name: 'Default Printer', type: 'default' },
-        { id: 'thermal-80mm', name: 'Thermal 80mm', type: 'thermal' },
-        { id: 'thermal-58mm', name: 'Thermal 58mm', type: 'thermal' }
-      ])
-    } catch (error) {
-      console.error('Error loading printers:', error)
-      // Fallback to default printers
-      setAvailablePrinters([
-        { id: 'default', name: 'Default Printer', type: 'default' },
-        { id: 'thermal-80mm', name: 'Thermal 80mm', type: 'thermal' },
-        { id: 'thermal-58mm', name: 'Thermal 58mm', type: 'thermal' }
-      ])
-    }
-  }
+    }, 500) // Debounce search by 500ms
+
+    return () => clearTimeout(timeoutId)
+  }, [customerPhone])
 
   // Focus on barcode input when tab changes
   useEffect(() => {
@@ -169,22 +285,6 @@ function POSTerminal() {
       barcodeInputRef.current.focus()
     }
   }, [activeTabId])
-
-  // Create new tab
-  const createNewTab = () => {
-    const newTab = {
-      id: generateTabId(),
-      name: generateTabName(tabCounter),
-      cart: [],
-      customerName: '',
-      createdAt: new Date(),
-      modifiedAt: new Date()
-    }
-    
-    setTabs(prev => [...prev, newTab])
-    setActiveTabId(newTab.id)
-    setTabCounter(prev => prev + 1)
-  }
 
   // Close tab
   const closeTab = (tabId) => {
@@ -224,8 +324,16 @@ function POSTerminal() {
 
   // Handle barcode scanning
   const handleBarcodeScan = (barcode) => {
-    // Search in real inventory data
-    const product = inventoryItems.find(p => p.sku === barcode || p.name.toLowerCase().includes(barcode.toLowerCase()))
+    // Search in real inventory data with multiple field matching
+    const product = inventoryItems.find(p => {
+      // Check multiple fields for barcode match
+      const skuMatch = p.sku && p.sku.toString().toLowerCase() === barcode.toLowerCase()
+      const barcodeMatch = p.barcode && p.barcode.toString().toLowerCase() === barcode.toLowerCase()
+      const nameMatch = p.name && p.name.toLowerCase().includes(barcode.toLowerCase())
+      
+      return skuMatch || barcodeMatch || nameMatch
+    })
+    
     if (product) {
       // Transform inventory item to cart format
       const cartProduct = {
@@ -235,6 +343,7 @@ function POSTerminal() {
         stock: product.currentStock,
         category: product.category,
         sku: product.sku,
+        barcode: product.barcode,
         unit: product.unit
       }
       addToCart(cartProduct)
@@ -242,18 +351,23 @@ function POSTerminal() {
       setShowSearchResults(false)
     } else {
       // Show search results for partial matches
-      const matches = inventoryItems.filter(p => 
-        p.sku?.includes(barcode) || 
-        p.name.toLowerCase().includes(barcode.toLowerCase())
-      ).map(item => ({
+      const matches = inventoryItems.filter(p => {
+        const skuMatch = p.sku && p.sku.toString().toLowerCase().includes(barcode.toLowerCase())
+        const barcodeMatch = p.barcode && p.barcode.toString().toLowerCase().includes(barcode.toLowerCase())
+        const nameMatch = p.name && p.name.toLowerCase().includes(barcode.toLowerCase())
+        
+        return skuMatch || barcodeMatch || nameMatch
+      }).map(item => ({
         id: item.id,
         name: item.name,
         price: item.sellingPrice,
         stock: item.currentStock,
         category: item.category,
         sku: item.sku,
+        barcode: item.barcode,
         unit: item.unit
       }))
+      
       setSearchResults(matches)
       setShowSearchResults(true)
     }
@@ -298,6 +412,52 @@ function POSTerminal() {
     handleSearch(query)
   }
 
+  // Customer search functionality
+  const searchCustomers = (query, salesData) => {
+    if (!query || query.length < 2) {
+      setCustomerSearchResults([])
+      setShowCustomerSearch(false)
+      return
+    }
+
+    // Filter sales by customer name or phone
+    const customerMatches = salesData.filter(sale => {
+      const nameMatch = sale.customer_name?.toLowerCase().includes(query.toLowerCase())
+      const phoneMatch = sale.customer_phone?.includes(query)
+      return nameMatch || phoneMatch
+    })
+
+    // Create unique customer list
+    const uniqueCustomers = []
+    const seenCustomers = new Set()
+    
+    customerMatches.forEach(sale => {
+      const customerKey = `${sale.customer_name || ''}-${sale.customer_phone || ''}`
+      if (!seenCustomers.has(customerKey) && (sale.customer_name || sale.customer_phone)) {
+        seenCustomers.add(customerKey)
+        uniqueCustomers.push({
+          name: sale.customer_name || 'Walk-in Customer',
+          phone: sale.customer_phone || '',
+          lastSale: sale.created_at,
+          totalSales: salesData.filter(s => 
+            s.customer_name === sale.customer_name && s.customer_phone === sale.customer_phone
+          ).length
+        })
+      }
+    })
+
+    setCustomerSearchResults(uniqueCustomers)
+    setShowCustomerSearch(uniqueCustomers.length > 0)
+  }
+
+  // Select customer from search results
+  const selectCustomer = (customer) => {
+    setCustomerName(customer.name)
+    setCustomerPhone(customer.phone)
+    setShowCustomerSearch(false)
+    setCustomerSearchResults([])
+  }
+
   // Get unique categories for filter
   const getCategories = () => {
     const categories = [...new Set(inventoryItems.map(item => item.category).filter(Boolean))]
@@ -315,7 +475,6 @@ function POSTerminal() {
         await printDefaultBill(billData)
       }
     } catch (error) {
-      console.error('Print error:', error)
       alert('Failed to print bill. Please try again.')
     }
   }
@@ -377,7 +536,7 @@ function POSTerminal() {
 
   // Generate thermal print content
   const generateThermalPrintContent = (billData) => {
-    const { cart, customerName, total, tax, subtotal } = billData
+    const { cart, customerName, customerPhone, total, tax, subtotal, paymentMethod, paymentAmount, creditAmount, paymentStatus, change, notes } = billData
     const date = new Date().toLocaleString()
     
     let content = `
@@ -386,6 +545,7 @@ function POSTerminal() {
 ================================
 Date: ${date}
 Customer: ${customerName || 'Walk-in'}
+Phone: ${customerPhone || 'N/A'}
 --------------------------------
 `
     
@@ -401,6 +561,25 @@ Tax: $${tax.toFixed(2)}
 --------------------------------
 TOTAL: $${total.toFixed(2)}
 --------------------------------
+Payment Method: ${paymentMethod || 'Cash'}
+Amount Paid: $${(paymentAmount || total).toFixed(2)}
+`
+    
+    if (paymentStatus === 'PARTIAL') {
+      content += `Credit Amount: $${(creditAmount || 0).toFixed(2)}
+Payment Status: PARTIAL PAYMENT
+`
+    } else {
+      content += `Change: $${(change || 0).toFixed(2)}
+`
+    }
+    
+    if (notes) {
+      content += `Notes: ${notes}
+`
+    }
+    
+    content += `--------------------------------
 Thank you for your business!
 ================================
 `
@@ -410,7 +589,7 @@ Thank you for your business!
 
   // Generate print content
   const generatePrintContent = (billData) => {
-    const { cart, customerName, total, tax, subtotal } = billData
+    const { cart, customerName, customerPhone, total, tax, subtotal, paymentMethod, paymentAmount, creditAmount, paymentStatus, change, notes } = billData
     const date = new Date().toLocaleString()
     
     return `
@@ -422,7 +601,9 @@ Thank you for your business!
             .header { text-align: center; margin-bottom: 20px; }
             .item { display: flex; justify-content: space-between; margin: 5px 0; }
             .total { font-weight: bold; font-size: 18px; margin-top: 20px; }
+            .payment-info { background-color: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 5px; }
             .line { border-bottom: 1px solid #000; margin: 10px 0; }
+            .partial-payment { color: #ff6b35; font-weight: bold; }
           </style>
         </head>
         <body>
@@ -430,6 +611,7 @@ Thank you for your business!
             <h2>RECEIPT</h2>
             <p>Date: ${date}</p>
             <p>Customer: ${customerName || 'Walk-in'}</p>
+            <p>Phone: ${customerPhone || 'N/A'}</p>
           </div>
           <div class="line"></div>
           ${cart.map(item => `
@@ -450,6 +632,33 @@ Thank you for your business!
           <div class="item total">
             <span>TOTAL:</span>
             <span>$${total.toFixed(2)}</span>
+          </div>
+          <div class="line"></div>
+          <div class="payment-info">
+            <div class="item">
+              <span>Payment Method:</span>
+              <span>${paymentMethod || 'Cash'}</span>
+            </div>
+            <div class="item">
+              <span>Amount Paid:</span>
+              <span>$${(paymentAmount || total).toFixed(2)}</span>
+            </div>
+            ${paymentStatus === 'PARTIAL' ? `
+              <div class="item partial-payment">
+                <span>Credit Amount:</span>
+                <span>$${(creditAmount || 0).toFixed(2)}</span>
+              </div>
+              <div class="item partial-payment">
+                <span>Payment Status:</span>
+                <span>PARTIAL PAYMENT</span>
+              </div>
+            ` : `
+              <div class="item">
+                <span>Change:</span>
+                <span>$${(change || 0).toFixed(2)}</span>
+              </div>
+            `}
+            ${notes ? `<div class="item"><span>Notes:</span><span>${notes}</span></div>` : ''}
           </div>
           <div class="line"></div>
           <p style="text-align: center; margin-top: 30px;">Thank you for your business!</p>
@@ -510,25 +719,107 @@ Thank you for your business!
     }
   }
 
+  // Search for outstanding payments by phone number
+  const searchOutstandingPayments = async (phoneNumber) => {
+    if (!phoneNumber || phoneNumber.trim().length < 3) {
+      setOutstandingPayments([])
+      setSelectedOutstandingPayments([])
+      return
+    }
+
+    setIsSearchingOutstanding(true)
+    try {
+      // Use backend filtering for better performance
+      const response = await api.get(`/sales?customerPhone=${encodeURIComponent(phoneNumber.trim())}&creditStatus=PENDING`)
+
+      if (response.data.success) {
+        // Filter for sales with outstanding amounts (credit_amount > 0)
+        const outstanding = response.data.data.filter(sale => 
+          sale.credit_amount > 0
+        )
+        setOutstandingPayments(outstanding)
+        setSelectedOutstandingPayments([]) // Reset selections
+      } else {
+        setOutstandingPayments([])
+      }
+    } catch (error) {
+      setOutstandingPayments([])
+    } finally {
+      setIsSearchingOutstanding(false)
+    }
+  }
+
+  // Handle outstanding payment selection
+  const handleOutstandingPaymentToggle = (paymentId) => {
+    setSelectedOutstandingPayments(prev => {
+      if (prev.includes(paymentId)) {
+        return prev.filter(id => id !== paymentId)
+      } else {
+        return [...prev, paymentId]
+      }
+    })
+  }
+
   // Calculate totals
   const subtotal = currentCart.reduce((sum, item) => sum + (parseFloat(item.price || 0) * item.quantity), 0)
   const tax = subtotal * (taxRate / 100) // Tax based on editable rate
-  const total = subtotal + tax
+  
+  // Calculate outstanding payments total
+  const outstandingTotal = selectedOutstandingPayments.reduce((sum, paymentId) => {
+    const payment = outstandingPayments.find(p => p.id === paymentId)
+    return sum + (payment ? parseFloat(payment.credit_amount || 0) : 0)
+  }, 0)
+  
+  const total = subtotal + tax + outstandingTotal
 
   // Handle payment
   const handlePayment = async () => {
     try {
-      // Show processing state
-('Processing payment:', {
-        tabId: activeTabId,
-        cart: currentCart,
-        subtotal,
-        tax,
-        total,
-        paymentMethod,
-        customerName
-      })
+      // Validate required data before processing
+      if (!user) {
+        alert('❌ User not authenticated. Please login again.')
+        return
+      }
+      
+      if (!currentCart || currentCart.length === 0) {
+        alert('❌ Cart is empty. Please add items before processing payment.')
+        return
+      }
+      
+      if (total <= 0) {
+        alert('❌ Total amount must be greater than 0.')
+        return
+      }
+      
+      if (!currentTab) {
+        alert('❌ No active tab found. Please refresh the page.')
+        return
+      }
 
+      // Show processing state
+
+      // Calculate payment amounts
+      const finalPaymentAmount = isPartialPayment ? parseFloat(paymentAmount) || 0 : total
+      const finalCreditAmount = isPartialPayment ? (total - (parseFloat(paymentAmount) || 0)) : 0
+      const finalPaymentStatus = isPartialPayment ? 'PARTIAL' : 'COMPLETED'
+      
+      
+      // Validate partial payment amounts
+      if (isPartialPayment) {
+        if (finalPaymentAmount <= 0) {
+          alert('Payment amount must be greater than 0 for partial payments')
+          return
+        }
+        if (finalPaymentAmount >= total) {
+          alert('Payment amount cannot be equal to or greater than total for partial payments')
+          return
+        }
+        if (finalCreditAmount <= 0) {
+          alert('Credit amount must be greater than 0 for partial payments')
+          return
+        }
+      }
+      
       // Prepare sale data
       const saleData = {
         scopeType: user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE',
@@ -538,15 +829,18 @@ Thank you for your business!
         discount: 0,
         total: total,
         paymentMethod: paymentMethod.toUpperCase(),
-        paymentStatus: 'COMPLETED',
+        paymentStatus: finalPaymentStatus,
         status: 'COMPLETED',
         customerInfo: {
           name: customerName || '',
           email: '',
-          phone: '',
+          phone: customerPhone || '',
           address: ''
         },
-        notes: `POS Terminal - Tab: ${currentTab?.name || 'Unknown'}`,
+        paymentAmount: finalPaymentAmount,
+        creditAmount: finalCreditAmount,
+        creditStatus: finalCreditAmount > 0 ? 'PENDING' : 'NONE',
+        notes: `POS Terminal - Tab: ${currentTab?.name || 'Unknown'}${isPartialPayment ? ` (Credit: ${finalCreditAmount.toFixed(2)})` : ''}${outstandingTotal > 0 ? ` (Outstanding Payments: ${outstandingTotal.toFixed(2)})` : ''}`,
         items: currentCart.map(item => ({
           inventoryItemId: item.id,
           sku: item.sku || '',
@@ -558,11 +852,14 @@ Thank you for your business!
         }))
       }
       
+      
       // Create the sale
       const result = await dispatch(createSale(saleData))
       
+      
       if (createSale.fulfilled.match(result)) {
         const sale = result.payload
+        
         let printerError = null
         
         // Attempt to print receipt (with error handling)
@@ -570,69 +867,179 @@ Thank you for your business!
           await printReceipt(sale)
         } catch (error) {
           printerError = error
-          console.warn('Printer error (non-critical):', error)
           // Don't fail the transaction for printer errors
         }
         
         // Show success message regardless of printer status
-        alert(`✅ Payment successful!\n\nInvoice: ${sale.invoice_no}\nTotal: $${total.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}\n\n${printerError ? 'Note: Receipt printing failed, but payment was processed successfully.' : 'Receipt printed successfully.'}`)
+        const paymentMessage = isPartialPayment 
+          ? `✅ Payment successful!\n\nInvoice: ${sale.invoice_no}\nTotal: $${total.toFixed(2)}\nPaid: $${finalPaymentAmount.toFixed(2)}\nCredit: $${finalCreditAmount.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}\nCustomer: ${customerName}\nPhone: ${customerPhone}\n\n${printerError ? 'Note: Receipt printing failed, but payment was processed successfully.' : 'Receipt printed successfully.'}`
+          : `✅ Payment successful!\n\nInvoice: ${sale.invoice_no}\nTotal: $${total.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}\nCustomer: ${customerName}\nPhone: ${customerPhone}\n\n${printerError ? 'Note: Receipt printing failed, but payment was processed successfully.' : 'Receipt printed successfully.'}`;
+        
+        alert(paymentMessage);
         
         // Clear cart and reset
-        updateCurrentTab({ cart: [], customerName: '' })
+        updateCurrentTab({ cart: [], customerName: '', customerPhone: '' })
         setCustomerName('')
+        setCustomerPhone('')
+        setPaymentAmount('')
+        setCreditAmount('')
+        setIsPartialPayment(false)
         
         // Focus back on barcode input
         if (barcodeInputRef.current) {
           barcodeInputRef.current.focus()
         }
+      } else if (createSale.rejected.match(result)) {
+        // Handle sale creation failure
+        const error = result.payload || result.error
+        
+        let errorMessage = 'Payment failed. Please try again.'
+        if (error && typeof error === 'string') {
+          errorMessage = error
+        } else if (error && error.message) {
+          errorMessage = error.message
+        } else if (error && error.response && error.response.data && error.response.data.message) {
+          errorMessage = error.response.data.message
+        }
+        
+        
+        alert(`❌ Payment failed!\n\nError: ${errorMessage}\n\nPlease check your connection and try again.`)
       } else {
-        // Handle payment failure
-        const errorMessage = result.payload?.response?.data?.message || result.payload?.message || 'Payment processing failed'
-        alert(`❌ Payment failed: ${errorMessage}`)
+        // Handle unexpected result
+        alert('❌ Payment failed!\n\nUnexpected error occurred. Please try again.')
       }
     } catch (error) {
-      console.error('Payment processing error:', error)
       alert(`❌ Payment processing error: ${error.message}`)
     }
   }
 
-  // Print receipt function
+  // Print receipt function - now creates sale first, then prints
   const printReceipt = async () => {
     try {
-      // Prepare print data
-      const printData = {
-        type: 'receipt',
-        title: 'SALES RECEIPT',
-        companyName: 'PetZone',
-        companyAddress: '456 Pet Paradise Ave, Pet City, PC 12345',
-        companyPhone: '(555) PET-ZONE',
-        companyEmail: 'info@petzone.com',
-        receiptNumber: `POS-${Date.now()}`,
-        date: new Date().toLocaleDateString(),
-        time: new Date().toLocaleTimeString(),
-        cashierName: user?.name || 'Cashier',
-        customerName: customerName || 'Walk-in Customer',
-        items: currentCart.map(item => ({
-          name: item.name,
-          sku: item.sku,
-          quantity: item.quantity,
-          price: item.price
-        })),
+      // First validate required data
+      if (!user) {
+        alert('❌ User not authenticated. Please login again.')
+        return
+      }
+      
+      if (!currentCart || currentCart.length === 0) {
+        alert('❌ Cart is empty. Please add items before printing receipt.')
+        return
+      }
+      
+      if (total <= 0) {
+        alert('❌ Total amount must be greater than 0.')
+        return
+      }
+      
+      // Calculate payment amounts
+      const finalPaymentAmount = isPartialPayment ? parseFloat(paymentAmount) || 0 : total
+      const finalCreditAmount = isPartialPayment ? (total - (parseFloat(paymentAmount) || 0)) : 0
+      const finalPaymentStatus = isPartialPayment ? 'PARTIAL' : 'COMPLETED'
+      
+      // Prepare sale data
+      const saleData = {
+        scopeType: user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE',
+        scopeId: user.role === 'CASHIER' ? user.branchId : user.warehouseId,
         subtotal: subtotal,
         tax: tax,
+        discount: 0,
         total: total,
-        paymentMethod: 'Cash',
-        change: 0,
-        notes: '',
-        footerMessage: 'Thank you for choosing PetZone!'
+        paymentMethod: paymentMethod.toUpperCase(),
+        paymentStatus: finalPaymentStatus,
+        status: 'COMPLETED',
+        customerInfo: {
+          name: customerName || '',
+          email: '',
+          phone: customerPhone || '',
+          address: ''
+        },
+        paymentAmount: finalPaymentAmount,
+        creditAmount: finalCreditAmount,
+        creditStatus: finalCreditAmount > 0 ? 'PENDING' : 'NONE',
+        notes: `POS Terminal Print Receipt - Tab: ${currentTab?.name || 'Unknown'}${isPartialPayment ? ` (Credit: ${finalCreditAmount.toFixed(2)})` : ''}${outstandingTotal > 0 ? ` (Outstanding Payments: ${outstandingTotal.toFixed(2)})` : ''}`,
+        items: currentCart.map(item => ({
+          inventoryItemId: item.id,
+          sku: item.sku || '',
+          name: item.name || '',
+          quantity: item.quantity,
+          unitPrice: parseFloat(item.price || 0),
+          discount: 0,
+          total: parseFloat(item.price || 0) * item.quantity
+        }))
       }
+      
+      
+      // Create the sale first
+      const result = await dispatch(createSale(saleData))
+      
+      
+      if (createSale.fulfilled.match(result)) {
+        const sale = result.payload.data || result.payload
+        
+        // Now prepare print data with the actual sale information
+        const printData = {
+          type: 'receipt',
+          title: 'SALES RECEIPT',
+          companyName: 'PetZone',
+          companyAddress: '456 Pet Paradise Ave, Pet City, PC 12345',
+          companyPhone: '(555) PET-ZONE',
+          companyEmail: 'info@petzone.com',
+          receiptNumber: sale.invoice_no || `POS-${Date.now()}`,
+          date: new Date().toLocaleDateString(),
+          time: new Date().toLocaleTimeString(),
+          cashierName: user?.name || 'Cashier',
+          customerName: customerName || 'Walk-in Customer',
+          customerPhone: customerPhone || '',
+          items: currentCart.map(item => ({
+            name: item.name,
+            sku: item.sku,
+            quantity: item.quantity,
+            price: item.price
+          })),
+          subtotal: subtotal,
+          tax: tax,
+          total: total,
+          paymentMethod: paymentMethod,
+          paymentAmount: finalPaymentAmount,
+          creditAmount: finalCreditAmount,
+          paymentStatus: finalPaymentStatus,
+          change: isPartialPayment ? 0 : (parseFloat(paymentAmount) || total) - total,
+          notes: isPartialPayment ? `Partial Payment - Credit Amount: $${finalCreditAmount.toFixed(2)}` : '',
+          footerMessage: 'Thank you for choosing PetZone!'
+        }
 
-      // Open print dialog
-      setPrintData(printData)
-      setShowPrintDialog(true)
+        
+        // Open print dialog
+        setPrintData(printData)
+        setShowPrintDialog(true)
+        
+        // Clear cart and reset after successful sale
+        updateCurrentTab({ cart: [], customerName: '', customerPhone: '' })
+        setCustomerName('')
+        setCustomerPhone('')
+        setPaymentAmount('')
+        setCreditAmount('')
+        setIsPartialPayment(false)
+        
+        
+      } else if (createSale.rejected.match(result)) {
+        const error = result.payload || result.error
+        let errorMessage = 'Sale creation failed. Please try again.'
+        
+        if (typeof error === 'string') {
+          errorMessage = error
+        } else if (error?.message) {
+          errorMessage = error.message
+        }
+        
+        alert(`❌ Print receipt failed!\n\nError: ${errorMessage}\n\nPlease check your connection and try again.`)
+      } else {
+        alert('❌ Print receipt failed!\n\nUnexpected error occurred. Please try again.')
+      }
+      
     } catch (error) {
-      console.error('Print error:', error)
-      alert(`❌ Print error: ${error.message}`)
+      alert(`❌ Print receipt error: ${error.message}`)
     }
   }
 
@@ -727,7 +1134,13 @@ Thank you for your business!
   return (
     <RouteGuard allowedRoles={['CASHIER', 'ADMIN', 'MANAGER']}>
       <DashboardLayout>
-        <Box sx={{ p: 2, height: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <Box sx={{ 
+          minHeight: '100vh', 
+          display: 'flex', 
+          flexDirection: 'column',
+          bgcolor: 'grey.50',
+          overflow: 'auto'
+        }}>
 
           {/* Search Bar */}
           <Paper sx={{ mb: 2, p: 2, bgcolor: theme.palette.background.default, position: 'relative' }}>
@@ -810,7 +1223,7 @@ Thank you for your business!
                     }}
                   >
                     <Typography variant="body2" color="text.secondary">
-                      No products found for "{searchQuery}"
+                      No products found for &quot;{searchQuery}&quot;
                     </Typography>
                   </Paper>
                 )}
@@ -848,7 +1261,19 @@ Thank you for your business!
                   }}
                 placeholder="Scan or type barcode..."
                 sx={{ flex: 1 }}
+                autoFocus
                 />
+                
+                {/* Scanner Status Indicator */}
+                <Tooltip title={`Scanner Status: ${scannerStatus.connected ? 'Connected' : 'Not Detected'} | Scans: ${scannerStatus.scanCount}`}>
+                  <Chip
+                    icon={scannerStatus.connected ? <CheckIcon /> : <ErrorIcon />}
+                    label={scannerStatus.connected ? 'Scanner OK' : 'No Scanner'}
+                    color={scannerStatus.connected ? 'success' : 'error'}
+                    size="small"
+                    variant="outlined"
+                  />
+                </Tooltip>
                   <Button
                     variant="contained"
                     onClick={() => handleBarcodeScan(barcodeInput)}
@@ -863,16 +1288,16 @@ Thank you for your business!
                   </Button>
                   <Button
                     variant="outlined"
-                    onClick={() => setShowBarcodeScanner(true)}
+                    onClick={() => setShowPhysicalScanner(true)}
                 sx={{ 
                   fontFamily: 'monospace', 
                   minWidth: 120,
                   height: 56
                 }}
-                  >
-                    <ScannerIcon sx={{ mr: 1 }} />
-                    SCAN
-                  </Button>
+              >
+                <ScannerIcon sx={{ mr: 1 }} />
+                SCAN
+              </Button>
                 </Box>
           </Paper>
 
@@ -929,9 +1354,9 @@ Thank you for your business!
           </Paper>
 
 
-          <Box sx={{ display: 'flex', gap: 2, flex: 1, minHeight: 0, position: 'relative', zIndex: 1 }}>
+          <Box sx={{ display: 'flex', gap: 2, flex: 1, minHeight: '600px', position: 'relative', zIndex: 1 }}>
           {/* Left Panel - Product Input */}
-          <Paper sx={{ p: 2, width: '25%', display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1 }}>
+          <Paper sx={{ p: 2, width: '35%', display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1, minHeight: '600px' }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
               <Typography variant="h6" gutterBottom sx={{ fontFamily: 'monospace' }}>
                 PRODUCT SEARCH
@@ -956,10 +1381,200 @@ Thank you for your business!
                 fullWidth
                 label="Customer Name (Optional)"
                 value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                sx={{ mb: 2, fontFamily: 'monospace' }}
-                placeholder="Enter customer name..."
+                onChange={(e) => {
+                  const value = e.target.value
+                  setCustomerName(value)
+                  searchCustomers(value, salesData)
+                }}
               />
+
+              {/* Customer Search Results */}
+              {showCustomerSearch && customerSearchResults.length > 0 && (
+                <Paper sx={{ mb: 2, maxHeight: 200, overflow: 'auto' }}>
+                  <Typography variant="subtitle2" sx={{ p: 1, fontFamily: 'monospace', bgcolor: 'primary.light', color: 'primary.contrastText' }}>
+                    Found Customers:
+                  </Typography>
+                  {customerSearchResults.map((customer, index) => (
+                    <Box
+                      key={index}
+                      sx={{
+                        p: 1,
+                        borderBottom: '1px solid',
+                        borderColor: 'divider',
+                        cursor: 'pointer',
+                        '&:hover': { bgcolor: 'action.hover' }
+                      }}
+                      onClick={() => selectCustomer(customer)}
+                    >
+                      <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 'bold' }}>
+                        {customer.name}
+                      </Typography>
+                      <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
+                        Phone: {customer.phone || 'N/A'} | Sales: {customer.totalSales} | Last: {new Date(customer.lastSale).toLocaleDateString()}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Paper>
+              )}
+
+              {/* Customer Phone Field */}
+              <TextField
+                fullWidth
+                label="Customer Phone (Optional)"
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+                sx={{ mb: 2, fontFamily: 'monospace' }}
+                placeholder="Enter customer phone number..."
+                type="tel"
+              />
+
+              {/* Outstanding Payments Display */}
+              {customerPhone && customerPhone.trim().length >= 3 && (
+                <Card sx={{ mb: 2, border: '1px solid', borderColor: 'warning.main' }}>
+                  <CardContent sx={{ p: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                      <OutstandingIcon sx={{ mr: 1, color: 'warning.main' }} />
+                      <Typography variant="subtitle2" sx={{ fontWeight: 'bold', color: 'warning.main' }}>
+                        Outstanding Payments
+                      </Typography>
+                      {isSearchingOutstanding && (
+                        <CircularProgress size={16} sx={{ ml: 1 }} />
+                      )}
+                    </Box>
+                    
+                    {outstandingPayments.length > 0 ? (
+                      <List dense>
+                        {outstandingPayments.map((payment) => (
+                          <ListItem key={payment.id} sx={{ px: 0 }}>
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  checked={selectedOutstandingPayments.includes(payment.id)}
+                                  onChange={() => handleOutstandingPaymentToggle(payment.id)}
+                                  size="small"
+                                />
+                              }
+                              label={
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <Typography variant="body2">
+                                    Invoice: {payment.invoice_no}
+                                  </Typography>
+                                  <Chip 
+                                    label={`$${parseFloat(payment.credit_amount).toFixed(2)}`}
+                                    size="small"
+                                    color="warning"
+                                    variant="outlined"
+                                  />
+                                  <Typography variant="caption" color="text.secondary">
+                                    {new Date(payment.created_at).toLocaleDateString()}
+                                  </Typography>
+                                </Box>
+                              }
+                            />
+                          </ListItem>
+                        ))}
+                      </List>
+                    ) : !isSearchingOutstanding ? (
+                      <Typography variant="body2" color="text.secondary">
+                        No outstanding payments found for this phone number.
+                      </Typography>
+                    ) : null}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Payment Method Selector */}
+              <TextField
+                fullWidth
+                select
+                label="Payment Method"
+                value={paymentMethod}
+                onChange={(e) => setPaymentMethod(e.target.value)}
+                sx={{ mb: 2, fontFamily: 'monospace' }}
+              >
+                <MenuItem value="CASH">Cash</MenuItem>
+                <MenuItem value="CARD">Card</MenuItem>
+                <MenuItem value="BANK_TRANSFER">Bank Transfer</MenuItem>
+                <MenuItem value="MOBILE_PAYMENT">Mobile Payment</MenuItem>
+              </TextField>
+
+              {/* Partial Payment Option */}
+              <Box sx={{ mb: 2, p: 2, bgcolor: alpha(theme.palette.primary.main, 0.1), borderRadius: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 2, fontFamily: 'monospace', fontWeight: 'bold', color: 'primary.main' }}>
+                  Payment Type Selection
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    variant={!isPartialPayment ? 'contained' : 'outlined'}
+                    size="small"
+                    onClick={() => {
+                      setIsPartialPayment(false)
+                      setPaymentAmount('')
+                      setCreditAmount('')
+                    }}
+                    sx={{ fontFamily: 'monospace', flex: 1 }}
+                  >
+                    Full Payment
+                  </Button>
+                  <Button
+                    variant={isPartialPayment ? 'contained' : 'outlined'}
+                    size="small"
+                    onClick={() => {
+                      setIsPartialPayment(true)
+                    }}
+                    sx={{ fontFamily: 'monospace', flex: 1 }}
+                  >
+                    Partial Payment
+                  </Button>
+                </Box>
+              </Box>
+
+              {/* Partial Payment Fields */}
+              <Box sx={{ mb: 2, p: 3, bgcolor: alpha(theme.palette.warning.main, 0.15), borderRadius: 2, border: '2px solid', borderColor: 'warning.main' }}>
+             
+                
+                {isPartialPayment ? (
+                  <>
+                    <TextField
+                      fullWidth
+                      label="Payment Amount (Paid Now)"
+                      value={paymentAmount}
+                      onChange={(e) => {
+                        const amount = parseFloat(e.target.value) || 0
+                        setPaymentAmount(e.target.value)
+                        setCreditAmount((total - amount).toFixed(2))
+                      }}
+                      sx={{ mb: 2, fontFamily: 'monospace' }}
+                      placeholder="Enter amount paid now"
+                      type="number"
+                      inputProps={{ min: 0, max: total, step: 0.01 }}
+                      color="warning"
+                    />
+                    
+                    <TextField
+                      fullWidth
+                      label="Credit Amount (Remaining)"
+                      value={creditAmount}
+                      onChange={(e) => {
+                        const amount = parseFloat(e.target.value) || 0
+                        setCreditAmount(e.target.value)
+                        setPaymentAmount((total - amount).toFixed(2))
+                      }}
+                      sx={{ mb: 2, fontFamily: 'monospace' }}
+                      placeholder="Amount to be paid later"
+                      type="number"
+                      inputProps={{ min: 0, max: total, step: 0.01 }}
+                      color="warning"
+                    />
+                    
+                    <Box sx={{ p: 2, bgcolor: alpha(theme.palette.info.main, 0.1), borderRadius: 1 }}>
+                      <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'info.main', fontWeight: 'bold' }}>
+                        💰 Total: ${total.toFixed(2)} | 💵 Paid: ${(parseFloat(paymentAmount) || 0).toFixed(2)} | 📝 Credit: ${(parseFloat(creditAmount) || 0).toFixed(2)}
+                      </Typography>
+                    </Box>
+                  </>
+                ) : null}
+              </Box>
 
               {/* Current Tab Info */}
               {currentTab && (
@@ -1018,7 +1633,7 @@ Thank you for your business!
             </Paper>
 
             {/* Right Panel - Cart and Totals */}
-            <Paper sx={{ p: 2, width: '75%', display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1 }}>
+            <Paper sx={{ p: 2, width: '65%', display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1, minHeight: '600px' }}>
               <Typography variant="h6" gutterBottom sx={{ fontFamily: 'monospace' }}>
                 SHOPPING CART - {currentTab?.name || 'No Tab'}
               </Typography>
@@ -1137,6 +1752,16 @@ Thank you for your business!
                 </Box>
                   <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>${tax.toFixed(2)}</Typography>
                 </Box>
+                {outstandingTotal > 0 && (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'warning.main' }}>
+                      Outstanding Payments:
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'warning.main' }}>
+                      ${outstandingTotal.toFixed(2)}
+                    </Typography>
+                  </Box>
+                )}
                 <Divider sx={{ my: 0.5 }} />
                 <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Typography variant="subtitle1" sx={{ fontFamily: 'monospace', fontWeight: 'bold' }}>
@@ -1149,24 +1774,23 @@ Thank you for your business!
               </Box>
 
               {/* Action Buttons */}
-              <Box sx={{ display: 'flex', gap: 2, mt: 1 }}>
+              <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
                 <Button
-                  fullWidth
-                  variant="contained"
+                  variant="outlined"
                   color="success"
                   startIcon={<PrintIcon />}
                   onClick={printReceipt}
-                  disabled={currentCart.length === 0}
-                  sx={{ fontFamily: 'monospace', py: 1.5 }}
+                  disabled={currentCart.length === 0 || total <= 0}
+                  sx={{ fontFamily: 'monospace', py: 1.5, flex: 1 }}
                 >
-                  PRINT RECEIPT
+                  SALE & PRINT
                 </Button>
                 <Button
                   variant="outlined"
                   startIcon={<PrintIcon />}
                   onClick={() => setShowPrinterDialog(true)}
                   disabled={currentCart.length === 0}
-                  sx={{ fontFamily: 'monospace', py: 1.5, minWidth: 120 }}
+                  sx={{ fontFamily: 'monospace', py: 1.5, minWidth: 100 }}
                 >
                   PRINT
                 </Button>
@@ -1175,14 +1799,15 @@ Thank you for your business!
           </Box>
 
 
-          {/* Barcode Scanner Modal */}
-          <BarcodeScanner
-            open={showBarcodeScanner}
+          {/* Physical Scanner Modal */}
+          <PhysicalScanner
+            open={showPhysicalScanner}
             onScan={(barcode) => {
               handleBarcodeScan(barcode)
-              setShowBarcodeScanner(false)
+              setShowPhysicalScanner(false)
             }}
-            onClose={() => setShowBarcodeScanner(false)}
+            onClose={() => setShowPhysicalScanner(false)}
+            inventoryItems={inventoryItems}
           />
 
           {/* Printer Selection Dialog */}
@@ -1236,9 +1861,16 @@ Thank you for your business!
                   const billData = {
                     cart: currentCart,
                     customerName: currentTab?.customerName || '',
+                    customerPhone: currentTab?.customerPhone || '',
                     subtotal: subtotal,
                     tax: tax,
-                    total: total
+                    total: total,
+                    paymentMethod: paymentMethod,
+                    paymentAmount: isPartialPayment ? parseFloat(paymentAmount) || 0 : total,
+                    creditAmount: isPartialPayment ? parseFloat(creditAmount) || 0 : 0,
+                    paymentStatus: isPartialPayment ? 'PARTIAL' : 'COMPLETED',
+                    change: isPartialPayment ? 0 : (parseFloat(paymentAmount) || total) - total,
+                    notes: isPartialPayment ? `Partial Payment - Credit Amount: $${(parseFloat(creditAmount) || 0).toFixed(2)}` : ''
                   }
                   await printBill(billData)
                   setShowPrinterDialog(false)
@@ -1321,6 +1953,7 @@ Thank you for your business!
               setShowPrintDialog(false)
               setPrintData(null)
               setCustomerName('')
+              setCustomerPhone('')
               
               // Clear current tab cart
               if (currentTab) {

@@ -306,6 +306,25 @@ class Branch {
     
     return rows.map(row => new Branch(row));
   }
+
+  // Static method to get branch settings
+  static async getSettings(branchId) {
+    const [rows] = await pool.execute(
+      'SELECT settings FROM branches WHERE id = ?',
+      [branchId]
+    );
+    
+    if (rows.length === 0) return null;
+    
+    const settings = rows[0].settings;
+    if (!settings) return {};
+    
+    try {
+      return typeof settings === 'string' ? JSON.parse(settings) : settings;
+    } catch (error) {
+      return {};
+    }
+  }
 }
 
 module.exports = Branch;

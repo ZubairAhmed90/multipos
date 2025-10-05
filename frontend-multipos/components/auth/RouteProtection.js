@@ -24,12 +24,6 @@ const RouteProtection = ({ children }) => {
   }, [isLoading])
 
   useEffect(() => {
-      pathname,
-      isLoading,
-      isAuthenticated,
-      hasUser: !!user,
-      timeoutReached
-    })
 
     // Skip protection for login/register pages
     if (pathname === '/login' || pathname === '/register') {
@@ -49,19 +43,16 @@ const RouteProtection = ({ children }) => {
 
     // If authenticated but no user data, wait a bit more
     if (isAuthenticated && !user) {
-('RouteProtection: Authenticated but no user data, waiting...')
       return
     }
 
     // If we're on dashboard and have user data, allow access
     if (pathname === '/dashboard' && user) {
-('RouteProtection: On dashboard with user data, allowing access')
       return
     }
 
     // Check if user has access to current path
     if (user?.role && !isPathAccessibleForRole(pathname, user.role)) {
-('RouteProtection: User has no access to path, redirecting to dashboard')
       // Only redirect if not already on dashboard to prevent infinite loops
       if (pathname !== '/dashboard') {
         router.replace('/dashboard')
@@ -69,8 +60,7 @@ const RouteProtection = ({ children }) => {
       return
     }
 
-('RouteProtection: All checks passed, allowing access')
-  }, [pathname, user?.role, isAuthenticated, isLoading, user, timeoutReached])
+  }, [pathname, user?.role, isAuthenticated, isLoading, user, timeoutReached, router])
 
   // Show timeout error if loading takes too long
   if (timeoutReached && isLoading) {
@@ -134,7 +124,6 @@ const RouteProtection = ({ children }) => {
 
   // Check if user has access to current path (only show if user data is loaded)
   if (user?.role && !isPathAccessibleForRole(pathname, user.role)) {
-('RouteProtection: User has no access to path, redirecting to dashboard')
     // Show loading while redirecting instead of access denied screen
     return (
       <Box sx={{ 
@@ -158,7 +147,6 @@ const RouteProtection = ({ children }) => {
     )
   }
 
-('RouteProtection: Rendering children for path:', pathname)
   return children
 }
 

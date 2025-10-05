@@ -244,7 +244,6 @@ export default function DashboardPage() {
           const result = await response.json()
           setDashboardData(result.data)
         } else {
-          console.error('Failed to fetch dashboard data')
           // Fallback to default values
           setDashboardData({
             totalSales: 0,
@@ -258,7 +257,6 @@ export default function DashboardPage() {
           })
         }
       } catch (error) {
-        console.error('Error loading dashboard data:', error)
         // Set default values on error
         setDashboardData({
           totalSales: 0,

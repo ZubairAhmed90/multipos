@@ -17,9 +17,16 @@ export const fetchSales = createAsyncThunk(
 export const createSale = createAsyncThunk(
   'sales/createSale',
   async (saleData, { rejectWithValue }) => {
+    
     try {
       const response = await api.post('/sales', saleData)
-      return response.data
+      
+      
+      if (response.data.success) {
+        return response.data
+      } else {
+        return rejectWithValue(response.data.message || 'Failed to create sale')
+      }
     } catch (error) {
       return rejectWithValue(error.message || 'Failed to create sale')
     }

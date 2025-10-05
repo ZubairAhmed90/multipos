@@ -275,7 +275,6 @@ const deleteShift = async (req, res, next) => {
       message: 'Shift deleted successfully'
     });
   } catch (error) {
-    console.error('Delete shift error:', error);
     res.status(500).json({
       success: false,
       message: 'Error deleting shift',
@@ -344,7 +343,6 @@ const startShift = async (req, res, next) => {
       data: newSession
     });
   } catch (error) {
-    console.error('Start shift session error:', error);
     res.status(500).json({
       success: false,
       message: 'Error starting shift session',
@@ -405,7 +403,6 @@ const endShift = async (req, res, next) => {
       data: updatedSession
     });
   } catch (error) {
-    console.error('End shift session error:', error);
     res.status(500).json({
       success: false,
       message: 'Error ending shift session',
@@ -441,7 +438,6 @@ const getRecentShiftSessions = async (req, res, next) => {
       data: sessions
     });
   } catch (error) {
-    console.error('Get recent shift sessions error:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching recent shift sessions'
@@ -499,7 +495,6 @@ const getShiftStats = async (req, res, next) => {
       }
     });
   } catch (error) {
-    console.error('Get shift stats error:', error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving shift statistics',
@@ -582,7 +577,6 @@ const getCurrentShift = async (req, res, next) => {
       data: shifts[0]
     });
   } catch (error) {
-    console.error('Get current shift error:', error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving current shift',
@@ -620,7 +614,6 @@ const validatePOSAccess = async (req, res, next) => {
       shift: activeShiftSessions[0]
     });
   } catch (error) {
-    console.error('Validate POS access error:', error);
     res.status(500).json({
       success: false,
       message: 'Error validating POS access',
@@ -654,7 +647,6 @@ const getActiveShift = async (req, res, next) => {
       data: shifts[0]
     });
   } catch (error) {
-    console.error('Get active shift error:', error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving active shift',
@@ -697,7 +689,6 @@ const assignUserToShift = async (req, res, next) => {
       data: { shiftId: id, userId, assignedBy }
     });
   } catch (error) {
-    console.error('Assign user to shift error:', error);
     res.status(500).json({
       success: false,
       message: 'Error assigning user to shift',
@@ -730,7 +721,6 @@ const removeUserFromShift = async (req, res, next) => {
       data: { shiftId: id, userId }
     });
   } catch (error) {
-    console.error('Remove user from shift error:', error);
     res.status(500).json({
       success: false,
       message: 'Error removing user from shift',

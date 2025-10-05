@@ -14,9 +14,58 @@ import {
 } from '@mui/material'
 
 const schema = yup.object({
-  name: yup.string().required('Name is required'),
-  email: yup.string().email('Invalid email').required('Email is required'),
-  phone: yup.string().required('Phone is required'),
+  name: yup.string()
+    .trim()
+    .min(2, 'Name must be between 2 and 100 characters')
+    .max(100, 'Name must be between 2 and 100 characters')
+    .required('Name is required'),
+  email: yup.string()
+    .email('Please provide a valid email address')
+    .required('Email is required'),
+  phone: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('phone-format', 'Please provide a valid phone number', function(value) {
+      if (!value) return true // Allow empty/null values
+      return /^[\+]?[1-9][\d]{0,15}$/.test(value.replace(/\s/g, ''))
+    }),
+  address: yup.string()
+    .trim()
+    .max(200, 'Address must not exceed 200 characters')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  city: yup.string()
+    .trim()
+    .max(50, 'City must not exceed 50 characters')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  state: yup.string()
+    .trim()
+    .max(50, 'State must not exceed 50 characters')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  zipCode: yup.string()
+    .trim()
+    .max(10, 'ZIP code must not exceed 10 characters')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  customerType: yup.string()
+    .oneOf(['INDIVIDUAL', 'BUSINESS', 'RETAILER', 'WHOLESALER'], 'Customer type must be INDIVIDUAL, BUSINESS, RETAILER, or WHOLESALER')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  creditLimit: yup.number()
+    .min(0, 'Credit limit must be a positive number')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  paymentTerms: yup.string()
+    .oneOf(['CASH', 'NET_15', 'NET_30', 'NET_60'], 'Payment terms must be CASH, NET_15, NET_30, or NET_60')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  notes: yup.string()
+    .trim()
+    .max(500, 'Notes must not exceed 500 characters')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
 })
 
 export default function CustomerForm() {

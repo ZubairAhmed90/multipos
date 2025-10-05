@@ -219,7 +219,6 @@ const updatePOS = async (req, res, next) => {
       data: updatedPOS
     });
   } catch (error) {
-    console.error('Update POS error:', error);
     res.status(500).json({
       success: false,
       message: 'Error updating POS terminal',
@@ -271,7 +270,6 @@ const deletePOS = async (req, res, next) => {
       message: 'POS terminal deleted successfully'
     });
   } catch (error) {
-    console.error('Delete POS error:', error);
     res.status(500).json({
       success: false,
       message: 'Error deleting POS terminal',
@@ -323,7 +321,6 @@ const getPOSStatus = async (req, res, next) => {
       }
     });
   } catch (error) {
-    console.error('Get POS status error:', error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving POS status',
@@ -364,7 +361,6 @@ const updatePOSStatus = async (req, res, next) => {
       data: updatedPOS
     });
   } catch (error) {
-    console.error('Update POS status error:', error);
     res.status(500).json({
       success: false,
       message: 'Error updating POS status',
@@ -426,7 +422,6 @@ const getPOSSales = async (req, res, next) => {
       data: sales
     });
   } catch (error) {
-    console.error('Get POS sales error:', error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving POS sales',
@@ -477,7 +472,6 @@ const getPOSInventory = async (req, res, next) => {
       data: inventoryItems
     });
   } catch (error) {
-    console.error('Get POS inventory error:', error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving POS inventory',

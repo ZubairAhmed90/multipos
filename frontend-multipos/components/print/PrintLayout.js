@@ -1,6 +1,7 @@
 'use client'
 
 import React from 'react'
+import Image from 'next/image'
 import './PrintLayout.css'
 
 const PrintLayout = ({ 
@@ -75,12 +76,12 @@ const PrintLayout = ({
       }}>
         <div style={{ marginBottom: layout === 'thermal' ? '4px' : '8px' }}>
           {!logoError ? (
-            <img 
+            <Image 
               src="/petzonelogo.png" 
               alt="PetZone" 
+              width={layout === 'thermal' ? 100 : 150}
+              height={layout === 'thermal' ? 70 : 105}
               style={{ 
-                maxWidth: layout === 'thermal' ? '100px' : '150px', 
-                height: 'auto',
                 filter: layout === 'thermal' ? 'grayscale(100%)' : 'none',
                 display: 'block',
                 margin: '0 auto',

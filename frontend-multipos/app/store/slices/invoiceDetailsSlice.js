@@ -11,7 +11,6 @@ export const fetchInvoiceDetails = createAsyncThunk(
 ('🔍 Invoice Details: API Response:', response.data)
       return response.data
     } catch (error) {
-      console.error('🔍 Invoice Details: API Error:', error.response?.data || error.message)
       return rejectWithValue(error.response?.data?.message || error.message || 'Failed to fetch invoice details')
     }
   }
@@ -27,7 +26,6 @@ export const updateInvoice = createAsyncThunk(
 ('🔍 Invoice Update: API Response:', response.data)
       return response.data
     } catch (error) {
-      console.error('🔍 Invoice Update: API Error:', error.response?.data || error.message)
       return rejectWithValue(error.response?.data?.message || error.message || 'Failed to update invoice')
     }
   }

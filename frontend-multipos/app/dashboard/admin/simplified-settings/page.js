@@ -67,6 +67,7 @@ const SimplifiedBranchSettings = ({ branches, onBranchesChange }) => {
       return {
         allowCashierInventoryEdit: false,
         allowCashierSalesEdit: false,
+        allowCashierSalesDelete: false,
         allowCashierReturns: false,
         allowCashierCustomers: false,
         allowCashierPOS: false,
@@ -132,7 +133,12 @@ const SimplifiedBranchSettings = ({ branches, onBranchesChange }) => {
     {
       key: 'allowCashierSalesEdit',
       label: 'Allow Cashier Sales Edit',
-      description: 'Cashiers can add/edit/delete sales (if off: view only)'
+      description: 'Cashiers can add/edit sales (if off: view only)'
+    },
+    {
+      key: 'allowCashierSalesDelete',
+      label: 'Allow Cashier Sales Delete',
+      description: 'Cashiers can delete sales (requires sales edit permission)'
     },
     {
       key: 'allowCashierReturns',

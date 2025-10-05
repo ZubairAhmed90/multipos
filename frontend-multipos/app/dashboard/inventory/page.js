@@ -17,21 +17,64 @@ import { fetchInventory, createInventoryItem, updateInventoryItem, deleteInvento
 import { fetchBranchSettings } from '../../store/slices/branchesSlice'
 import { fetchWarehouseSettings, fetchWarehouses } from '../../store/slices/warehousesSlice'
 
-// Validation schema
+// Validation schema - matches backend validation exactly
 const inventorySchema = yup.object({
-  name: yup.string().required('Product name is required'),
-  sku: yup.string().required('SKU is required'),
-  barcode: yup.string(),
-  description: yup.string(),
-  category: yup.string().required('Category is required'),
-  unit: yup.string(),
-  costPrice: yup.number().required('Cost price is required').min(0, 'Cost price must be positive'),
-  sellingPrice: yup.number().required('Selling price is required').min(0, 'Selling price must be positive'),
-  currentStock: yup.number().required('Current stock is required').min(0, 'Stock cannot be negative'),
-  minStockLevel: yup.number().required('Minimum stock level is required').min(0, 'Minimum stock cannot be negative'),
-  maxStockLevel: yup.number().min(0, 'Maximum stock cannot be negative'),
-  scopeType: yup.string().required('Scope type is required'),
-  scopeId: yup.number().required('Scope ID is required'),
+  name: yup.string()
+    .trim()
+    .min(1, 'Item name must be between 1 and 200 characters')
+    .max(200, 'Item name must be between 1 and 200 characters')
+    .required('Item name is required'),
+  sku: yup.string()
+    .trim()
+    .min(1, 'SKU must be between 1 and 20 characters')
+    .max(20, 'SKU must be between 1 and 20 characters')
+    .matches(/^[A-Za-z0-9-]+$/, 'SKU can only contain letters, numbers, and hyphens')
+    .required('SKU is required'),
+  barcode: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('barcode-length', 'Barcode must be between 1 and 50 characters', function(value) {
+      if (!value) return true // Allow empty/null values
+      return value.length >= 1 && value.length <= 50
+    }),
+  description: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  category: yup.string()
+    .trim()
+    .min(1, 'Category must be between 1 and 100 characters')
+    .max(100, 'Category must be between 1 and 100 characters')
+    .required('Category is required'),
+  unit: yup.string()
+    .trim()
+    .min(1, 'Unit must be between 1 and 20 characters')
+    .max(20, 'Unit must be between 1 and 20 characters')
+    .required('Unit is required'),
+  costPrice: yup.number()
+    .min(0, 'Cost price must be a positive number')
+    .required('Cost price is required'),
+  sellingPrice: yup.number()
+    .min(0, 'Selling price must be a positive number')
+    .required('Selling price is required'),
+  currentStock: yup.number()
+    .integer('Current stock must be a non-negative integer')
+    .min(0, 'Current stock must be a non-negative integer')
+    .required('Current stock is required'),
+  minStockLevel: yup.number()
+    .integer('Minimum stock level must be a non-negative integer')
+    .min(0, 'Minimum stock level must be a non-negative integer')
+    .required('Minimum stock level is required'),
+  maxStockLevel: yup.number()
+    .integer('Maximum stock level must be a non-negative integer')
+    .min(0, 'Maximum stock level must be a non-negative integer')
+    .required('Maximum stock level is required'),
+  scopeType: yup.string()
+    .oneOf(['BRANCH', 'WAREHOUSE'], 'Scope type must be BRANCH or WAREHOUSE')
+    .required('Scope type is required'),
+  scopeId: yup.number()
+    .integer('Scope ID must be a valid positive integer')
+    .min(1, 'Scope ID must be a valid positive integer')
+    .required('Scope ID is required'),
 })
 
 // Table columns configuration

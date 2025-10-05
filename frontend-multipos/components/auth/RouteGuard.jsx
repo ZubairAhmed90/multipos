@@ -48,7 +48,7 @@ const RouteGuard = ({
     if (loadBranchSettings && isAuthenticated && user?.branchId && !branchSettings && user?.role !== 'CASHIER') {
       dispatch(fetchBranchSettings(user.branchId))
     }
-  }, [isAuthenticated, isLoading, requireAuth, loadBranchSettings, user?.branchId, branchSettings, dispatch, router])
+  }, [isAuthenticated, isLoading, requireAuth, loadBranchSettings, user?.branchId, user?.role, branchSettings, dispatch, router])
 
   // Show loading spinner while checking authentication
   if (requireAuth && isLoading) {

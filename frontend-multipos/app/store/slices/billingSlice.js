@@ -30,11 +30,6 @@ export const createBillingRecord = createAsyncThunk(
       const response = await api.post('/billing', billingData)
       return response.data
     } catch (error) {
-      console.error('Redux: Create error:', error);
-      console.error('Redux: Error response:', error.response?.data);
-      console.error('Redux: Error status:', error.response?.status);
-      console.error('Redux: Error statusText:', error.response?.statusText);
-      console.error('Redux: Error config:', error.config);
       
       // Handle specific error cases
       if (error.response?.status === 500) {
@@ -60,11 +55,6 @@ export const updateBillingRecord = createAsyncThunk(
       const response = await api.put(`/billing/${id}`, data)
       return response.data
     } catch (error) {
-      console.error('Redux: Update error:', error);
-      console.error('Redux: Error response:', error.response?.data);
-      console.error('Redux: Error status:', error.response?.status);
-      console.error('Redux: Error statusText:', error.response?.statusText);
-      console.error('Redux: Error config:', error.config);
       
       // Handle specific error cases
       if (error.response?.status === 500) {

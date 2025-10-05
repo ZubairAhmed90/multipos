@@ -167,6 +167,14 @@ export const menuConfig = [
         roles: ['ADMIN', 'CASHIER'],
         order: 4,
       },
+      {
+        id: 'sales-ledger',
+        label: 'Sales Ledger Management',
+        icon: <AccountBalance />,
+        path: '/dashboard/sales/ledger',
+        roles: ['ADMIN', 'CASHIER'],
+        order: 5,
+      },
     ],
   },
 

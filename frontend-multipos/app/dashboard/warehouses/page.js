@@ -11,15 +11,48 @@ import ConfirmationDialog from '../../../components/crud/ConfirmationDialog'
 import useEntityCRUD from '../../../hooks/useEntityCRUD'
 import { fetchWarehouses, createWarehouse, updateWarehouse, deleteWarehouse } from '../../store/slices/warehousesSlice'
 
-// Validation schema
+// Validation schema - matches backend validation exactly
 const warehouseSchema = yup.object({
-  name: yup.string().required('Warehouse name is required'),
-  code: yup.string().required('Warehouse code is required'),
-  location: yup.string().required('Location is required'),
-  capacity: yup.number().required('Capacity is required').min(1, 'Capacity must be greater than 0'),
-  stock: yup.number().required('Stock is required').min(0, 'Stock must be 0 or greater'),
-  manager: yup.string().required('Manager name is required'),
-  status: yup.string().required('Status is required')
+  name: yup.string()
+    .trim()
+    .min(1, 'Warehouse name must be between 1 and 100 characters')
+    .max(100, 'Warehouse name must be between 1 and 100 characters')
+    .required('Warehouse name is required'),
+  code: yup.string()
+    .trim()
+    .min(1, 'Warehouse code must be between 1 and 10 characters')
+    .max(10, 'Warehouse code must be between 1 and 10 characters')
+    .matches(/^[A-Z0-9]+$/, 'Warehouse code can only contain uppercase letters and numbers')
+    .required('Warehouse code is required'),
+  location: yup.string()
+    .trim()
+    .min(1, 'Location must be between 1 and 200 characters')
+    .max(200, 'Location must be between 1 and 200 characters')
+    .required('Location is required'),
+  capacity: yup.number()
+    .integer('Capacity must be a positive integer')
+    .min(1, 'Capacity must be a positive integer')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  stock: yup.number()
+    .integer('Stock must be a non-negative integer')
+    .min(0, 'Stock must be a non-negative integer')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  manager: yup.string()
+    .trim()
+    .max(100, 'Manager name must not exceed 100 characters')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  status: yup.string()
+    .oneOf(['active', 'inactive', 'maintenance'], 'Status must be active, inactive, or maintenance')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  linkedBranchId: yup.number()
+    .integer('Linked branch ID must be a valid integer')
+    .min(1, 'Linked branch ID must be a valid integer')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
 })
 
 // Table columns configuration

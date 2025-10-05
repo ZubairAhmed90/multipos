@@ -151,7 +151,6 @@ export const memoryManagement = {
       try {
         cleanupFn()
       } catch (error) {
-        console.error('Cleanup error:', error)
       }
     })
     memoryManagement.cleanupRegistry.clear()

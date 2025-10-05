@@ -237,7 +237,6 @@ function BillingPage() {
         alert('Failed to create billing record: ' + result.payload)
       }
     } catch (error) {
-      console.error('Frontend: Create error:', error);
       alert('Error creating billing record: ' + error.message)
     }
   }
@@ -319,7 +318,6 @@ function BillingPage() {
         alert('Failed to update billing record: ' + result.payload)
       }
     } catch (error) {
-      console.error('Frontend: Update error:', error);
       alert('Error updating billing record: ' + error.message)
     }
   }

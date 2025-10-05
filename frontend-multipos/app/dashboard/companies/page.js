@@ -26,17 +26,57 @@ import useEntityCRUD from '../../../hooks/useEntityCRUD'
 import { fetchCompanies, createCompany, updateCompany, deleteCompany } from '../../store/slices/companiesSlice'
 import { fetchWarehouseSettings } from '../../store/slices/warehousesSlice'
 
-// Validation schema
+// Validation schema - matches backend validation exactly
 const companySchema = yup.object({
-  name: yup.string().required('Company name is required'),
-  code: yup.string().required('Company code is required'),
-  contactPerson: yup.string().required('Contact person is required'),
-  phone: yup.string().optional(),
-  email: yup.string().email('Invalid email').optional(),
-  address: yup.string().required('Address is required'),
-  transactionType: yup.string().required('Transaction type is required'),
-  scopeType: yup.string().required('Scope type is required'),
-  scopeId: yup.number().required('Scope ID is required'),
+  name: yup.string()
+    .trim()
+    .min(1, 'Company name must be between 1 and 200 characters')
+    .max(200, 'Company name must be between 1 and 200 characters')
+    .required('Company name is required'),
+  code: yup.string()
+    .trim()
+    .min(1, 'Company code must be between 1 and 20 characters')
+    .max(20, 'Company code must be between 1 and 20 characters')
+    .required('Company code is required'),
+  contactPerson: yup.string()
+    .trim()
+    .min(1, 'Contact person must be between 1 and 200 characters')
+    .max(200, 'Contact person must be between 1 and 200 characters')
+    .required('Contact person is required'),
+  phone: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('phone-length', 'Phone must not exceed 20 characters', function(value) {
+      if (!value) return true // Allow empty/null values
+      return value.length <= 20
+    }),
+  email: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('email-format', 'Email must be a valid email address', function(value) {
+      if (!value) return true // Allow empty/null values
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+    }),
+  address: yup.string()
+    .trim()
+    .min(1, 'Address must be between 1 and 500 characters')
+    .max(500, 'Address must be between 1 and 500 characters')
+    .required('Address is required'),
+  status: yup.string()
+    .oneOf(['active', 'inactive', 'suspended'], 'Status must be active, inactive, or suspended')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  transactionType: yup.string()
+    .oneOf(['CASH', 'CREDIT', 'CARD', 'DIGITAL'], 'Transaction type must be CASH, CREDIT, CARD, or DIGITAL')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  scopeType: yup.string()
+    .oneOf(['BRANCH', 'WAREHOUSE', 'COMPANY'], 'Scope type must be BRANCH, WAREHOUSE, or COMPANY')
+    .required('Scope type is required'),
+  scopeId: yup.number()
+    .integer('Scope ID must be a valid positive integer')
+    .min(1, 'Scope ID must be a valid positive integer')
+    .required('Scope ID is required'),
 })
 
 // Table columns configuration
@@ -211,7 +251,7 @@ function CompaniesPage() {
 
 
   // Handle CRUD operations
-  const handleCreate = (data) => {
+  const handleCreate = useCallback((data) => {
     // Add default values for warehouse keepers
     const companyData = {
       ...data,
@@ -222,11 +262,11 @@ function CompaniesPage() {
     }
     
     dispatch(createCompany(companyData))
-  }
+  }, [dispatch, user?.role, user?.warehouseId])
 
-  const handleUpdate = (data) => {
+  const handleUpdate = useCallback((data) => {
     dispatch(updateCompany({ id: crud.selectedEntity.id, data }))
-  }
+  }, [dispatch, crud.selectedEntity.id])
 
   const handleDelete = () => {
     dispatch(deleteCompany(crud.selectedEntity.id))

@@ -39,7 +39,6 @@ export const fetchAdminUsers = createAsyncThunk(
       const response = await api.get(`/admin/users?${queryParams.toString()}`)
       return response.data
     } catch (error) {
-      console.error('fetchAdminUsers error:', error)
       return rejectWithValue(error.response?.data?.message || 'Failed to fetch admin users')
     }
   }
@@ -52,11 +51,6 @@ export const createAdminUser = createAsyncThunk(
       const response = await api.post('/admin/users', userData)
       return response.data
     } catch (error) {
-      console.error('createAdminUser error:', error)
-      console.error('Error response:', error.response)
-      console.error('Error response data:', error.response?.data)
-      console.error('Error response status:', error.response?.status)
-      
       // Handle validation errors
       if (error.response?.status === 400) {
         const errorMessage = error.response?.data?.message || 'Validation failed'
@@ -94,7 +88,6 @@ export const deleteAdminUser = createAsyncThunk(
       const response = await api.delete(`/admin/users/${id}`)
       return response.data
     } catch (error) {
-      console.error('deleteAdminUser error:', error)
       return rejectWithValue(error.response?.data?.message || 'Failed to delete admin user')
     }
   }
@@ -122,28 +115,12 @@ const adminUsersSlice = createSlice({
       })
       .addCase(fetchAdminUsers.fulfilled, (state, action) => {
         state.loading = false
-('Processing admin users data:', action.payload)
-('Raw payload type:', typeof action.payload)
-('Raw payload keys:', Object.keys(action.payload))
         
         // Handle different data structures
         let usersData = action.payload.data || action.payload
-('Extracted usersData:', usersData)
-('usersData type:', typeof usersData)
-('usersData is array:', Array.isArray(usersData))
-        
-        if (Array.isArray(usersData)) {
-('usersData length:', usersData.length)
-          if (usersData.length > 0) {
-('First item:', usersData[0])
-('First item keys:', Object.keys(usersData[0]))
-('Has user property:', usersData[0].hasOwnProperty('user'))
-          }
-        }
         
         // Transform the data using helper function
         usersData = transformUsersData(usersData)
-('Final transformed data:', usersData)
         
         state.data = usersData
         state.error = null
@@ -158,10 +135,8 @@ const adminUsersSlice = createSlice({
       })
       .addCase(createAdminUser.fulfilled, (state, action) => {
         state.loading = false
-('createAdminUser.fulfilled - action.payload:', action.payload)
         
         let newUser = action.payload.data || action.payload
-('Raw newUser:', newUser)
         
         // Apply the same data transformation using helper function
         newUser = transformUserData(newUser)

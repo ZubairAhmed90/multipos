@@ -80,7 +80,6 @@ const BarcodeScanner = ({ onScan, onClose, open, inventoryItems = [] }) => {
       }
     } catch (err) {
       setError('Camera access denied or not available. Please use manual entry.')
-      console.error('Camera error:', err)
     }
   }
 
@@ -162,7 +161,6 @@ const BarcodeScanner = ({ onScan, onClose, open, inventoryItems = [] }) => {
         setError('❌ Product not found. Please check the barcode or try manual search.')
       }
     } catch (err) {
-      console.error('Barcode processing error:', err)
       setError('Error processing barcode. Please try again.')
     } finally {
       setLoading(false)

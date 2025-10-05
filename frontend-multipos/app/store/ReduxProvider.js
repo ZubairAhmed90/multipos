@@ -5,7 +5,6 @@ import { store } from './index'
 
 export function ReduxProvider({ children }) {
   if (!store) {
-    console.error('Redux store is not initialized')
     return <div>Loading...</div>
   }
   

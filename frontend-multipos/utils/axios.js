@@ -2,7 +2,7 @@ import axios from 'axios'
 
 // Create axios instance
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api',
+  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api',
   timeout: 30000, // Increased timeout to 30 seconds for better reliability
   headers: {
     'Content-Type': 'application/json',
@@ -51,15 +51,9 @@ api.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`
     }
     
-    // Log request in development
-    if (process.env.NODE_ENV === 'development') {
-      console.log('API Request:', config.method?.toUpperCase(), config.url)
-    }
-    
     return config
   },
   (error) => {
-    console.error('Request Error:', error)
     return Promise.reject(error)
   }
 )
@@ -67,11 +61,6 @@ api.interceptors.request.use(
 // Response interceptor
 api.interceptors.response.use(
   (response) => {
-    // Log response in development
-    if (process.env.NODE_ENV === 'development') {
-      console.log('API Response:', response.status, response.config.url)
-    }
-    
     return response
   },
   async (error) => {
@@ -134,19 +123,16 @@ api.interceptors.response.use(
     
     // Handle timeout errors
     if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
-      console.error('Request timeout - Backend server may be slow or unavailable')
       return Promise.reject(new Error('Request timeout. Please check if the backend server is running.'))
     }
     
     // Handle connection errors (no backend server)
     if (error.code === 'ECONNREFUSED' || error.code === 'ERR_NETWORK' || error.message.includes('ERR_CONNECTION_REFUSED')) {
-      console.error('Backend server not available')
       return Promise.reject(new Error('Backend server is not running. Please start the backend server.'))
     }
     
     // Handle rate limiting (429)
     if (error.response?.status === 429) {
-      console.warn('Rate limited - retrying after delay')
       // Wait and retry once
       await new Promise(resolve => setTimeout(resolve, 1000))
       return api(originalRequest)
@@ -154,26 +140,11 @@ api.interceptors.response.use(
     
     // Handle other errors
     if (error.response?.status === 403) {
-      console.error('Access forbidden')
     }
     
     if (error.response?.status >= 500) {
       try {
-        console.error('Server error:', error.response.data)
-        console.error('Server error details:', {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          url: error.config?.url,
-          method: error.config?.method,
-          data: error.response.data
-        })
       } catch (logError) {
-        console.error('Server error (simplified):', {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          url: error.config?.url,
-          method: error.config?.method
-        })
       }
     }
     
@@ -199,18 +170,10 @@ api.interceptors.response.use(
       // If response data is empty, provide a more helpful error message
       if (!error.response.data || Object.keys(error.response.data).length === 0) {
         const errorMessage = `Server returned empty response (${error.response.status}: ${error.response.statusText})`
-        console.error('Empty response detected:', errorMessage)
         return Promise.reject(new Error(errorMessage))
       }
     } else if (error.request) {
-      console.error('Request Error:', {
-        message: error.message,
-        code: error.code,
-        url: error.config?.url,
-        method: error.config?.method
-      })
     } else {
-      console.error('Error:', error.message)
     }
     
     return Promise.reject(error)
@@ -247,7 +210,6 @@ export const authAPI = {
     try {
       await api.post('/auth/logout')
     } catch (error) {
-      console.error('Logout error:', error)
     } finally {
       // Clear tokens regardless of API response
       localStorage.removeItem('accessToken')
