@@ -232,10 +232,10 @@ const RetailersPage = () => {
 
   const formFields = getFormFields(user)
 
+  // Get retailers data from Redux store
+  const { data: retailers, loading, error } = useSelector((state) => state.retailers || { data: [], loading: false, error: null })
+  
   const {
-    data: retailers,
-    loading,
-    error,
     formDialogOpen: openDialog,
     confirmationDialogOpen: openDeleteDialog,
     selectedEntity: editingEntity,
@@ -373,10 +373,10 @@ const RetailersPage = () => {
     }
     
     const total = retailers.length
-    const active = retailers.filter(r => r.status === 'active').length
-    const inactive = retailers.filter(r => r.status === 'inactive').length
-    const warehouse = retailers.filter(r => r.scopeType === 'WAREHOUSE').length
-    const branch = retailers.filter(r => r.scopeType === 'BRANCH').length
+    const active = retailers.filter(r => r.status === 'ACTIVE' || r.status === 'active').length
+    const inactive = retailers.filter(r => r.status === 'INACTIVE' || r.status === 'inactive').length
+    const warehouse = retailers.filter(r => r.warehouse_id !== null && r.warehouse_id !== undefined).length
+    const branch = retailers.filter(r => r.warehouse_id === null || r.warehouse_id === undefined).length
 
     return { total, active, inactive, warehouse, branch }
   }
@@ -544,7 +544,7 @@ const RetailersPage = () => {
 
         {/* Retailers Table */}
         <EntityTable
-          data={retailers}
+          data={retailers || []}
           columns={columns}
           loading={loading}
           error={error}
@@ -589,8 +589,10 @@ const RetailersPage = () => {
                 // Refresh the retailers list
                 dispatch(fetchRetailers())
               } else if (createRetailer.rejected.match(result)) {
+                console.error('Failed to create retailer:', result.error)
               }
             } catch (error) {
+              console.error('Error creating retailer:', error)
             }
           }}
           loading={loading}
@@ -602,13 +604,22 @@ const RetailersPage = () => {
         {/* Delete Confirmation Dialog */}
         <ConfirmationDialog
           open={openDeleteDialog}
-          onClose={() => {
-            setOpenDeleteDialog(false)
-            setEntityToDelete(null)
+          onClose={handleFormClose}
+          onConfirm={async () => {
+            if (entityToDelete?.id) {
+              try {
+                const result = await dispatch(deleteRetailer(entityToDelete.id))
+                if (deleteRetailer.fulfilled.match(result)) {
+                  handleFormClose()
+                  dispatch(fetchRetailers())
+                }
+              } catch (error) {
+                console.error('Error deleting retailer:', error)
+              }
+            }
           }}
-          onConfirm={handleDelete}
-          title="Delete Company"
-          message={`Are you sure you want to delete company ${entityToDelete?.name}?`}
+          title="Delete Retailer"
+          message={`Are you sure you want to delete retailer ${entityToDelete?.name}?`}
           loading={loading}
         />
 
