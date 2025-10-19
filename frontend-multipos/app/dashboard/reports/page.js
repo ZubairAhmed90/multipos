@@ -96,7 +96,7 @@ const ReportsPage = () => {
             icon: <TrendingUp sx={{ fontSize: 40 }} />,
             color: 'primary.main',
             stats: { 
-              total: `$${(reportsSummary?.totalRevenue || 0).toLocaleString()}`, 
+              total: `${(reportsSummary?.totalRevenue || 0).toLocaleString()}`, 
               growth: `+${reportsSummary?.growthRate || 0}%` 
             }
           },
@@ -107,7 +107,7 @@ const ReportsPage = () => {
             icon: <AccountBalance sx={{ fontSize: 40 }} />,
             color: 'success.main',
             stats: { 
-              total: `$${(reportsSummary?.totalLedgerEntries || 0).toLocaleString()}`, 
+              total: `${(reportsSummary?.totalLedgerEntries || 0).toLocaleString()}`, 
               transactions: `${reportsSummary?.totalTransactions || 0}` 
             }
           },

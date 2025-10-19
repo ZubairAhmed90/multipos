@@ -93,10 +93,36 @@ export const deleteAdminUser = createAsyncThunk(
   }
 )
 
+export const resetUserPassword = createAsyncThunk(
+  'adminUsers/resetUserPassword',
+  async ({ id, newPassword }, { rejectWithValue }) => {
+    try {
+      const response = await api.put(`/admin/users/${id}/reset-password`, { newPassword })
+      return response.data
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to reset user password')
+    }
+  }
+)
+
+export const getUserPassword = createAsyncThunk(
+  'adminUsers/getUserPassword',
+  async (id, { rejectWithValue }) => {
+    try {
+      const response = await api.get(`/admin/users/${id}/password`)
+      return response.data
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to get user password information')
+    }
+  }
+)
+
 const initialState = {
   data: [],
   loading: false,
   error: null,
+  passwordResetResult: null,
+  passwordInfo: null,
 }
 
 const adminUsersSlice = createSlice({
@@ -105,6 +131,12 @@ const adminUsersSlice = createSlice({
   reducers: {
     clearError: (state) => {
       state.error = null
+    },
+    clearPasswordResetResult: (state) => {
+      state.passwordResetResult = null
+    },
+    clearPasswordInfo: (state) => {
+      state.passwordInfo = null
     },
   },
   extraReducers: (builder) => {
@@ -178,8 +210,34 @@ const adminUsersSlice = createSlice({
         state.loading = false
         state.error = action.payload
       })
+      .addCase(resetUserPassword.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(resetUserPassword.fulfilled, (state, action) => {
+        state.loading = false
+        state.passwordResetResult = action.payload
+        state.error = null
+      })
+      .addCase(resetUserPassword.rejected, (state, action) => {
+        state.loading = false
+        state.error = action.payload
+      })
+      .addCase(getUserPassword.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(getUserPassword.fulfilled, (state, action) => {
+        state.loading = false
+        state.passwordInfo = action.payload
+        state.error = null
+      })
+      .addCase(getUserPassword.rejected, (state, action) => {
+        state.loading = false
+        state.error = action.payload
+      })
   },
 })
 
-export const { clearError } = adminUsersSlice.actions
+export const { clearError, clearPasswordResetResult, clearPasswordInfo } = adminUsersSlice.actions
 export default adminUsersSlice.reducer

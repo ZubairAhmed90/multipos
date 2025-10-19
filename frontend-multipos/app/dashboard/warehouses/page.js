@@ -22,23 +22,29 @@ const warehouseSchema = yup.object({
     .trim()
     .min(1, 'Warehouse code must be between 1 and 10 characters')
     .max(10, 'Warehouse code must be between 1 and 10 characters')
-    .matches(/^[A-Z0-9]+$/, 'Warehouse code can only contain uppercase letters and numbers')
+    .matches(/^[A-Z0-9]+/, 'Warehouse code can only contain uppercase letters and numbers')
     .required('Warehouse code is required'),
   location: yup.string()
     .trim()
     .min(1, 'Location must be between 1 and 200 characters')
     .max(200, 'Location must be between 1 and 200 characters')
     .required('Location is required'),
-  capacity: yup.number()
-    .integer('Capacity must be a positive integer')
-    .min(1, 'Capacity must be a positive integer')
+  capacity: yup.mixed()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      const num = Number(value)
+      return isNaN(num) ? null : num
+    })
     .nullable()
-    .transform((value) => value === '' ? null : value),
-  stock: yup.number()
-    .integer('Stock must be a non-negative integer')
-    .min(0, 'Stock must be a non-negative integer')
+    .optional(),
+  stock: yup.mixed()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      const num = Number(value)
+      return isNaN(num) ? null : num
+    })
     .nullable()
-    .transform((value) => value === '' ? null : value),
+    .optional(),
   manager: yup.string()
     .trim()
     .max(100, 'Manager name must not exceed 100 characters')
@@ -106,8 +112,8 @@ const fields = [
   { name: 'name', label: 'Warehouse Name', type: 'text', required: true },
   { name: 'code', label: 'Warehouse Code', type: 'text', required: true },
   { name: 'location', label: 'Location', type: 'text', required: true },
-  { name: 'capacity', label: 'Capacity', type: 'number', required: true },
-  { name: 'stock', label: 'Stock', type: 'number', required: true },
+  { name: 'capacity', label: 'Capacity', type: 'number', required: false },
+  { name: 'stock', label: 'Stock', type: 'number', required: false },
   { name: 'manager', label: 'Manager Name', type: 'text', required: true },
   { 
     name: 'status', 

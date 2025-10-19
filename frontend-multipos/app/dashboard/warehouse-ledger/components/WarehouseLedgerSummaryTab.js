@@ -112,7 +112,7 @@ function WarehouseLedgerSummaryTab({ warehouseId }) {
               {title}
             </Typography>
             <Typography variant="h4" component="div" color={color}>
-              ${value.toFixed(2)}
+              {value.toFixed(2)}
             </Typography>
           </Box>
           <Box sx={{ color: `${color}.main` }}>
@@ -133,7 +133,7 @@ function WarehouseLedgerSummaryTab({ warehouseId }) {
           <Typography variant="h6" gutterBottom sx={{ textTransform: 'capitalize' }}>
             {type} Accounts
             <Chip 
-              label={`Total: $${total.toFixed(2)}`} 
+              label={`Total: ${total.toFixed(2)}`} 
               color={color} 
               size="small" 
               sx={{ ml: 2 }}
@@ -153,7 +153,7 @@ function WarehouseLedgerSummaryTab({ warehouseId }) {
                   <TableRow key={account.id}>
                     <TableCell>{account.accountName}</TableCell>
                     <TableCell align="right">
-                      ${(parseFloat(account.balance) || 0).toFixed(2)}
+                      {(parseFloat(account.balance) || 0).toFixed(2)}
                     </TableCell>
                     <TableCell align="center">
                       <Chip 
@@ -260,11 +260,11 @@ function WarehouseLedgerSummaryTab({ warehouseId }) {
           <Typography variant="h6" gutterBottom>
             Accounting Equation
           </Typography>
-          <Typography variant="body1" sx={{ fontFamily: 'monospace', fontSize: '1.2rem' }}>
+          <Typography variant="body1" sx={{ fontSize: '1.2rem', fontWeight: 500 }}>
             Assets = Liabilities + Equity
           </Typography>
           <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
-            ${summaryData.totalAssets.toFixed(2)} = ${summaryData.totalLiabilities.toFixed(2)} + ${summaryData.totalEquity.toFixed(2)}
+            {summaryData.totalAssets.toFixed(2)} = {summaryData.totalLiabilities.toFixed(2)} + {summaryData.totalEquity.toFixed(2)}
           </Typography>
           <Typography 
             variant="body2" 

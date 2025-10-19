@@ -7,9 +7,9 @@ class Warehouse {
     this.code = data.code;
     this.location = data.location;
     this.branchId = data.branch_id;
-    this.capacity = data.capacity || 1000;
-    this.currentStock = data.current_stock || 0;
-    this.stock = data.stock || 0;
+    this.capacity = data.capacity || null;
+    this.currentStock = data.current_stock || null;
+    this.stock = data.stock || null;
     this.manager = data.manager || 'Not Assigned';
     this.status = data.status || 'active';
     this.settings = data.settings ? JSON.parse(data.settings) : {};
@@ -27,8 +27,8 @@ class Warehouse {
       code, 
       location, 
       branch_id, 
-      capacity = 1000,
-      stock = 0,
+      capacity = null,
+      stock = null,
       manager = 'Not Assigned',
       status = 'active',
       created_by,

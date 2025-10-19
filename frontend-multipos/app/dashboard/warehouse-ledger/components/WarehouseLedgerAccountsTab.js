@@ -63,8 +63,8 @@ const columns = [
     type: 'number', 
     renderCell: (params) => {
       const value = params.value;
-      if (!value || isNaN(value)) return '$0.00';
-      return `$${parseFloat(value).toFixed(2)}`;
+      if (!value || isNaN(value)) return '0.00';
+      return `${parseFloat(value).toFixed(2)}`;
     }
   },
   { field: 'description', headerName: 'Description', width: 250 },

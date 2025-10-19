@@ -73,10 +73,10 @@ const companySchema = yup.object({
   scopeType: yup.string()
     .oneOf(['BRANCH', 'WAREHOUSE', 'COMPANY'], 'Scope type must be BRANCH, WAREHOUSE, or COMPANY')
     .required('Scope type is required'),
-  scopeId: yup.number()
-    .integer('Scope ID must be a valid positive integer')
-    .min(1, 'Scope ID must be a valid positive integer')
-    .required('Scope ID is required'),
+  scopeId: yup.string()
+    .min(1, 'Scope name must be between 1 and 100 characters')
+    .max(100, 'Scope name must be between 1 and 100 characters')
+    .required('Scope name is required'),
 })
 
 // Table columns configuration
@@ -130,8 +130,8 @@ const getFields = (user) => {
       },
       { 
         name: 'scopeId', 
-        label: 'Scope ID', 
-        type: 'number', 
+        label: 'Scope Name', 
+        type: 'text', 
         required: true,
       }
     ] : user?.role === 'CASHIER' && user?.branchId ? [
@@ -145,10 +145,10 @@ const getFields = (user) => {
       },
       { 
         name: 'scopeId', 
-        label: 'Branch ID', 
-        type: 'number', 
+        label: 'Branch Name', 
+        type: 'text', 
         required: true,
-        defaultValue: user.branchId,
+        defaultValue: user.branchName,
         disabled: true
       }
     ] : user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId ? [
@@ -162,10 +162,10 @@ const getFields = (user) => {
       },
       { 
         name: 'scopeId', 
-        label: 'Warehouse ID', 
-        type: 'number', 
+        label: 'Warehouse Name', 
+        type: 'text', 
         required: true,
-        defaultValue: user.warehouseId,
+        defaultValue: user.warehouseName,
         disabled: true
       }
     ] : [
@@ -182,8 +182,8 @@ const getFields = (user) => {
       },
       { 
         name: 'scopeId', 
-        label: 'Scope ID', 
-        type: 'number', 
+        label: 'Scope Name', 
+        type: 'text', 
         required: true,
       }
     ]),
@@ -265,11 +265,15 @@ function CompaniesPage() {
   }, [dispatch, user?.role, user?.warehouseId])
 
   const handleUpdate = useCallback((data) => {
-    dispatch(updateCompany({ id: crud.selectedEntity.id, data }))
-  }, [dispatch, crud.selectedEntity.id])
+    if (crud.selectedEntity?.id) {
+      dispatch(updateCompany({ id: crud.selectedEntity.id, data }))
+    }
+  }, [dispatch, crud.selectedEntity?.id])
 
   const handleDelete = () => {
-    dispatch(deleteCompany(crud.selectedEntity.id))
+    if (crud.selectedEntity?.id) {
+      dispatch(deleteCompany(crud.selectedEntity.id))
+    }
   }
 
   const handleRefresh = () => {
@@ -413,64 +417,16 @@ function CompaniesPage() {
         error={crud.error}
       />
       
-      {/* Debug EntityTable props */}
-      {('🔍 EntityTable Props Debug:', {
-        canManageCompanies,
-        onAdd: canManageCompanies ? crud.handleAdd : null,
-        showAddButton: canManageCompanies,
-        showActions: canManageCompanies,
-        showToolbar: canManageCompanies,
-        crudHandleAdd: crud.handleAdd,
-        crudHandleEdit: crud.handleEdit,
-        crudHandleDeleteClick: crud.handleDeleteClick,
-        handleRefresh: handleRefresh
-      })}
 
       <EntityFormDialog
         open={canManageCompanies && crud.formDialogOpen}
         onClose={crud.handleFormClose}
         title={crud.dialogTitle}
-        fields={(() => {
-          const fields = getFields(user)
-('🔍 ===== ENTITY FORM DIALOG DEBUG =====')
-('🔍 EntityFormDialog fields:', fields)
-('🔍 Fields count:', fields.length)
-('🔍 User passed to getFields:', user)
-('🔍 Dialog open:', canManageCompanies && crud.formDialogOpen)
-('🔍 Can manage companies:', canManageCompanies)
-('🔍 Form dialog open:', crud.formDialogOpen)
-('🔍 ===== END ENTITY FORM DIALOG DEBUG =====')
-          return fields
-        })()}
+        fields={getFields(user)}
         validationSchema={companySchema}
-        initialData={crud.selectedEntity}
+        initialData={crud.selectedEntity || {}}
         isEdit={crud.isEdit}
-        onSubmit={(() => {
-('🔍 ===== ONSUBMIT PROP DEBUG =====')
-('🔍 About to return onSubmit function')
-          
-          return async (formData) => {
-('🔍 ===== DIRECT ONSUBMIT HANDLER =====')
-('🔍 Form data received:', formData)
-('🔍 About to dispatch createCompany...')
-            
-            try {
-              const result = await dispatch(createCompany(formData))
-('🔍 createCompany result:', result)
-              
-              if (createCompany.fulfilled.match(result)) {
-('🔍 ✅ Company created successfully!')
-                crud.handleFormClose()
-              } else if (createCompany.rejected.match(result)) {
-('🔍 ❌ Company creation failed:', result.payload)
-              }
-            } catch (error) {
-('🔍 ❌ Error dispatching createCompany:', error)
-            }
-            
-('🔍 ===== END DIRECT ONSUBMIT HANDLER =====')
-          }
-        })()}
+        onSubmit={handleFormSubmit}
         loading={false}
         error={crud.error}
       />

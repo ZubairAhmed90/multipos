@@ -170,8 +170,8 @@ const createWarehouse = async (req, res, next) => {
       code,
       location,
       branch_id: linkedBranchId || null,
-      capacity: capacity || 1000,
-      stock: stock || 0,
+      capacity: capacity || null,
+      stock: stock || null,
       manager: manager || 'Not Assigned',
       status: status || 'active',
       settings: settings ? JSON.stringify(settings) : JSON.stringify({

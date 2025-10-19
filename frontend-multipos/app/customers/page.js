@@ -264,7 +264,7 @@ function CustomersPage() {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-sm text-gray-900">
-                      ${customer.balance || 0}
+                    {customer.balance || 0}
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
@@ -341,13 +341,13 @@ function CustomersPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      ${transaction.amount}
+                      {transaction.amount}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                       {transaction.description}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      ${transaction.balance}
+                      {transaction.balance}
                     </td>
                   </tr>
                 ))}
@@ -423,7 +423,7 @@ function CustomersPage() {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Total Balance</p>
               <p className="text-2xl font-semibold text-gray-900">
-                ${customers.reduce((sum, c) => sum + (c.balance || 0), 0).toFixed(2)}
+                {customers.reduce((sum, c) => sum + (c.balance || 0), 0).toFixed(2)}
               </p>
             </div>
           </div>

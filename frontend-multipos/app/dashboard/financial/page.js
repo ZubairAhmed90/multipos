@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import * as yup from 'yup'
-import withAuth from '../../../components/auth/withAuth'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
 import EntityFormDialog from '../../../components/crud/EntityFormDialog'
 import {
@@ -204,7 +203,7 @@ function FinancialDashboard() {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Total Revenue</p>
               <p className="text-2xl font-semibold text-gray-900">
-                ${salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
+                {salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
               </p>
             </div>
           </div>
@@ -252,7 +251,7 @@ function FinancialDashboard() {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Account Balance</p>
               <p className="text-2xl font-semibold text-gray-900">
-                ${balanceSummary?.totalBalance?.toFixed(2) || '0.00'}
+                {balanceSummary?.totalBalance?.toFixed(2) || '0.00'}
               </p>
             </div>
           </div>
@@ -307,7 +306,7 @@ function FinancialDashboard() {
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    ${transaction.total.toFixed(2)}
+                    {transaction.total.toFixed(2)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     Sale #{transaction.invoiceNumber}
@@ -348,7 +347,7 @@ function FinancialDashboard() {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Total Revenue</p>
               <p className="text-2xl font-semibold text-gray-900">
-                ${salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
+                {salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
               </p>
             </div>
           </div>
@@ -364,7 +363,7 @@ function FinancialDashboard() {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Average Transaction</p>
               <p className="text-2xl font-semibold text-gray-900">
-                ${salesSummary?.totals?.totalTransactions ? 
+                {salesSummary?.totals?.totalTransactions ? 
                   (salesSummary.totals.totalSales / salesSummary.totals.totalTransactions).toFixed(2) : '0.00'}
               </p>
             </div>
@@ -439,7 +438,7 @@ function FinancialDashboard() {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Total Expenses</p>
-              <p className="text-2xl font-semibold text-gray-900">$0.00</p>
+              <p className="text-2xl font-semibold text-gray-900">0.00</p>
             </div>
           </div>
         </div>
@@ -467,7 +466,7 @@ function FinancialDashboard() {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Monthly Avg</p>
-              <p className="text-2xl font-semibold text-gray-900">$0.00</p>
+              <p className="text-2xl font-semibold text-gray-900">0.00</p>
             </div>
           </div>
         </div>
@@ -484,7 +483,7 @@ function FinancialDashboard() {
                 <div className="w-32 bg-gray-200 rounded-full h-2">
                   <div className="bg-red-600 h-2 rounded-full w-0"></div>
                 </div>
-                <span className="text-sm text-gray-600">$0.00</span>
+                <span className="text-sm text-gray-600">0.00</span>
               </div>
             </div>
           ))}
@@ -520,7 +519,7 @@ function FinancialDashboard() {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Total Revenue</p>
               <p className="text-2xl font-semibold text-gray-900">
-                ${salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
+                {salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
               </p>
             </div>
           </div>
@@ -535,7 +534,7 @@ function FinancialDashboard() {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Total Expenses</p>
-              <p className="text-2xl font-semibold text-gray-900">$0.00</p>
+              <p className="text-2xl font-semibold text-gray-900">0.00</p>
             </div>
           </div>
         </div>
@@ -550,7 +549,7 @@ function FinancialDashboard() {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Net Profit</p>
               <p className="text-2xl font-semibold text-gray-900">
-                ${salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
+                {salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
               </p>
             </div>
           </div>
@@ -604,7 +603,7 @@ function FinancialDashboard() {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Next Month Revenue</p>
-              <p className="text-2xl font-semibold text-gray-900">$0.00</p>
+              <p className="text-2xl font-semibold text-gray-900">0.00</p>
             </div>
           </div>
         </div>
@@ -618,7 +617,7 @@ function FinancialDashboard() {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Next Quarter</p>
-              <p className="text-2xl font-semibold text-gray-900">$0.00</p>
+              <p className="text-2xl font-semibold text-gray-900">0.00</p>
             </div>
           </div>
         </div>
@@ -632,7 +631,7 @@ function FinancialDashboard() {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Next Year</p>
-              <p className="text-2xl font-semibold text-gray-900">$0.00</p>
+              <p className="text-2xl font-semibold text-gray-900">0.00</p>
             </div>
           </div>
         </div>
@@ -675,7 +674,7 @@ function FinancialDashboard() {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Cash Inflow</p>
               <p className="text-2xl font-semibold text-gray-900">
-                ${salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
+                {salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
               </p>
             </div>
           </div>
@@ -705,7 +704,7 @@ function FinancialDashboard() {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-500">Net Cash Flow</p>
               <p className="text-2xl font-semibold text-gray-900">
-                ${salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
+                {salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
               </p>
             </div>
           </div>
@@ -719,16 +718,16 @@ function FinancialDashboard() {
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-gray-700">Operating Activities</span>
             <span className="text-sm text-gray-600">
-              ${salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
+              {salesSummary?.totals?.totalSales?.toFixed(2) || '0.00'}
             </span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-gray-700">Investing Activities</span>
-            <span className="text-sm text-gray-600">$0.00</span>
+            <span className="text-sm text-gray-600">0.00</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-gray-700">Financing Activities</span>
-            <span className="text-sm text-gray-600">$0.00</span>
+            <span className="text-sm text-gray-600">0.00</span>
           </div>
         </div>
       </div>

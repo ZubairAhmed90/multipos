@@ -2,21 +2,17 @@
 
 import React, { useEffect, useState, useCallback } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import * as yup from 'yup'
-import { Box, Typography, Chip, Button, Grid, Card, CardContent, FormControl, InputLabel, Select, MenuItem, Paper, Drawer, List, ListItem, ListItemText, Divider, IconButton, Badge, TextField, Menu, ListItemIcon } from '@mui/material'
-import { Close as CloseIcon, FilterList as FilterIcon, GetApp as ExportIcon, FileDownload as DownloadIcon } from '@mui/icons-material'
+import { Box, Typography, Chip, Button, Grid, Card, CardContent, FormControl, InputLabel, Select, MenuItem, Paper, Drawer, List, ListItem, ListItemText, Divider, IconButton, Badge, TextField, Menu, ListItemIcon, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Alert, CircularProgress, Tooltip, InputAdornment, Pagination, Dialog, DialogTitle, DialogContent } from '@mui/material'
+import { Close as CloseIcon, FilterList as FilterIcon, GetApp as ExportIcon, FileDownload as DownloadIcon, Delete as DeleteIcon, Search as SearchIcon, Clear as ClearIcon, Visibility as ViewIcon, Receipt as ReceiptIcon, Refresh as RefreshIcon } from '@mui/icons-material'
 import { DataGrid } from '@mui/x-data-grid'
 import withAuth from '../../../components/auth/withAuth'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../components/auth/RouteGuard'
 import PermissionCheck from '../../../components/auth/PermissionCheck'
-import EntityTable from '../../../components/crud/EntityTable'
-import EntityFormDialog from '../../../components/crud/EntityFormDialog'
 import ConfirmationDialog from '../../../components/crud/ConfirmationDialog'
 import PollingStatusIndicator from '../../../components/polling/PollingStatusIndicator'
-import useEntityCRUD from '../../../hooks/useEntityCRUD'
 import { useSalesPolling } from '../../../hooks/usePolling'
-import { fetchSales, createSale, updateSale, deleteSale, fetchSalesReturns, createSalesReturn } from '../../store/slices/salesSlice'
+import { fetchSales, deleteSale, fetchSalesReturns, createSalesReturn, getSale } from '../../store/slices/salesSlice'
 import { fetchInventory } from '../../store/slices/inventorySlice'
 import { fetchBranchSettings, fetchBranches } from '../../store/slices/branchesSlice'
 import { fetchWarehouses, fetchWarehouseSettings } from '../../store/slices/warehousesSlice'
@@ -24,29 +20,23 @@ import { fetchCompanies } from '../../store/slices/companiesSlice'
 import { fetchRetailers } from '../../store/slices/retailersSlice'
 import usePermissions from '../../../hooks/usePermissions'
 import pollingService from '../../../utils/pollingService'
+import EditableInvoiceForm from '../../../components/sales/EditableInvoiceForm'
+import api from '../../../utils/axios'
 
-// Validation schema for sales
-const salesSchema = yup.object({
-  customerName: yup.string().required('Customer name is required').max(100, 'Customer name cannot exceed 100 characters'),
-  customerEmail: yup.string().email('Invalid email format').optional(),
-  customerPhone: yup.string().optional().max(20, 'Customer phone cannot exceed 20 characters'),
-  customerAddress: yup.string().optional().max(200, 'Customer address cannot exceed 200 characters'),
-  subtotal: yup.number().required('Subtotal is required').min(0.01, 'Subtotal must be greater than 0'),
-  tax: yup.number().nullable().transform((value, originalValue) => {
-    return originalValue === '' ? 0 : value;
-  }).min(0, 'Tax must be non-negative'),
-  discount: yup.number().nullable().transform((value, originalValue) => {
-    return originalValue === '' ? 0 : value;
-  }).min(0, 'Discount must be non-negative'),
-  paymentMethod: yup.string().required('Payment method is required').oneOf(['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT']),
-  paymentStatus: yup.string().required('Payment status is required').oneOf(['PENDING', 'COMPLETED', 'FAILED', 'REFUNDED']),
-  status: yup.string().required('Status is required').oneOf(['PENDING', 'COMPLETED', 'CANCELLED']),
-  notes: yup.string().optional().max(500, 'Notes cannot exceed 500 characters'),
-})
 
 // Table columns configuration
 const columns = [
   { field: 'id', headerName: 'ID', width: 70 },
+  { field: 'created_at', headerName: 'Date', width: 150, renderCell: (params) => {
+    if (!params || !params.value) {
+      return 'N/A';
+    }
+    try {
+      return new Date(params.value).toLocaleDateString();
+    } catch (e) {
+      return 'Invalid Date';
+    }
+  }},
   { field: 'invoice_no', headerName: 'Invoice #', width: 120 },
   { 
     field: 'scope_type', 
@@ -96,6 +86,20 @@ const columns = [
     }
     return `${parseFloat(params.value).toFixed(2)}`;
   }},
+  { field: 'payment_amount', headerName: 'Payment', width: 120, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return (
+      <Typography 
+        variant="body2"
+        color="success.main"
+        fontWeight="medium"
+      >
+        {parseFloat(params.value).toFixed(2)}
+      </Typography>
+    );
+  }},
   { field: 'subtotal', headerName: 'Subtotal', width: 120, type: 'number', renderCell: (params) => {
     if (!params || params.value === undefined || params.value === null) {
       return '0.00';
@@ -115,11 +119,11 @@ const columns = [
     return `${parseFloat(params.value).toFixed(2)}`;
   }},
   { 
-    field: 'payment_method', 
+    field: 'paymentMethod', 
     headerName: 'Payment Method', 
-    width: 150,
+    width: 150, 
     renderCell: (params) => {
-      let paymentMethod = params.row.payment_method || params.row.paymentMethod;
+      let paymentMethod = params.row.paymentMethod || params.row.payment_method;
       
       // Check customer_info for payment method if not found directly
       if (!paymentMethod && params.row.customer_info) {
@@ -134,7 +138,21 @@ const columns = [
       }
       
       if (!paymentMethod) {
+        // Check if this is a credit sale based on creditAmount
+        const creditAmount = params.row.creditAmount || 0;
+        if (creditAmount > 0) {
+          return <Chip label="FULLY CREDIT" color="error" size="small" />;
+        }
         return <Chip label="N/A" color="default" size="small" />;
+      }
+      
+      // ✅ CORRECTED LOGIC: Show payment method based on actual payment_method field
+      if (paymentMethod === 'FULLY_CREDIT') {
+        return <Chip label="FULLY CREDIT" color="error" size="small" />;
+      }
+      
+      if (paymentMethod === 'PARTIAL_PAYMENT') {
+        return <Chip label="PARTIAL PAYMENT" color="warning" size="small" />;
       }
       
       const methodColors = {
@@ -143,7 +161,9 @@ const columns = [
         'BANK_TRANSFER': 'info',
         'MOBILE_PAYMENT': 'secondary',
         'CHEQUE': 'warning',
-        'CREDIT': 'error'
+        'CREDIT': 'error',
+        'FULLY_CREDIT': 'error',
+        'PARTIAL_PAYMENT': 'warning'
       };
       
       return (
@@ -161,7 +181,7 @@ const columns = [
     width: 150,
     renderCell: (params) => {
       // First, get the payment method
-      let paymentMethod = params.row.payment_method || params.row.paymentMethod;
+      let paymentMethod = params.row.paymentMethod || params.row.payment_method;
       
       // Check customer_info for payment method if not found directly
       if (!paymentMethod && params.row.customer_info) {
@@ -200,43 +220,42 @@ const columns = [
       return '-';
     }
   },
-  { field: 'payment_status', headerName: 'Payment Status', width: 130, renderCell: (params) => {
-    const paymentStatus = params.row.payment_status || params.row.paymentStatus;
+  { field: 'paymentStatus', headerName: 'Payment Status', width: 130, renderCell: (params) => {
+    const paymentStatus = params.row.paymentStatus || params.row.payment_status;
+    if (!paymentStatus) {
+      return <Chip label="N/A" color="default" size="small" />;
+    }
+    
+    const statusColors = {
+      'COMPLETED': 'success',
+      'PENDING': 'error',
+      'FAILED': 'error',
+      'REFUNDED': 'info',
+      'PARTIAL': 'warning'
+    };
+    
+    return (
+      <Chip 
+        label={paymentStatus.replace('_', ' ').toUpperCase()} 
+        color={statusColors[paymentStatus] || 'default'}
+        size="small"
+      />
+    );
+  }},
+  { field: 'paymentStatus', headerName: 'Payment Status', width: 120, renderCell: (params) => {
+    const paymentStatus = params.row.paymentStatus || params.row.payment_status;
     if (!paymentStatus) {
       return <Chip label="N/A" color="default" size="small" />;
     }
     return (
       <Chip 
         label={paymentStatus.replace('-', ' ').toUpperCase()} 
-        color={paymentStatus === 'COMPLETED' ? 'success' : paymentStatus === 'PENDING' ? 'warning' : paymentStatus === 'FAILED' ? 'error' : 'default'}
-        size="small"
-      />
-    );
-  }},
-  { field: 'status', headerName: 'Status', width: 120, renderCell: (params) => {
-    const status = params.row.status;
-    if (!status) {
-      return <Chip label="N/A" color="default" size="small" />;
-    }
-    return (
-      <Chip 
-        label={status.replace('-', ' ').toUpperCase()} 
-        color={status === 'COMPLETED' ? 'success' : status === 'PENDING' ? 'warning' : status === 'CANCELLED' ? 'error' : 'default'}
+        color={paymentStatus === 'COMPLETED' ? 'success' : paymentStatus === 'PENDING' ? 'error' : 'default'}
         size="small"
       />
     );
   }},
   { field: 'branch_name', headerName: 'Branch', width: 120 },
-  { field: 'created_at', headerName: 'Date', width: 150, renderCell: (params) => {
-    if (!params || !params.value) {
-      return 'N/A';
-    }
-    try {
-      return new Date(params.value).toLocaleDateString();
-    } catch (e) {
-      return 'Invalid Date';
-    }
-  }},
 ]
 
 // Sales returns columns
@@ -274,38 +293,6 @@ const returnsColumns = [
   }}
 ]
 
-// Helper function to calculate total amount
-const calculateTotal = (subtotal, tax = 0, discount = 0) => {
-  const subtotalNum = parseFloat(subtotal) || 0
-  const taxNum = parseFloat(tax) || 0
-  const discountNum = parseFloat(discount) || 0
-  return subtotalNum + taxNum - discountNum
-}
-
-// Transform sale data to form data format
-const transformSaleToFormData = (sale) => {
-  if (!sale) return null;
-  
-  
-  const transformed = {
-    scopeType: sale.scope_type || sale.scopeType || 'BRANCH',
-    scopeId: sale.scope_id || sale.scopeId || 1,
-    subtotal: parseFloat(sale.subtotal) || 0,
-    tax: parseFloat(sale.tax) || 0,
-    discount: parseFloat(sale.discount) || 0,
-    total: parseFloat(sale.total) || 0,
-    paymentMethod: sale.payment_method || sale.paymentMethod || 'CASH',
-    paymentStatus: sale.payment_status || sale.paymentStatus || '',
-    status: sale.status || 'PENDING',
-    customerName: sale.customerInfo?.name || sale.customer_info?.name || '',
-    customerEmail: sale.customerInfo?.email || sale.customer_info?.email || '',
-    customerPhone: sale.customerInfo?.phone || sale.customer_info?.phone || '',
-    customerAddress: sale.customerInfo?.address || sale.customer_info?.address || '',
-    notes: sale.notes || ''
-  };
-  
-  return transformed;
-}
 
 const SalesPage = () => {
   const dispatch = useDispatch()
@@ -327,6 +314,18 @@ const SalesPage = () => {
     startDate: '',
     endDate: ''
   })
+
+  // New filter states for the integrated filters
+  const [searchTerm, setSearchTerm] = useState('')
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [scopeTypeFilter, setScopeTypeFilter] = useState('all')
+  const [sortBy, setSortBy] = useState('created_at')
+  const [sortOrder, setSortOrder] = useState('desc')
+  
+  // Pagination states
+  const [page, setPage] = useState(1)
+  const [rowsPerPage, setRowsPerPage] = useState(25)
   
   // Drawer state
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false)
@@ -335,21 +334,24 @@ const SalesPage = () => {
   // Export state
   const [exportAnchorEl, setExportAnchorEl] = useState(null)
   
-  // Determine user's scope automatically
-  const getUserScope = () => {
-    if (!user) return { scopeType: 'BRANCH', scopeId: 1 }
-    
-    if (user.role === 'CASHIER' && user.branchId) {
-      return { scopeType: 'BRANCH', scopeId: user.branchId }
-    } else if (user.role === 'WAREHOUSE_KEEPER' && user.warehouseId) {
-      return { scopeType: 'WAREHOUSE', scopeId: user.warehouseId }
-    }
-    
-    // Default for admin or users without specific assignment
-    return { scopeType: 'BRANCH', scopeId: 1 }
-  }
+  // Refresh state
+  const [refreshKey, setRefreshKey] = useState(0)
   
-  const userScope = getUserScope()
+  // Individual sale state for viewing
+  const [selectedSale, setSelectedSale] = useState(null)
+  const [saleItems, setSaleItems] = useState([])
+  const [showItemsDialog, setShowItemsDialog] = useState(false)
+  const [viewingSale, setViewingSale] = useState(null)
+  
+  // Editable invoice form state
+  const [editingSale, setEditingSale] = useState(null)
+  const [showEditableInvoice, setShowEditableInvoice] = useState(false)
+
+  // Debug saleItems changes
+  useEffect(() => {
+    console.log('[Sales] saleItems state changed:', saleItems);
+  }, [saleItems]);
+  
   
   // Check if user can manage sales
   const canManageSales = () => {
@@ -366,48 +368,25 @@ const SalesPage = () => {
   const canEdit = canManageSales()
   
   // Dialog state management
-  const [openDialog, setOpenDialog] = useState(false)
-  const [editingEntity, setEditingEntity] = useState(null)
   const [openDeleteDialog, setOpenDeleteDialog] = useState(false)
   const [entityToDelete, setEntityToDelete] = useState(null)
-  const [calculatedTotal, setCalculatedTotal] = useState(0)
 
-  // Handle form field changes for real-time calculation
-  const handleFormFieldChange = (fieldName, value) => {
-    if (fieldName === 'subtotal' || fieldName === 'tax' || fieldName === 'discount') {
-      const subtotal = fieldName === 'subtotal' ? parseFloat(value) || 0 : (editingEntity?.subtotal || 0)
-      const tax = fieldName === 'tax' ? parseFloat(value) || 0 : (editingEntity?.tax || 0)
-      const discount = fieldName === 'discount' ? parseFloat(value) || 0 : (editingEntity?.discount || 0)
-      
-      const newTotal = calculateTotal(subtotal, tax, discount)
-      setCalculatedTotal(newTotal)
-    }
-  }
 
-  // Update calculated total when editing entity changes
-  useEffect(() => {
-    if (editingEntity) {
-      const formData = transformSaleToFormData(editingEntity)
-      if (formData) {
-        const total = calculateTotal(formData.subtotal, formData.tax, formData.discount)
-        setCalculatedTotal(total)
-      }
-    } else {
-      setCalculatedTotal(0)
-    }
-  }, [editingEntity])
-
-  // Update calculated total when dialog opens for new sale
-  useEffect(() => {
-    if (openDialog && !editingEntity) {
-      setCalculatedTotal(0)
-    }
-  }, [openDialog, editingEntity])
+  // Manual refresh function
+  const handleManualRefresh = useCallback(() => {
+    console.log('[Sales] Manual refresh triggered')
+    setRefreshKey(prev => prev + 1)
+    const timestamp = Date.now()
+    dispatch(fetchSales({ _t: timestamp }))
+    dispatch(fetchSalesReturns({ _t: timestamp }))
+  }, [dispatch])
 
   // Memoize the data update callback to prevent infinite loops
   const handleDataUpdate = useCallback(() => {
-    dispatch(fetchSales())
-    dispatch(fetchSalesReturns())
+    console.log('[Sales] Data update callback triggered')
+    const timestamp = Date.now()
+    dispatch(fetchSales({ _t: timestamp }))
+    dispatch(fetchSalesReturns({ _t: timestamp }))
   }, [dispatch])
 
   // Polling for real-time updates
@@ -481,21 +460,6 @@ const SalesPage = () => {
     }
   }, [sales, salesLoading, salesError])
 
-  // Handle refresh function
-  const handleRefresh = () => {
-    // Clear Redux state first
-    dispatch({ type: 'sales/clearError' })
-    // Then fetch fresh data with current filters
-    const salesParams = {}
-    if (user?.role === 'ADMIN' && filters.scopeType !== 'all') {
-      salesParams.scopeType = filters.scopeType
-      if (filters.scopeId !== 'all') {
-        salesParams.scopeId = filters.scopeId
-      }
-    }
-    dispatch(fetchSales(salesParams))
-    dispatch(fetchSalesReturns())
-  }
 
   // Handle filter changes
   const handleFilterChange = (field, value) => {
@@ -507,6 +471,120 @@ const SalesPage = () => {
       }
       return newFilters
     })
+  }
+
+  // Clear all filters
+  const clearFilters = () => {
+    setSearchTerm('')
+    setPaymentMethodFilter('all')
+    setStatusFilter('all')
+    setScopeTypeFilter('all')
+    setSortBy('created_at')
+    setSortOrder('desc')
+    setPage(1) // Reset to first page when clearing filters
+  }
+
+  // Get filter summary
+  const getFilterSummary = () => {
+    const filters = []
+    if (searchTerm) filters.push(`Search: "${searchTerm}"`)
+    if (paymentMethodFilter !== 'all') filters.push(`Payment: ${paymentMethodFilter}`)
+    if (statusFilter !== 'all') filters.push(`Status: ${statusFilter}`)
+    if (scopeTypeFilter !== 'all') filters.push(`Scope: ${scopeTypeFilter}`)
+    return filters
+  }
+
+  // Filter and sort sales
+  const getFilteredAndSortedSales = () => {
+    let filtered = (sales || []).filter(sale => {
+      // Search filter
+      if (searchTerm) {
+        const searchLower = searchTerm.toLowerCase()
+        const invoiceMatch = sale.invoice_no?.toLowerCase().includes(searchLower)
+        const customerMatch = sale.customerName?.toLowerCase().includes(searchLower)
+        if (!invoiceMatch && !customerMatch) return false
+      }
+
+      // Payment method filter
+      if (paymentMethodFilter !== 'all') {
+        const paymentMethod = sale.paymentMethod || sale.payment_method
+        const paymentStatus = sale.paymentStatus || sale.payment_status
+        const creditAmount = sale.creditAmount || 0
+        
+        if (paymentMethodFilter === 'partial_payment') {
+          // Check if this is a partial payment
+          if (paymentStatus !== 'PARTIAL' && creditAmount <= 0) return false
+        } else {
+          // For other payment methods, check the actual payment method
+          if (paymentMethod?.toLowerCase() !== paymentMethodFilter.toLowerCase()) return false
+        }
+      }
+
+      // Status filter
+      if (statusFilter !== 'all') {
+        const status = sale.status?.toLowerCase()
+        if (status !== statusFilter.toLowerCase()) return false
+      }
+
+      // Scope type filter
+      if (scopeTypeFilter !== 'all') {
+        const scopeType = sale.scope_type || sale.scopeType
+        if (scopeType !== scopeTypeFilter) return false
+      }
+
+      return true
+    })
+
+    // Sort
+    filtered.sort((a, b) => {
+      let aValue, bValue
+      
+      switch (sortBy) {
+        case 'total':
+          aValue = parseFloat(a.total || 0)
+          bValue = parseFloat(b.total || 0)
+          break
+        case 'invoice_no':
+          aValue = a.invoice_no || ''
+          bValue = b.invoice_no || ''
+          break
+        case 'customerName':
+          aValue = a.customerName || ''
+          bValue = b.customerName || ''
+          break
+        case 'created_at':
+        default:
+          aValue = new Date(a.created_at || a.createdAt || 0)
+          bValue = new Date(b.created_at || b.createdAt || 0)
+          break
+      }
+
+      if (sortOrder === 'asc') {
+        return aValue > bValue ? 1 : -1
+      } else {
+        return aValue < bValue ? 1 : -1
+      }
+    })
+
+    return filtered
+  }
+
+  // Pagination logic
+  const totalItems = getFilteredAndSortedSales().length
+  const totalPages = Math.ceil(totalItems / rowsPerPage)
+  const startIndex = (page - 1) * rowsPerPage
+  const endIndex = startIndex + rowsPerPage
+  const paginatedSales = getFilteredAndSortedSales().slice(startIndex, endIndex)
+
+  // Handle page change
+  const handlePageChange = (event, newPage) => {
+    setPage(newPage)
+  }
+
+  // Handle rows per page change
+  const handleRowsPerPageChange = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10))
+    setPage(1) // Reset to first page when changing page size
   }
 
   // Apply filters and show in drawer
@@ -552,8 +630,8 @@ const SalesPage = () => {
     setFilterDrawerOpen(true)
   }
 
-  // Clear filters
-  const clearFilters = () => {
+  // Clear old filters (for drawer)
+  const clearOldFilters = () => {
     setFilters({
       scopeType: 'all',
       scopeId: 'all',
@@ -569,118 +647,32 @@ const SalesPage = () => {
   // Check if filters are active
   const hasActiveFilters = filters.scopeType !== 'all' || filters.scopeId !== 'all' || filters.companyId !== 'all' || filters.retailerId !== 'all' || filters.startDate || filters.endDate
 
-  // CRUD handler functions
-  const handleCreateSale = async (formData) => {
+  // Function to fetch sale details with items for editing
+  const fetchSaleForEdit = async (saleId) => {
     try {
-      // Calculate total automatically (tax and discount are optional)
-      const calculatedTotal = calculateTotal(formData.subtotal, formData.tax, formData.discount)
-      
-      // Use user's scope instead of form data
-      const saleData = {
-        scopeType: userScope.scopeType,
-        scopeId: userScope.scopeId,
-        subtotal: parseFloat(formData.subtotal) || 0,
-        tax: parseFloat(formData.tax) || 0,
-        discount: parseFloat(formData.discount) || 0,
-        total: calculatedTotal,
-        paymentMethod: formData.paymentMethod,
-        paymentStatus: formData.paymentStatus || 'PENDING',
-        status: formData.status || 'PENDING',
-        customerInfo: {
-          name: formData.customerName || 'Walk-in Customer',
-          email: formData.customerEmail || '',
-          phone: formData.customerPhone || '',
-          address: formData.customerAddress || ''
-        },
-        notes: formData.notes || '',
-        items: [
-          // Find first available inventory item from user's scope
-          ...(inventoryItems?.filter(item => 
-            item.scopeType === userScope.scopeType && 
-            item.scopeId === userScope.scopeId &&
-            item.currentStock > 0
-          ).slice(0, 1).map(item => ({
-            inventoryItemId: item.id,
-            sku: item.sku,
-            name: item.name,
-            quantity: 1,
-            unitPrice: parseFloat(formData.subtotal) || item.sellingPrice,
-            discount: parseFloat(formData.discount) || 0
-          })) || [{
-            // Fallback if no inventory items found
-            inventoryItemId: 1,
-            sku: 'DEFAULT',
-            name: 'Default Item',
-            quantity: 1,
-            unitPrice: parseFloat(formData.subtotal) || 100,
-            discount: parseFloat(formData.discount) || 0
-          }])
-        ]
-      }
-      
-      const result = await dispatch(createSale(saleData));
-      
-      if (createSale.fulfilled.match(result)) {
-        setOpenDialog(false);
-        // Refresh the sales list
-        dispatch(fetchSales());
-      } else if (createSale.rejected.match(result)) {
-        alert(`Failed to create sale: ${result.payload}`);
+      const result = await dispatch(getSale(saleId));
+      if (getSale.fulfilled.match(result)) {
+        const saleData = result.payload.data || result.payload;
+        console.log('[Sales] fetchSaleForEdit saleData:', saleData);
+        console.log('[Sales] fetchSaleForEdit items:', saleData.items);
+        if (saleData.items && saleData.items.length > 0) {
+          console.log('[Sales] First item structure:', saleData.items[0]);
+          console.log('[Sales] First item unitPrice type:', typeof saleData.items[0].unitPrice);
+          console.log('[Sales] First item unitPrice value:', saleData.items[0].unitPrice);
+        }
+        setSelectedSale(saleData);
+        setSaleItems(saleData.items || []);
+        return saleData;
+      } else {
+        console.error('Failed to fetch sale details:', result.payload);
+        return null;
       }
     } catch (error) {
-      alert(`Error creating sale: ${error.message}`);
+      console.error('Error fetching sale details:', error);
+      return null;
     }
-  }
+  };
 
-  const handleUpdateSale = async (formData) => {
-    try {
-      // Calculate total automatically (tax and discount are optional)
-      const calculatedTotal = calculateTotal(formData.subtotal, formData.tax, formData.discount)
-      
-      // Transform form data to match backend API
-      const saleData = {
-        scopeType: formData.scopeType,
-        scopeId: parseInt(formData.scopeId), // Ensure scopeId is an integer
-        subtotal: parseFloat(formData.subtotal) || 0,
-        tax: parseFloat(formData.tax) || 0, // Convert empty string to 0
-        discount: parseFloat(formData.discount) || 0, // Convert empty string to 0
-        total: calculatedTotal,
-        paymentMethod: formData.paymentMethod,
-        paymentStatus: formData.paymentStatus, // Don't default to PENDING
-        status: formData.status, // Don't default to PENDING
-        customerName: formData.customerName || '',
-        customerEmail: formData.customerEmail || '',
-        customerPhone: formData.customerPhone || '',
-        customerAddress: formData.customerAddress || '',
-        notes: formData.notes || '',
-        items: [
-          // Use a valid inventory item for BRANCH scope
-          {
-            inventoryItemId: 6, // Laptop Computer with BRANCH scope
-            sku: 'LAPTOP001',
-            name: 'Laptop Computer',
-            quantity: 1,
-            unitPrice: parseFloat(formData.subtotal) || 999.99,
-            discount: parseFloat(formData.discount) || 0
-          }
-        ]
-      }
-      
-      
-      const result = await dispatch(updateSale({ id: editingEntity.id, data: saleData }));
-      
-      if (updateSale.fulfilled.match(result)) {
-        setOpenDialog(false);
-        setEditingEntity(null);
-        // Refresh the sales list
-        dispatch(fetchSales());
-      } else if (updateSale.rejected.match(result)) {
-        alert(`Failed to update sale: ${result.payload}`);
-      }
-    } catch (error) {
-      alert(`Error updating sale: ${error.message}`);
-    }
-  }
 
   const handleDeleteSale = async () => {
     try {
@@ -707,6 +699,38 @@ const SalesPage = () => {
     setOpenDialog(false)
   }
 
+  // Editable invoice handlers
+  const handleEditInvoice = async (sale) => {
+    try {
+      // Fetch full sale details with items
+      const response = await api.get(`/sales/${sale.id}`)
+      if (response.data.success) {
+        setEditingSale(response.data.data)
+        setShowEditableInvoice(true)
+      } else {
+        alert('Failed to load sale details')
+      }
+    } catch (error) {
+      console.error('Error loading sale details:', error)
+      alert('Failed to load sale details')
+    }
+  }
+
+  const handleCloseEditableInvoice = () => {
+    setShowEditableInvoice(false)
+    setEditingSale(null)
+  }
+
+  const handleSaveEditableInvoice = (updatedSale) => {
+    // Refresh sales data
+    dispatch(fetchSales())
+    dispatch(fetchInventory())
+    
+    // Close the dialog
+    setShowEditableInvoice(false)
+    setEditingSale(null)
+  }
+
   // Export functions
   const handleExportClick = (event) => {
     setExportAnchorEl(event.currentTarget)
@@ -723,10 +747,30 @@ const SalesPage = () => {
     handleExportClose()
   }
 
-  const exportToExcel = () => {
+  const exportToExcel = async () => {
     const salesToExport = filteredSales.length > 0 ? filteredSales : sales || []
-    const excelContent = generateExcel(salesToExport)
-    downloadFile(excelContent, 'sales-data.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    const excelData = await generateExcel(salesToExport)
+    
+    // Determine if we got a buffer (proper Excel) or string (CSV fallback)
+    const isBuffer = excelData instanceof ArrayBuffer || excelData instanceof Uint8Array
+    const mimeType = isBuffer 
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : 'text/csv'
+    const fileExtension = isBuffer ? 'xlsx' : 'csv'
+    
+    // Create blob from Excel buffer or CSV string
+    const blob = new Blob([excelData], { type: mimeType })
+    
+    // Create download link
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `sales-data-${new Date().toISOString().split('T')[0]}.${fileExtension}`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    
     handleExportClose()
   }
 
@@ -738,52 +782,155 @@ const SalesPage = () => {
   }
 
   const generateCSV = (salesData) => {
-    const headers = ['ID', 'Invoice #', 'Customer', 'Date', 'Amount', 'Payment Method', 'Payment Status', 'Status']
+    const headers = ['ID', 'Date', 'Invoice #', 'Customer', 'Amount', 'Payment', 'Payment Method', 'Payment Status', 'Created By']
     const rows = salesData.map(sale => [
       sale.id,
+      new Date(sale.created_at).toLocaleDateString(),
       sale.invoice_no || 'N/A',
       sale.customerInfo?.name || sale.customer_info?.name || 'N/A',
-      new Date(sale.created_at).toLocaleDateString(),
       parseFloat(sale.total || 0).toFixed(2),
-      sale.payment_method || 'N/A',
-      sale.payment_status || 'N/A',
-      sale.status || 'N/A'
+      parseFloat(sale.payment_amount || 0).toFixed(2),
+      sale.paymentMethod || sale.payment_method || 'N/A',
+      sale.paymentStatus || sale.payment_status || 'N/A',
+      sale.created_by || sale.username || sale.user_name || 'Unknown'
     ])
     
     return [headers, ...rows].map(row => row.join(',')).join('\n')
   }
 
-  const generateExcel = (salesData) => {
-    // Simple Excel-like format (CSV with Excel MIME type)
-    return generateCSV(salesData)
+  const generateExcel = async (salesData) => {
+    try {
+      // Try to use XLSX library for proper Excel format
+      const XLSX = await import('xlsx')
+      
+      // Prepare data for Excel
+      const excelData = salesData.map(sale => ({
+        'ID': sale.id,
+        'Date': new Date(sale.created_at).toLocaleDateString(),
+        'Invoice #': sale.invoice_no || 'N/A',
+        'Customer': sale.customerInfo?.name || sale.customer_info?.name || 'N/A',
+        'Amount': parseFloat(sale.total || 0).toFixed(2),
+        'Payment': parseFloat(sale.payment_amount || 0).toFixed(2),
+        'Payment Method': sale.paymentMethod || sale.payment_method || 'N/A',
+        'Payment Status': sale.paymentStatus || sale.payment_status || 'N/A',
+        'Created By': sale.created_by || sale.username || sale.user_name || 'Unknown'
+      }))
+      
+      // Create workbook and worksheet
+      const workbook = XLSX.utils.book_new()
+      const worksheet = XLSX.utils.json_to_sheet(excelData)
+      
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Sales Data')
+      
+      // Generate Excel file buffer
+      const excelBuffer = XLSX.write(workbook, { 
+        type: 'array', 
+        bookType: 'xlsx' 
+      })
+      
+      return excelBuffer
+    } catch (error) {
+      console.warn('XLSX library not available, falling back to CSV format:', error)
+      // Fallback to CSV format with Excel MIME type
+      return generateCSV(salesData)
+    }
   }
 
   const generatePDF = (salesData) => {
-    // Simple PDF content (text format)
-    const content = `Sales Report\nGenerated: ${new Date().toLocaleDateString()}\n\n` +
-      salesData.map(sale => 
-        `Invoice: ${sale.invoice_no || 'N/A'}\n` +
-        `Customer: ${sale.customerInfo?.name || sale.customer_info?.name || 'N/A'}\n` +
-        `Date: ${new Date(sale.created_at).toLocaleDateString()}\n` +
-        `Amount: $${parseFloat(sale.total || 0).toFixed(2)}\n` +
-        `Payment: ${sale.payment_method || 'N/A'}\n` +
-        `Status: ${sale.status || 'N/A'}\n` +
-        '---\n'
-      ).join('\n')
+    // Generate HTML content for PDF
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Sales Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #333; padding-bottom: 20px; }
+            .summary { background: #f5f5f5; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; font-weight: bold; }
+            .total-row { font-weight: bold; background-color: #e6f3ff; }
+            .status-completed { color: #28a745; }
+            .status-pending { color: #ffc107; }
+            .status-cancelled { color: #dc3545; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Sales Report</h1>
+            <p>Generated on: ${new Date().toLocaleDateString()}</p>
+            <p>Total Records: ${salesData.length}</p>
+          </div>
+          
+          <div class="summary">
+            <h3>Summary</h3>
+            <p>Total Sales: ${salesData.length}</p>
+            <p>Total Amount: $${salesData.reduce((sum, sale) => sum + parseFloat(sale.total || 0), 0).toFixed(2)}</p>
+            <p>Completed Payments: ${salesData.filter(sale => (sale.paymentStatus || sale.payment_status) === 'COMPLETED').length}</p>
+            <p>Pending Payments: ${salesData.filter(sale => (sale.paymentStatus || sale.payment_status) === 'PENDING').length}</p>
+          </div>
+          
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Invoice #</th>
+                <th>Customer</th>
+                <th>Amount</th>
+                <th>Payment</th>
+                <th>Payment Method</th>
+                <th>Payment Status</th>
+                <th>Created By</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${salesData.map(sale => `
+                <tr>
+                  <td>${new Date(sale.created_at).toLocaleDateString()}</td>
+                  <td>${sale.invoice_no || 'N/A'}</td>
+                  <td>${sale.customerInfo?.name || sale.customer_info?.name || 'Walk-in Customer'}</td>
+                  <td>$${parseFloat(sale.total || 0).toFixed(2)}</td>
+                  <td>$${parseFloat(sale.payment_amount || 0).toFixed(2)}</td>
+                  <td>${sale.paymentMethod || sale.payment_method || 'N/A'}</td>
+                  <td class="status-${(sale.paymentStatus || sale.payment_status)?.toLowerCase() || 'unknown'}">${sale.paymentStatus || sale.payment_status || 'N/A'}</td>
+                  <td>${sale.created_by || sale.username || sale.user_name || 'Unknown'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `
     
-    return content
+    return htmlContent
   }
 
   const downloadFile = (content, filename, mimeType) => {
-    const blob = new Blob([content], { type: mimeType })
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    window.URL.revokeObjectURL(url)
+    if (mimeType === 'application/pdf') {
+      // For PDF, open in new window and trigger print
+      const printWindow = window.open('', '_blank')
+      printWindow.document.write(content)
+      printWindow.document.close()
+      
+      // Wait for content to load, then trigger print
+      printWindow.onload = () => {
+        printWindow.print()
+        printWindow.close()
+      }
+    } else {
+      // For other formats (CSV, Excel), use blob download
+      const blob = new Blob([content], { type: mimeType })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    }
   }
 
   // Calculate sales statistics
@@ -797,7 +944,7 @@ const SalesPage = () => {
       }
     }
 
-    const completedSales = sales.filter(sale => sale.status === 'COMPLETED')
+    const completedSales = sales.filter(sale => (sale.paymentStatus || sale.payment_status) === 'COMPLETED')
     const totalSales = completedSales.reduce((sum, sale) => sum + parseFloat(sale.total || sale.totalAmount || 0), 0)
     const totalTransactions = completedSales.length
     const averageOrderValue = totalTransactions > 0 ? totalSales / totalTransactions : 0
@@ -820,11 +967,6 @@ const SalesPage = () => {
               <Typography variant="h4" component="h1">
                 Sales Management
               </Typography>
-              <PollingStatusIndicator 
-                isPolling={isPolling} 
-                lastUpdate={lastUpdate}
-                onRefresh={refreshData}
-              />
             </Box>
 
             {/* Sales Statistics */}
@@ -886,6 +1028,15 @@ const SalesPage = () => {
                   Sales Transactions
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<RefreshIcon />}
+                    onClick={handleManualRefresh}
+                    disabled={salesLoading}
+                    sx={{ minWidth: 120 }}
+                  >
+                    Refresh
+                  </Button>
                   <Button 
                     variant="outlined" 
                     startIcon={<ExportIcon />}
@@ -894,277 +1045,429 @@ const SalesPage = () => {
                   >
                     Export
                   </Button>
-                  <Button 
-                    variant="outlined" 
-                    onClick={handleRefresh}
-                    sx={{ minWidth: 120 }}
-                  >
-                    Force Refresh
-                  </Button>
                 </Box>
               </Box>
               
-              {/* Admin and Warehouse Keeper Filter Controls */}
-              {(user?.role === 'ADMIN' || user?.role === 'WAREHOUSE_KEEPER') && (
-                <Paper sx={{ p: 2, mb: 2 }}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                    <Typography variant="subtitle2">
-                      {user?.role === 'ADMIN' ? 'Filter Sales by Location' : 'Filter Sales by Retailer'}
-                    </Typography>
-                    <Box sx={{ display: 'flex', gap: 1 }}>
-                      <Button
-                        variant="outlined"
-                        size="small"
-                        onClick={clearFilters}
-                        disabled={!hasActiveFilters}
-                      >
-                        Clear
-                      </Button>
-                      <Button
-                        variant="contained"
-                        size="small"
-                        startIcon={<FilterIcon />}
-                        onClick={applyFilters}
-                        disabled={!hasActiveFilters}
-                      >
-                        Apply Filters
-                      </Button>
+              {/* Simple Sales Table */}
+              <Card>
+                <CardContent>
+                  {/* Search and Filter Section */}
+                  <Box sx={{ mb: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                      <FilterIcon sx={{ mr: 1, fontSize: 20 }} />
+                      <Typography variant="subtitle2">Search & Filters</Typography>
                     </Box>
-                  </Box>
-                  <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                    {user?.role === 'ADMIN' && (
-                      <FormControl size="small" sx={{ minWidth: 150 }}>
-                        <InputLabel>Scope Type</InputLabel>
+                    
+                    <Grid container spacing={2} sx={{ mb: 1 }} alignItems="center">
+                      {/* Search Input */}
+                      <Grid item xs={12} md={4}>
+                        <TextField
+                          fullWidth
+                        size="small"
+                          label="Search Sales"
+                          placeholder="Search by invoice, customer..."
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          InputProps={{
+                            startAdornment: (
+                              <InputAdornment position="start">
+                                <SearchIcon />
+                              </InputAdornment>
+                            ),
+                            endAdornment: searchTerm && (
+                              <InputAdornment position="end">
+                                <IconButton
+                        size="small"
+                                  onClick={() => setSearchTerm('')}
+                                  edge="end"
+                                >
+                                  <ClearIcon />
+                                </IconButton>
+                              </InputAdornment>
+                            )
+                          }}
+                        />
+                      </Grid>
+
+                      {/* Payment Method Filter */}
+                      <Grid item xs={12} md={2}>
+                        <FormControl fullWidth size="small">
+                          <InputLabel>Payment Method</InputLabel>
                         <Select
-                          value={filters.scopeType}
-                          label="Scope Type"
-                          onChange={(e) => handleFilterChange('scopeType', e.target.value)}
-                        >
-                          <MenuItem value="all">All Types</MenuItem>
-                          <MenuItem value="BRANCH">Branch Sales</MenuItem>
-                          <MenuItem value="WAREHOUSE">Warehouse Sales</MenuItem>
+                            value={paymentMethodFilter}
+                            label="Payment Method"
+                            onChange={(e) => setPaymentMethodFilter(e.target.value)}
+                          >
+                            <MenuItem value="all">All Methods</MenuItem>
+                            <MenuItem value="cash">Cash</MenuItem>
+                            <MenuItem value="card">Card</MenuItem>
+                            <MenuItem value="upi">UPI</MenuItem>
+                            <MenuItem value="netbanking">Net Banking</MenuItem>
+                            <MenuItem value="partial_payment">Partial Payment</MenuItem>
                         </Select>
                       </FormControl>
-                    )}
-                    
-                    {user?.role === 'WAREHOUSE_KEEPER' && (
-                      <FormControl size="small" sx={{ minWidth: 200 }}>
-                        <InputLabel>Retailer</InputLabel>
+                      </Grid>
+
+                      {/* Status Filter */}
+                      <Grid item xs={12} md={2}>
+                        <FormControl fullWidth size="small">
+                          <InputLabel>Status</InputLabel>
                         <Select
-                          value={filters.retailerId}
-                          label="Retailer"
-                          onChange={(e) => handleFilterChange('retailerId', e.target.value)}
-                        >
-                          <MenuItem value="all">All Retailers</MenuItem>
-                          {(retailers || []).map((retailer) => (
-                            <MenuItem key={retailer.id} value={retailer.id}>
-                              {retailer.name}
-                            </MenuItem>
+                            value={statusFilter}
+                            label="Status"
+                            onChange={(e) => setStatusFilter(e.target.value)}
+                          >
+                            <MenuItem value="all">All Status</MenuItem>
+                            <MenuItem value="completed">Completed</MenuItem>
+                            <MenuItem value="pending">Pending</MenuItem>
+                            <MenuItem value="cancelled">Cancelled</MenuItem>
+                        </Select>
+                      </FormControl>
+                      </Grid>
+
+                      {/* Scope Type Filter */}
+                      <Grid item xs={12} md={2}>
+                        <FormControl fullWidth size="small">
+                          <InputLabel>Scope</InputLabel>
+                        <Select
+                            value={scopeTypeFilter}
+                            label="Scope"
+                            onChange={(e) => setScopeTypeFilter(e.target.value)}
+                          >
+                            <MenuItem value="all">All Scopes</MenuItem>
+                            <MenuItem value="BRANCH">Branch</MenuItem>
+                            <MenuItem value="WAREHOUSE">Warehouse</MenuItem>
+                        </Select>
+                      </FormControl>
+                      </Grid>
+
+                      {/* Sort By */}
+                      <Grid item xs={12} md={1}>
+                        <FormControl fullWidth size="small">
+                          <InputLabel>Sort By</InputLabel>
+                          <Select
+                            value={sortBy}
+                            label="Sort By"
+                            onChange={(e) => setSortBy(e.target.value)}
+                          >
+                            <MenuItem value="created_at">Date</MenuItem>
+                            <MenuItem value="total">Total</MenuItem>
+                            <MenuItem value="invoice_no">Invoice</MenuItem>
+                            <MenuItem value="customerName">Customer</MenuItem>
+                          </Select>
+                        </FormControl>
+                      </Grid>
+
+                      {/* Action Icons */}
+                      <Grid item xs={12} md={1}>
+                        <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
+                          <Tooltip title="Clear all filters">
+                            <IconButton
+                      size="small"
+                              onClick={clearFilters}
+                              disabled={getFilterSummary().length === 0}
+                            >
+                              <ClearIcon />
+                            </IconButton>
+                          </Tooltip>
+                          
+                          <Tooltip title={sortOrder === 'asc' ? 'Sort Descending' : 'Sort Ascending'}>
+                            <IconButton
+                      size="small"
+                              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                            >
+                              {sortOrder === 'asc' ? '↑' : '↓'}
+                            </IconButton>
+                          </Tooltip>
+                  </Box>
+                      </Grid>
+                    </Grid>
+
+                    {/* Filter Summary */}
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                      {getFilterSummary().length > 0 && (
+                        <>
+                          <Typography variant="body2" color="text.secondary">
+                            Active filters:
+                          </Typography>
+                          {getFilterSummary().map((filter, index) => (
+                        <Chip
+                              key={index}
+                              label={filter}
+                          size="small"
+                              color="primary"
+                              variant="outlined"
+                            />
                           ))}
-                        </Select>
-                      </FormControl>
-                    )}
-                    
-                    {user?.role === 'ADMIN' && filters.scopeType !== 'all' && (
-                      <FormControl size="small" sx={{ minWidth: 200 }}>
-                        <InputLabel>
-                          {filters.scopeType === 'BRANCH' ? 'Branch' : 'Warehouse'}
-                        </InputLabel>
-                        <Select
-                          value={filters.scopeId}
-                          label={filters.scopeType === 'BRANCH' ? 'Branch' : 'Warehouse'}
-                          onChange={(e) => handleFilterChange('scopeId', e.target.value)}
-                        >
-                          <MenuItem value="all">
-                            All {filters.scopeType === 'BRANCH' ? 'Branches' : 'Warehouses'}
-                          </MenuItem>
-                          {filters.scopeType === 'BRANCH' 
-                            ? (branches || []).map((branch) => (
-                                <MenuItem key={branch.id} value={branch.id}>
-                                  {branch.name}
-                                </MenuItem>
-                              ))
-                            : (warehouses || []).map((warehouse) => (
-                                <MenuItem key={warehouse.id} value={warehouse.id}>
-                                  {warehouse.name}
-                                </MenuItem>
-                              ))
-                          }
-                        </Select>
-                      </FormControl>
-                    )}
-                    
-                    <TextField
-                      size="small"
-                      label="Start Date"
-                      type="date"
-                      value={filters.startDate}
-                      onChange={(e) => handleFilterChange('startDate', e.target.value)}
-                      InputLabelProps={{ shrink: true }}
-                      sx={{ minWidth: 150 }}
-                    />
-                    
-                    <TextField
-                      size="small"
-                      label="End Date"
-                      type="date"
-                      value={filters.endDate}
-                      onChange={(e) => handleFilterChange('endDate', e.target.value)}
-                      InputLabelProps={{ shrink: true }}
-                      sx={{ minWidth: 150 }}
-                    />
-                  </Box>
-                  
-                  {hasActiveFilters && (
-                    <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                      {user?.role === 'ADMIN' && (
-                        <Chip
-                          label={`Type: ${filters.scopeType === 'BRANCH' ? 'Branch' : filters.scopeType === 'WAREHOUSE' ? 'Warehouse' : 'All'}`}
-                          color="primary"
-                          size="small"
-                        />
+                        </>
                       )}
-                      {user?.role === 'ADMIN' && filters.scopeId !== 'all' && (
-                        <Chip
-                          label={`Location: ${filters.scopeType === 'BRANCH' 
-                            ? (branches || []).find(b => b.id === parseInt(filters.scopeId))?.name || filters.scopeId
-                            : (warehouses || []).find(w => w.id === parseInt(filters.scopeId))?.name || filters.scopeId
-                          }`}
-                          color="secondary"
-                          size="small"
-                        />
-                      )}
-                      {user?.role === 'WAREHOUSE_KEEPER' && filters.retailerId !== 'all' && (
-                        <Chip
-                          label={`Retailer: ${(retailers || []).find(r => r.id === parseInt(filters.retailerId))?.name || filters.retailerId}`}
-                          color="secondary"
-                          size="small"
-                        />
-                      )}
-                      {filters.startDate && (
-                        <Chip
-                          label={`From: ${new Date(filters.startDate).toLocaleDateString()}`}
-                          color="info"
-                          size="small"
-                        />
-                      )}
-                      {filters.endDate && (
-                        <Chip
-                          label={`To: ${new Date(filters.endDate).toLocaleDateString()}`}
-                          color="info"
-                          size="small"
-                        />
+                      {getFilterSummary().length === 0 && (
+                        <Typography variant="body2" color="text.secondary">
+                          No filters applied - showing all items
+                        </Typography>
                       )}
                     </Box>
-                  )}
-                </Paper>
-              )}
-              <EntityTable
-                data={sales || []}
-                columns={columns}
-                loading={salesLoading}
-                error={salesError}
-                onAdd={canEdit ? () => setOpenDialog(true) : null}
-                onEdit={canEdit ? (entity) => {
-                  setEditingEntity(entity)
-                  setOpenDialog(true)
-                } : null}
-                onDelete={canEdit ? (entity) => {
-                  setEntityToDelete(entity)
+
+                    {/* Results Summary */}
+                    <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 2 }}>
+                      <Typography variant="body2" color="text.secondary">
+                        Showing {startIndex + 1}-{Math.min(endIndex, totalItems)} of {totalItems} sales
+                      </Typography>
+                    </Box>
+                  </Box>
+                  {salesLoading ? (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+                      <CircularProgress />
+                    </Box>
+                  ) : salesError ? (
+                    <Alert severity="error" sx={{ mb: 2 }}>
+                      {typeof salesError === 'string' ? salesError : salesError.message || 'Failed to load sales data'}
+                    </Alert>
+                  ) : (
+                    <TableContainer component={Paper}>
+                      <Table>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>ID</TableCell>
+                            <TableCell>Date</TableCell>
+                            <TableCell>Invoice #</TableCell>
+                            <TableCell>Type</TableCell>
+                            <TableCell>Customer</TableCell>
+                            <TableCell align="right">Total</TableCell>
+                            <TableCell align="right">Subtotal</TableCell>
+                            <TableCell align="right">Tax</TableCell>
+                            <TableCell align="right">Discount</TableCell>
+                            <TableCell>Payment Method</TableCell>
+                            <TableCell>Payment Terms</TableCell>
+                            <TableCell>Payment Status</TableCell>
+                            <TableCell>Created By</TableCell>
+                            <TableCell>Actions</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {paginatedSales.map((sale) => (
+                            <TableRow key={sale.id}>
+                              <TableCell>{sale.id}</TableCell>
+                              <TableCell>{new Date(sale.created_at).toLocaleDateString()}</TableCell>
+                              <TableCell>{sale.invoice_no || 'N/A'}</TableCell>
+                              <TableCell>
+                        <Chip
+                                  label={sale.scope_type === 'WAREHOUSE' ? 'Wholesale' : 'Retail'} 
+                                  color={sale.scope_type === 'WAREHOUSE' ? 'secondary' : 'primary'}
+                          size="small"
+                        />
+                              </TableCell>
+                              <TableCell>
+                                {(() => {
+                                  if (sale.customerInfo && sale.customerInfo.name) {
+                                    return sale.customerInfo.name;
+                                  }
+                                  if (sale.customer_info) {
+                                    try {
+                                      const customerInfo = JSON.parse(sale.customer_info);
+                                      return customerInfo.name || 'No Customer';
+                                    } catch (e) {
+                                      return 'No Customer';
+                                    }
+                                  }
+                                  return 'No Customer';
+                                })()}
+                              </TableCell>
+                              <TableCell align="right">{parseFloat(sale.total || 0).toFixed(2)}</TableCell>
+                              <TableCell align="right">{parseFloat(sale.subtotal || 0).toFixed(2)}</TableCell>
+                              <TableCell align="right">{parseFloat(sale.tax || 0).toFixed(2)}</TableCell>
+                              <TableCell align="right">{parseFloat(sale.discount || 0).toFixed(2)}</TableCell>
+                              <TableCell>
+                                {(() => {
+                                  // Get payment details
+                                  const paymentStatus = sale.paymentStatus || sale.payment_status;
+                                  const creditAmount = parseFloat(sale.creditAmount || 0);
+                                  const paymentAmount = parseFloat(sale.paymentAmount || 0);
+                                  const total = parseFloat(sale.total || 0);
+                                  
+                                  // Get payment method first
+                                  let paymentMethod = sale.paymentMethod || sale.payment_method;
+                                  if (!paymentMethod && sale.customer_info) {
+                                    try {
+                                      const customerInfo = typeof sale.customer_info === 'string' 
+                                        ? JSON.parse(sale.customer_info) 
+                                        : sale.customer_info;
+                                      paymentMethod = customerInfo.paymentMethod;
+                                    } catch (e) {
+                                      // Silent error handling
+                                    }
+                                  }
+
+                                  // ✅ CORRECTED LOGIC: Show payment method based on actual payment_method field
+                                  if (paymentMethod === 'FULLY_CREDIT') {
+                                    return <Chip label="FULLY CREDIT" color="error" size="small" />;
+                                  }
+                                  
+                                  if (paymentMethod === 'PARTIAL_PAYMENT') {
+                                    return <Chip label="PARTIAL PAYMENT" color="warning" size="small" />;
+                                  }
+                                  
+                                  // For other payment methods, show the method
+                                  const methodColors = {
+                                    'CASH': 'success',
+                                    'CARD': 'primary',
+                                    'BANK_TRANSFER': 'info',
+                                    'MOBILE_PAYMENT': 'secondary',
+                                    'CHEQUE': 'warning'
+                                  };
+                                  
+                                  return (
+                                    <Chip 
+                                      label={paymentMethod?.replace('_', ' ').toUpperCase() || 'N/A'} 
+                                      color={methodColors[paymentMethod] || 'default'}
+                                      size="small"
+                                    />
+                                  );
+                                })()}
+                              </TableCell>
+                              <TableCell>
+                                {(() => {
+                                  let paymentMethod = sale.paymentMethod || sale.payment_method;
+                                  if (!paymentMethod && sale.customer_info) {
+                                    try {
+                                      const customerInfo = typeof sale.customer_info === 'string' 
+                                        ? JSON.parse(sale.customer_info) 
+                                        : sale.customer_info;
+                                      paymentMethod = customerInfo.paymentMethod;
+                                    } catch (e) {
+                                      // Silent error handling
+                                    }
+                                  }
+                                  
+                                  if (paymentMethod === 'CREDIT') {
+                                    let customerInfo = sale.customerInfo;
+                                    if (!customerInfo && sale.customer_info) {
+                                      try {
+                                        customerInfo = typeof sale.customer_info === 'string' 
+                                          ? JSON.parse(sale.customer_info) 
+                                          : sale.customer_info;
+                                      } catch (e) {
+                                        // Silent error handling
+                                      }
+                                    }
+                                    
+                                    if (customerInfo && customerInfo.paymentTerms) {
+                                      return customerInfo.paymentTerms;
+                                    }
+                                    return 'N/A';
+                                  }
+                                  return '-';
+                                })()}
+                              </TableCell>
+                              <TableCell>
+                        <Chip
+                                  label={sale.paymentStatus || sale.payment_status || 'N/A'} 
+                                  color={(sale.paymentStatus || sale.payment_status) === 'COMPLETED' ? 'success' : (sale.paymentStatus || sale.payment_status) === 'PENDING' ? 'error' : 'default'}
+                          size="small"
+                        />
+                              </TableCell>
+                              <TableCell>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                  <Typography variant="body2" fontWeight="medium">
+                                    {sale.created_by || sale.username || sale.user_name || 'Unknown'}
+                                  </Typography>
+                                </Box>
+                              </TableCell>
+                              <TableCell>
+                                <Box sx={{ display: 'flex', gap: 1 }}>
+                                  {canEdit && (
+                                    <>
+                                      <Tooltip title="View Items">
+                                        <IconButton
+                                          size="small"
+                                          onClick={async () => {
+                                            setViewingSale(sale)
+                                            await fetchSaleForEdit(sale.id)
+                                            setShowItemsDialog(true)
+                                          }}
+                                          color="info"
+                                        >
+                                          <ViewIcon />
+                                        </IconButton>
+                                      </Tooltip>
+                                      <Tooltip title="Edit Invoice">
+                                        <IconButton
+                                          size="small"
+                                          onClick={() => handleEditInvoice(sale)}
+                                          color="secondary"
+                                        >
+                                          <ReceiptIcon />
+                                        </IconButton>
+                                      </Tooltip>
+                                      <Tooltip title="Delete">
+                                        <IconButton
+                                          size="small"
+                                          onClick={() => {
+                                            setEntityToDelete(sale)
                   setOpenDeleteDialog(true)
-                } : null}
-                onRefresh={handleRefresh}
-                entityName="Sale"
-              />
+                                          }}
+                                          color="error"
+                                        >
+                                          <DeleteIcon />
+                                        </IconButton>
+                                      </Tooltip>
+                                    </>
+                      )}
+                    </Box>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+
+                  {/* Pagination Controls */}
+                  {totalPages > 1 && (
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          Rows per page:
+                        </Typography>
+                        <FormControl size="small" sx={{ minWidth: 80 }}>
+                          <Select
+                            value={rowsPerPage}
+                            onChange={handleRowsPerPageChange}
+                            displayEmpty
+                          >
+                            <MenuItem value={10}>10</MenuItem>
+                            <MenuItem value={25}>25</MenuItem>
+                            <MenuItem value={50}>50</MenuItem>
+                            <MenuItem value={100}>100</MenuItem>
+                          </Select>
+                        </FormControl>
             </Box>
 
-            {/* Sales Returns Table - Hidden for Warehouse Keepers */}
-            {user?.role !== 'WAREHOUSE_KEEPER' && (
-              <Box sx={{ mb: 4 }}>
-                <Typography variant="h6" sx={{ mb: 2 }}>
-                  Sales Returns
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          Page {page} of {totalPages}
                 </Typography>
-                <EntityTable
-                  data={salesReturns || []}
-                  columns={returnsColumns}
-                  loading={salesLoading}
-                  error={salesError}
-                  onAdd={canEdit ? () => setOpenDialog(true) : null}
-                  onEdit={canEdit ? (entity) => {
-                    setEditingEntity(entity)
-                    setOpenDialog(true)
-                  } : null}
-                  onDelete={canEdit ? (entity) => {
-                    setEntityToDelete(entity)
-                    setOpenDeleteDialog(true)
-                  } : null}
-                  onRefresh={handleRefresh}
-                  entityName="Sales Return"
-                />
+                        <Pagination
+                          count={totalPages}
+                          page={page}
+                          onChange={handlePageChange}
+                          color="primary"
+                          size="small"
+                          showFirstButton
+                          showLastButton
+                        />
+                      </Box>
               </Box>
             )}
+                </CardContent>
+              </Card>
+            </Box>
+
           </Box>
         </PermissionCheck>
       </RouteGuard>
       
-      {/* Add/Edit Sale Dialog */}
-      <EntityFormDialog
-        open={openDialog}
-        onClose={() => {
-          setOpenDialog(false)
-          setEditingEntity(null)
-        }}
-        onSubmit={editingEntity ? handleUpdateSale : handleCreateSale}
-        title={editingEntity ? 'Edit Sale' : 'Add New Sale'}
-        fields={[
-          { name: 'customerName', label: 'Customer Name', type: 'text', required: true },
-          { name: 'customerEmail', label: 'Customer Email', type: 'email', required: false },
-          { name: 'customerPhone', label: 'Customer Phone', type: 'text', required: false },
-          { name: 'customerAddress', label: 'Customer Address', type: 'textarea', required: false },
-          { name: 'subtotal', label: 'Subtotal', type: 'number', required: true, step: 0.01 },
-          { name: 'tax', label: 'Tax Amount', type: 'number', required: false, step: 0.01, defaultValue: 0 },
-          { name: 'discount', label: 'Discount', type: 'number', required: false, step: 0.01, defaultValue: 0 },
-          { name: 'total', label: 'Total Amount (Calculated)', type: 'number', required: false, step: 0.01, disabled: true, value: calculatedTotal },
-          { name: 'paymentMethod', label: 'Payment Method', type: 'select', required: true, options: [
-            { value: 'CASH', label: 'Cash' },
-            { value: 'CARD', label: 'Card' },
-            { value: 'BANK_TRANSFER', label: 'Bank Transfer' },
-            { value: 'MOBILE_PAYMENT', label: 'Mobile Payment' }
-          ]},
-          { name: 'paymentStatus', label: 'Payment Status', type: 'select', required: true, options: [
-            { value: 'PENDING', label: 'Pending' },
-            { value: 'COMPLETED', label: 'Completed' },
-            { value: 'FAILED', label: 'Failed' },
-            { value: 'REFUNDED', label: 'Refunded' }
-          ]},
-          { name: 'status', label: 'Sale Status', type: 'select', required: true, options: [
-            { value: 'PENDING', label: 'Pending' },
-            { value: 'COMPLETED', label: 'Completed' },
-            { value: 'CANCELLED', label: 'Cancelled' }
-          ]},
-          { name: 'notes', label: 'Notes', type: 'textarea', required: false },
-        ]}
-        validationSchema={salesSchema}
-        initialData={(() => {
-          const transformed = transformSaleToFormData(editingEntity);
-          return transformed || {
-          scopeType: userScope.scopeType,
-          scopeId: userScope.scopeId,
-          subtotal: 0,
-          tax: 0,
-          discount: 0,
-          total: 0,
-          paymentMethod: 'CASH',
-          paymentStatus: 'PENDING',
-          status: 'PENDING',
-          customerName: 'Walk-in Customer',
-          customerEmail: '',
-          customerPhone: '',
-          customerAddress: '',
-          notes: ''
-        };
-        })()}
-      />
+      
       
       {/* Delete Confirmation Dialog */}
       <ConfirmationDialog
@@ -1177,6 +1480,52 @@ const SalesPage = () => {
         title="Delete Sale"
         message={`Are you sure you want to delete this sale? This action cannot be undone.`}
       />
+      
+      {/* Sale Items Dialog */}
+      <Dialog open={showItemsDialog} onClose={() => setShowItemsDialog(false)} maxWidth="md" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="h6">Sale Items - {viewingSale?.invoice_no}</Typography>
+            <Button onClick={() => setShowItemsDialog(false)}>Close</Button>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          {saleItems.length > 0 ? (
+            <TableContainer component={Paper} sx={{ mt: 2 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Item Name</TableCell>
+                    <TableCell>SKU</TableCell>
+                    <TableCell align="right">Quantity</TableCell>
+                    <TableCell align="right">Unit Price</TableCell>
+                    <TableCell align="right">Discount</TableCell>
+                    <TableCell align="right">Total</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {saleItems.map((item, index) => (
+                    <TableRow key={index}>
+                      <TableCell>{item.itemName || item.name}</TableCell>
+                      <TableCell>{item.sku}</TableCell>
+                      <TableCell align="right">{item.quantity}</TableCell>
+                      <TableCell align="right">{parseFloat(item.unitPrice || 0).toFixed(2)}</TableCell>
+                      <TableCell align="right">{parseFloat(item.discount || 0).toFixed(2)}</TableCell>
+                      <TableCell align="right">{parseFloat(item.total || 0).toFixed(2)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          ) : (
+            <Box sx={{ p: 3, textAlign: 'center' }}>
+              <Typography variant="body1" color="text.secondary">
+                No items found for this sale.
+              </Typography>
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
       
       {/* Filter Results Drawer */}
       <Drawer
@@ -1245,7 +1594,7 @@ const SalesPage = () => {
                         />
                         <ListItemText
                           primary="Total"
-                          secondary={`$${parseFloat(sale.total || 0).toFixed(2)}`}
+                          secondary={`${parseFloat(sale.total || 0).toFixed(2)}`}
                           sx={{ minWidth: 100 }}
                         />
                         <ListItemText
@@ -1314,6 +1663,14 @@ const SalesPage = () => {
           Export as PDF
         </MenuItem>
       </Menu>
+      
+      {/* Editable Invoice Form */}
+      <EditableInvoiceForm
+        open={showEditableInvoice}
+        onClose={handleCloseEditableInvoice}
+        sale={editingSale}
+        onSave={handleSaveEditableInvoice}
+      />
     </DashboardLayout>
   )
 }

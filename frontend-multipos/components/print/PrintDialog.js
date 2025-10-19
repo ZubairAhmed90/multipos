@@ -38,7 +38,8 @@ const PrintDialog = ({
   onPrintComplete,
   title = 'Print Receipt',
   showPreview = true,
-  showSettings = true
+  showSettings = true,
+  defaultLayout = 'thermal'
 }) => {
   const [printSettings, setPrintSettings] = useState({
     width: 300,
@@ -47,12 +48,22 @@ const PrintDialog = ({
     fontSize: '12px',
     paperSize: '80mm',
     copies: 1,
-    layout: 'thermal', // 'thermal' or 'color'
+    layout: defaultLayout, // 'thermal' or 'color'
     orientation: 'portrait' // 'portrait' or 'landscape'
   })
   
   const [previewMode, setPreviewMode] = useState(true)
   const printRef = useRef(null)
+
+  // Update layout when defaultLayout changes
+  React.useEffect(() => {
+    setPrintSettings(prev => ({
+      ...prev,
+      layout: defaultLayout,
+      paperSize: defaultLayout === 'thermal' ? '80mm' : 'A4',
+      width: defaultLayout === 'thermal' ? 280 : 300
+    }))
+  }, [defaultLayout])
 
   const handlePrint = () => {
     if (onPrint) {

@@ -24,10 +24,10 @@ const getPublicIP = () => {
 
 // MySQL configuration
 const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'multipos_db',
+  host:'h40.eu.core.hostnext.net',
+  user:'petzonep_zubairahmed',
+  password:'kaimkhankhani@123',
+  database:'petzonep_software',
   waitForConnections: true,
   connectionLimit: 20,
   queueLimit: 0,

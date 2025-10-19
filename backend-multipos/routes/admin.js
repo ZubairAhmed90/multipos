@@ -70,5 +70,15 @@ router.put('/users/:id', auth, requireAdmin, userUpdateValidation, adminControll
 // @access  Private (Admin only)
 router.delete('/users/:id', auth, requireAdmin, adminController.deleteUser);
 
+// @route   PUT /api/admin/users/:id/reset-password
+// @desc    Reset user password
+// @access  Private (Admin only)
+router.put('/users/:id/reset-password', auth, requireAdmin, adminController.resetUserPassword);
+
+// @route   GET /api/admin/users/:id/password
+// @desc    Get user password information
+// @access  Private (Admin only)
+router.get('/users/:id/password', auth, requireAdmin, adminController.getUserPassword);
+
 module.exports = router;
 

@@ -74,7 +74,7 @@ const printReceipt = async (req, res) => {
     
     // Get sale details
     const sale = await Sale.findById(saleId)
-      .populate('userId', 'username email')
+      .populate('userId', 'username email name')
       .populate('items.inventoryItemId', 'name sku barcode');
     
     if (!sale) {

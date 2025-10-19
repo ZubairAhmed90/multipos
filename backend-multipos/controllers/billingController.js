@@ -349,7 +349,7 @@ const generateReceiptData = (sale, company, branch, warehouse, invoiceNumber) =>
     },
     footer: {
       notes: sale.notes || '',
-      cashier: sale.cashierId.username,
+      cashier: sale.userId.username,
       thankYou: 'Thank you for your business!'
     }
   };

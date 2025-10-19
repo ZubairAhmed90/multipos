@@ -16,7 +16,7 @@ const hardwareSchema = yup.object({
   type: yup.string().required('Device type is required'),
   deviceId: yup.string().required('Device ID is required'),
   scopeType: yup.string().required('Scope type is required'),
-  scopeId: yup.number().required('Scope ID is required'),
+  scopeId: yup.string().required('Scope Name is required'),
   terminalId: yup.string().optional(),
 })
 
@@ -80,7 +80,7 @@ const fields = [
       { value: 'WAREHOUSE', label: 'Warehouse' },
     ]
   },
-  { name: 'scopeId', label: 'Scope ID', type: 'number', required: true },
+  { name: 'scopeId', label: 'Scope Name', type: 'text', required: true },
   { name: 'terminalId', label: 'Terminal ID', type: 'text', required: false },
 ]
 

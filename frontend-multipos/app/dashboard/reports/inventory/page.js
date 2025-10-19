@@ -67,19 +67,84 @@ const InventoryReportsPage = () => {
     dispatch(fetchInventoryReports(filters))
   }
 
-  const handleExport = () => {
-('Exporting inventory report...')
+  const handleExport = async () => {
+    try {
+      const XLSX = await import('xlsx')
+      
+      // Prepare data for Excel
+      const excelData = [
+        // Summary data
+        { 'Report Type': 'Inventory Summary', 'Value': '' },
+        { 'Report Type': 'Total Items', 'Value': inventoryReports?.summary?.totalItems || 0 },
+        { 'Report Type': 'Low Stock Items', 'Value': inventoryReports?.summary?.lowStockItems || 0 },
+        { 'Report Type': 'Out of Stock Items', 'Value': inventoryReports?.summary?.outOfStockItems || 0 },
+        { 'Report Type': 'Total Value', 'Value': inventoryReports?.summary?.totalValue || 0 },
+        { 'Report Type': '', 'Value': '' },
+        
+        // Category data
+        { 'Report Type': 'Items by Category', 'Value': '' },
+        ...categoryData.map(item => ({
+          'Report Type': item.name || 'N/A',
+          'Value': item.value || 0
+        })),
+        { 'Report Type': '', 'Value': '' },
+        
+        // Low stock items
+        { 'Report Type': 'Low Stock Items', 'Value': '' },
+        ...lowStockItems.map(item => ({
+          'Report Type': item.name || 'N/A',
+          'Value': item.current_stock || 0
+        })),
+        { 'Report Type': '', 'Value': '' },
+        
+        // Top selling items
+        { 'Report Type': 'Top Selling Items', 'Value': '' },
+        ...topSellingItems.map(item => ({
+          'Report Type': item.name || 'N/A',
+          'Value': item.quantity_sold || 0
+        }))
+      ]
+      
+      // Create workbook and worksheet
+      const workbook = XLSX.utils.book_new()
+      const worksheet = XLSX.utils.json_to_sheet(excelData)
+      
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Inventory Report')
+      
+      // Generate Excel file buffer
+      const excelBuffer = XLSX.write(workbook, { 
+        type: 'array', 
+        bookType: 'xlsx' 
+      })
+      
+      // Create download link
+      const blob = new Blob([excelBuffer], { 
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+      })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `inventory-report-${new Date().toISOString().split('T')[0]}.xlsx`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Export error:', error)
+      alert('Failed to export inventory report. Please try again.')
+    }
   }
 
   // Use real data from API - ensure arrays are properly handled
   const inventoryMovementData = Array.isArray(inventoryReports?.movementData) ? inventoryReports.movementData : []
-  const categoryData = inventoryReports?.itemsByCategory && typeof inventoryReports.itemsByCategory === 'object' ? 
-    Object.entries(inventoryReports.itemsByCategory).map(([name, value], index) => ({
+  const categoryData = inventoryReports?.summary?.categoryCounts && typeof inventoryReports.summary.categoryCounts === 'object' ? 
+    Object.entries(inventoryReports.summary.categoryCounts).map(([name, value], index) => ({
       name,
       value,
       color: ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'][index % 6]
     })) : []
-  const lowStockItems = Array.isArray(inventoryReports?.lowStockList) ? inventoryReports.lowStockList : []
+  const lowStockItems = Array.isArray(inventoryReports?.lowStockItems) ? inventoryReports.lowStockItems : []
   const topSellingItems = Array.isArray(inventoryReports?.topSellingItems) ? inventoryReports.topSellingItems : []
 
   return (
@@ -208,7 +273,7 @@ const InventoryReportsPage = () => {
                         Total Items
                       </Typography>
                       <Typography variant="h4">
-                        {inventoryReports?.totalItems?.toLocaleString() || '0'}
+                        {inventoryReports?.summary?.totalItems?.toLocaleString() || '0'}
                       </Typography>
                     </Box>
                     <Inventory sx={{ fontSize: 40, color: 'primary.main' }} />
@@ -225,7 +290,7 @@ const InventoryReportsPage = () => {
                         Total Value
                       </Typography>
                       <Typography variant="h4">
-                        {inventoryReports?.totalValue?.toLocaleString() || '0'}
+                        ${inventoryReports?.summary?.totalValue?.toLocaleString() || '0'}
                       </Typography>
                     </Box>
                     <TrendingUp sx={{ fontSize: 40, color: 'success.main' }} />
@@ -242,7 +307,7 @@ const InventoryReportsPage = () => {
                         Low Stock Items
                       </Typography>
                       <Typography variant="h4" color="warning.main">
-                        {inventoryReports?.lowStockItems || '0'}
+                        {inventoryReports?.summary?.stockStatusCounts?.['Low Stock'] || '0'}
                       </Typography>
                     </Box>
                     <Warning sx={{ fontSize: 40, color: 'warning.main' }} />
@@ -259,7 +324,7 @@ const InventoryReportsPage = () => {
                         Turnover Rate
                       </Typography>
                       <Typography variant="h4">
-                        {inventoryReports?.turnoverRate || '0'}x
+                        {inventoryReports?.summary?.turnoverRate || '0'}x
                       </Typography>
                     </Box>
                     <Assessment sx={{ fontSize: 40, color: 'info.main' }} />
@@ -337,13 +402,13 @@ const InventoryReportsPage = () => {
                     <TableBody>
                       {lowStockItems.map((row, index) => (
                         <TableRow key={index}>
-                          <TableCell>{row.name || row.item_name}</TableCell>
-                          <TableCell>{row.current || row.current_stock || row.quantity}</TableCell>
-                          <TableCell>{row.min || row.min_stock_level}</TableCell>
+                          <TableCell>{row.name}</TableCell>
+                          <TableCell>{row.currentStock}</TableCell>
+                          <TableCell>{row.minStockLevel}</TableCell>
                           <TableCell>
                             <Chip 
-                              label={(row.current || row.current_stock || row.quantity) <= (row.min || row.min_stock_level) ? "Critical" : "Low"} 
-                              color={(row.current || row.current_stock || row.quantity) <= (row.min || row.min_stock_level) ? "error" : "warning"} 
+                              label={row.stockStatus === 'Out of Stock' ? "Critical" : "Low"} 
+                              color={row.stockStatus === 'Out of Stock' ? "error" : "warning"} 
                               size="small" 
                             />
                           </TableCell>
@@ -371,9 +436,9 @@ const InventoryReportsPage = () => {
                     <TableBody>
                       {topSellingItems.map((row, index) => (
                         <TableRow key={index}>
-                          <TableCell>{row.name || row.item_name}</TableCell>
-                          <TableCell align="right">{row.sold || row.quantity_sold || 0}</TableCell>
-                          <TableCell align="right">{row.revenue?.toLocaleString() || '0'}</TableCell>
+                          <TableCell>{row.name}</TableCell>
+                          <TableCell align="right">{row.totalSold || 0}</TableCell>
+                          <TableCell align="right">${row.totalRevenue?.toLocaleString() || '0'}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

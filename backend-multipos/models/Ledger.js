@@ -43,7 +43,7 @@ class Ledger {
       partyType, 
       partyId, 
       balance = 0, 
-      currency = 'USD', 
+      currency = 'PKR', 
       status = 'ACTIVE',
       accountName,
       accountType,
@@ -51,9 +51,9 @@ class Ledger {
     } = ledgerData;
     
     const [result] = await pool.execute(
-      `INSERT INTO ledger (account_name, account_type, balance, currency, status, description) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [accountName || `${partyType}_${partyId}`, accountType || 'asset', balance, currency, status, description || `Ledger for ${partyType} ${partyId}`]
+      `INSERT INTO ledgers (account_name, account_type, balance, currency, status, description, scope_type, scope_id) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [accountName || `${partyType}_${partyId}`, accountType || 'asset', balance, currency, status, description || `Ledger for ${partyType} ${partyId}`, scopeType, scopeId]
     );
     
     return await Ledger.findById(result.insertId);
@@ -62,7 +62,7 @@ class Ledger {
   // Static method to find ledger by ID
   static async findById(id) {
     const [rows] = await pool.execute(
-      'SELECT * FROM ledger WHERE id = ?',
+      'SELECT * FROM ledgers WHERE id = ?',
       [id]
     );
     
@@ -75,7 +75,7 @@ class Ledger {
 
   // Static method to find ledger
   static async findOne(conditions) {
-    let query = 'SELECT * FROM ledger WHERE ';
+    let query = 'SELECT * FROM ledgers WHERE ';
     const params = [];
     const conditionsArray = [];
 
@@ -122,7 +122,7 @@ class Ledger {
     if (this.id) {
       // Update existing ledger
       await pool.execute(
-        `UPDATE ledger SET scope_type = ?, scope_id = ?, party_type = ?, party_id = ?, 
+        `UPDATE ledgers SET scope_type = ?, scope_id = ?, party_type = ?, party_id = ?, 
          balance = ?, currency = ?, status = ?, account_name = ?, account_type = ?, description = ? WHERE id = ?`,
         [this.scopeType, this.scopeId, this.partyType, this.partyId, 
          this.balance, this.currency, this.status, this.accountName, this.accountType, this.description, this.id]
@@ -130,7 +130,7 @@ class Ledger {
     } else {
       // Create new ledger
       const result = await pool.execute(
-        `INSERT INTO ledger (scope_type, scope_id, party_type, party_id, balance, currency, status, account_name, account_type, description) 
+        `INSERT INTO ledgers (scope_type, scope_id, party_type, party_id, balance, currency, status, account_name, account_type, description) 
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [this.scopeType, this.scopeId, this.partyType, this.partyId, 
          this.balance, this.currency, this.status, this.accountName, this.accountType, this.description]
@@ -148,10 +148,11 @@ class Ledger {
       await connection.beginTransaction();
       
       // Insert ledger entry
+      // branch_id should reference branches table, not ledgers table
       await connection.execute(
-        `INSERT INTO ledger_entries (ledger_id, date, type, amount, description, reference, reference_id, created_by) 
-         VALUES (?, NOW(), ?, ?, ?, ?, ?, ?)`,
-        [this.id, type, amount, description || null, reference || null, referenceId || null, createdBy || null]
+        `INSERT INTO ledger_entries (entry_type, reference_id, description, debit_amount, credit_amount, branch_id, created_by, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [type, referenceId || null, description || null, type === 'DEBIT' ? amount : 0, type === 'CREDIT' ? amount : 0, 1, createdBy || null]
       );
       
       // Update balance
@@ -163,7 +164,7 @@ class Ledger {
       
       // Update ledger balance
       await connection.execute(
-        'UPDATE ledger SET balance = ? WHERE id = ?',
+        'UPDATE ledgers SET balance = ? WHERE id = ?',
         [this.balance, this.id]
       );
       
@@ -222,7 +223,7 @@ class Ledger {
   // Static method to get balances by scope
   static async getBalancesByScope(scopeType, scopeId) {
     const [rows] = await pool.execute(
-      'SELECT party_type, party_id, balance FROM ledger WHERE scope_type = ? AND scope_id = ?',
+      'SELECT party_type, party_id, balance FROM ledgers WHERE scope_type = ? AND scope_id = ?',
       [scopeType, scopeId]
     );
     
@@ -231,7 +232,7 @@ class Ledger {
 
   // Static method to find ledgers with pagination
   static async find(conditions = {}, options = {}) {
-    let query = 'SELECT * FROM ledger WHERE 1=1';
+    let query = 'SELECT * FROM ledgers WHERE 1=1';
     const params = [];
 
     if (conditions.scopeType) {
@@ -280,7 +281,7 @@ class Ledger {
 
   // Static method to count ledgers
   static async count(conditions = {}) {
-    let query = 'SELECT COUNT(*) as count FROM ledger WHERE 1=1';
+    let query = 'SELECT COUNT(*) as count FROM ledgers WHERE 1=1';
     const params = [];
 
     if (conditions.scopeType) {
@@ -309,7 +310,7 @@ class Ledger {
 
   // Static method to update ledger
   static async updateOne(conditions, updateData) {
-    let query = 'UPDATE ledger SET ';
+    let query = 'UPDATE ledgers SET ';
     const params = [];
     const setClauses = [];
 
@@ -354,7 +355,7 @@ class Ledger {
 
   // Static method to delete ledger
   static async deleteOne(conditions) {
-    let query = 'DELETE FROM ledger WHERE ';
+    let query = 'DELETE FROM ledgers WHERE ';
     const params = [];
     const whereClauses = [];
 

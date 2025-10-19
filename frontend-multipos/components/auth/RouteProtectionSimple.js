@@ -2,23 +2,20 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
-import { useSelector } from 'react-redux'
+import { useSelector, useDispatch } from 'react-redux'
 import { Box, Typography, CircularProgress, Button } from '@mui/material'
+import { initializeAuth } from '../../app/store/slices/authSlice'
 
 const RouteProtection = ({ children }) => {
   const router = useRouter()
   const pathname = usePathname()
-  const { user, isAuthenticated, isLoading } = useSelector((state) => state.auth)
+  const dispatch = useDispatch()
+  const { user, isAuthenticated, isLoading, authInitialized } = useSelector((state) => state.auth)
 
-  // Track if auth initialization has completed
-  const [authInitialized, setAuthInitialized] = useState(false)
-  
+  // Initialize auth on mount
   useEffect(() => {
-    // Mark as initialized when we have a definitive auth state
-    if (!isLoading) {
-      setAuthInitialized(true)
-    }
-  }, [isLoading, isAuthenticated, user])
+    dispatch(initializeAuth())
+  }, [dispatch])
 
   // Memoize auth state to prevent unnecessary re-renders
   const authState = useMemo(() => ({
@@ -56,6 +53,11 @@ const RouteProtection = ({ children }) => {
       return
     }
 
+    // For dashboard sub-pages, let the specific RouteGuard handle authentication
+    if (pathname.startsWith('/dashboard/') && isAuthenticated && user) {
+      return
+    }
+
     // If we're on root path and authenticated, go to dashboard
     if (pathname === '/' && isAuthenticated && user) {
       router.replace('/dashboard')
@@ -83,8 +85,8 @@ const RouteProtection = ({ children }) => {
     )
   }
 
-  // Show loading while redirecting to login
-  if (!isAuthenticated && pathname !== '/login' && pathname !== '/register') {
+  // Show loading while redirecting to login (but not for dashboard sub-pages)
+  if (!isAuthenticated && pathname !== '/login' && pathname !== '/register' && !pathname.startsWith('/dashboard/')) {
     return (
       <Box sx={{ 
         display: 'flex', 

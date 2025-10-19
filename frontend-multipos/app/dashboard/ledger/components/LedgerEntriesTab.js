@@ -17,14 +17,22 @@ import {
   MenuItem,
   TextField,
   Grid,
-  Paper
+  Paper,
+  Card,
+  CardContent,
+  InputAdornment
 } from '@mui/material'
 import {
   Edit as EditIcon,
   Delete as DeleteIcon,
-  Search as SearchIcon
+  Search as SearchIcon,
+  Add as AddIcon,
+  Clear as ClearIcon,
+  Receipt as TransactionIcon,
+  FilterList as FilterIcon,
+  GetApp as ExportIcon
 } from '@mui/icons-material'
-import EntityTable from '../../../../components/crud/EntityTable'
+import { DataGrid } from '@mui/x-data-grid'
 import EntityFormDialog from '../../../../components/crud/EntityFormDialog'
 import ConfirmationDialog from '../../../../components/crud/ConfirmationDialog'
 import {
@@ -77,7 +85,7 @@ const columns = [
     renderCell: (params) => {
       const value = params.value;
       if (!value || isNaN(value)) return '$0.00';
-      return `$${parseFloat(value).toFixed(2)}`;
+      return `${parseFloat(value).toFixed(2)}`;
     }
   },
   { field: 'description', headerName: 'Description', width: 250 },
@@ -144,7 +152,8 @@ function LedgerEntriesTab() {
   const [selectedEntry, setSelectedEntry] = useState(null)
   const [isEdit, setIsEdit] = useState(false)
   
-  // Filters
+  // Filters and search
+  const [searchTerm, setSearchTerm] = useState('')
   const [filters, setFilters] = useState({
     accountId: '',
     type: '',
@@ -242,6 +251,7 @@ function LedgerEntriesTab() {
   }
 
   const clearFilters = () => {
+    setSearchTerm('')
     setFilters({
       accountId: '',
       type: '',
@@ -250,21 +260,184 @@ function LedgerEntriesTab() {
     })
   }
 
+  // Filter entries based on search and filters
+  const filteredEntries = useMemo(() => {
+    if (!entries) return []
+    
+    return entries.filter(entry => {
+      const matchesSearch = !searchTerm || 
+        entry.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        entry.reference?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        entry.reference_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        entry.account_name?.toLowerCase().includes(searchTerm.toLowerCase())
+      
+      const matchesAccount = !filters.accountId || entry.ledgerId === parseInt(filters.accountId)
+      const matchesType = !filters.type || entry.type === filters.type
+      
+      // Date filtering
+      let matchesDate = true
+      if (filters.startDate || filters.endDate) {
+        const entryDate = new Date(entry.date)
+        if (filters.startDate) {
+          const startDate = new Date(filters.startDate)
+          matchesDate = matchesDate && entryDate >= startDate
+        }
+        if (filters.endDate) {
+          const endDate = new Date(filters.endDate)
+          endDate.setHours(23, 59, 59, 999) // Include entire end date
+          matchesDate = matchesDate && entryDate <= endDate
+        }
+      }
+      
+      return matchesSearch && matchesAccount && matchesType && matchesDate
+    })
+  }, [entries, searchTerm, filters])
+
+  // Enhanced columns with actions
+  const columns = [
+    { field: 'id', headerName: 'ID', width: 70 },
+    { 
+      field: 'date', 
+      headerName: 'Date', 
+      width: 120, 
+      type: 'date',
+      valueGetter: (params) => {
+        if (!params || !params.value) return null;
+        return new Date(params.value);
+      },
+      renderCell: (params) => {
+        if (!params || !params.value) return 'N/A';
+        return new Date(params.value).toLocaleDateString();
+      }
+    },
+    { 
+      field: 'type', 
+      headerName: 'Type', 
+      width: 100,
+      renderCell: (params) => {
+        if (!params || !params.value) return <Chip label="N/A" size="small" />
+        return (
+          <Chip 
+            label={params.value} 
+            color={params.value === 'DEBIT' ? 'success' : 'error'}
+            size="small"
+          />
+        )
+      }
+    },
+    { 
+      field: 'amount', 
+      headerName: 'Amount', 
+      width: 120, 
+      type: 'number', 
+      renderCell: (params) => {
+        if (!params) return '$0.00'
+        const value = params.value;
+        if (!value || isNaN(value)) return '$0.00';
+        return `$${parseFloat(value).toFixed(2)}`;
+      }
+    },
+    { field: 'description', headerName: 'Description', width: 250, flex: 1 },
+    { field: 'reference', headerName: 'Reference', width: 120 },
+    { field: 'reference_id', headerName: 'Ref. ID', width: 100 },
+    { field: 'account_name', headerName: 'Account', width: 150 },
+    {
+      field: 'actions',
+      headerName: 'Actions',
+      width: 120,
+      sortable: false,
+      renderCell: (params) => {
+        if (!params || !params.row) return null
+        return (
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <Tooltip title="Edit Entry">
+              <IconButton
+                size="small"
+                onClick={() => handleEdit(params.row)}
+                color="primary"
+              >
+                <EditIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Delete Entry">
+              <IconButton
+                size="small"
+                onClick={() => handleDelete(params.row)}
+                color="error"
+              >
+                <DeleteIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        )
+      }
+    }
+  ]
+
   return (
     <Box>
-      <Box sx={{ mb: 3 }}>
-        <Typography variant="h5">
-          Transaction Entries
-        </Typography>
+      {/* Header */}
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <TransactionIcon sx={{ fontSize: 30, color: 'primary.main' }} />
+          <Box>
+            <Typography variant="h5">
+              Transaction Entries
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              View and manage all ledger transactions
+            </Typography>
+          </Box>
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button
+            variant="outlined"
+            startIcon={<ExportIcon />}
+            sx={{ textTransform: 'none' }}
+          >
+            Export
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={handleAdd}
+            sx={{ textTransform: 'none' }}
+          >
+            Add Entry
+          </Button>
+        </Box>
       </Box>
 
-      {/* Filters */}
+      {/* Search and Filters */}
       <Paper sx={{ p: 2, mb: 3 }}>
-        <Typography variant="h6" gutterBottom>
-          Filters
-        </Typography>
-        <Grid container spacing={2}>
-          <Grid item xs={12} sm={6} md={3}>
+        <Grid container spacing={2} alignItems="center">
+          <Grid item xs={12} md={4}>
+            <TextField
+              fullWidth
+              size="small"
+              placeholder="Search transactions..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon />
+                  </InputAdornment>
+                ),
+                endAdornment: searchTerm && (
+                  <InputAdornment position="end">
+                    <IconButton
+                      size="small"
+                      onClick={() => setSearchTerm('')}
+                    >
+                      <ClearIcon />
+                    </IconButton>
+                  </InputAdornment>
+                )
+              }}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={2}>
             <FormControl fullWidth size="small">
               <InputLabel>Account</InputLabel>
               <Select
@@ -275,13 +448,13 @@ function LedgerEntriesTab() {
                 <MenuItem value="">All Accounts</MenuItem>
                 {accounts.map((account) => (
                   <MenuItem key={account.id} value={account.id}>
-                    {account.accountName}
+                    {account.accountName || account.account_name}
                   </MenuItem>
                 ))}
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid item xs={12} sm={6} md={2}>
             <FormControl fullWidth size="small">
               <InputLabel>Type</InputLabel>
               <Select
@@ -295,7 +468,7 @@ function LedgerEntriesTab() {
               </Select>
             </FormControl>
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid item xs={12} sm={6} md={2}>
             <TextField
               fullWidth
               size="small"
@@ -306,7 +479,7 @@ function LedgerEntriesTab() {
               InputLabelProps={{ shrink: true }}
             />
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid item xs={12} sm={6} md={2}>
             <TextField
               fullWidth
               size="small"
@@ -321,6 +494,7 @@ function LedgerEntriesTab() {
         <Box sx={{ mt: 2 }}>
           <Button
             variant="outlined"
+            startIcon={<ClearIcon />}
             onClick={clearFilters}
             sx={{ textTransform: 'none' }}
           >
@@ -329,23 +503,96 @@ function LedgerEntriesTab() {
         </Box>
       </Paper>
 
+      {/* Summary Cards */}
+      <Grid container spacing={2} sx={{ mb: 3 }}>
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom variant="body2">
+                Total Entries
+              </Typography>
+              <Typography variant="h4">
+                {filteredEntries.length}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom variant="body2">
+                Total Debits
+              </Typography>
+              <Typography variant="h4" color="success.main">
+                ${filteredEntries
+                  .filter(entry => entry.type === 'DEBIT')
+                  .reduce((sum, entry) => sum + (parseFloat(entry.amount) || 0), 0)
+                  .toFixed(2)}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom variant="body2">
+                Total Credits
+              </Typography>
+              <Typography variant="h4" color="error.main">
+                ${filteredEntries
+                  .filter(entry => entry.type === 'CREDIT')
+                  .reduce((sum, entry) => sum + (parseFloat(entry.amount) || 0), 0)
+                  .toFixed(2)}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom variant="body2">
+                Net Balance
+              </Typography>
+              <Typography variant="h4" color="info.main">
+                ${(filteredEntries
+                  .filter(entry => entry.type === 'DEBIT')
+                  .reduce((sum, entry) => sum + (parseFloat(entry.amount) || 0), 0) -
+                  filteredEntries
+                  .filter(entry => entry.type === 'CREDIT')
+                  .reduce((sum, entry) => sum + (parseFloat(entry.amount) || 0), 0)
+                ).toFixed(2)}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+
       {entriesError && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {entriesError}
         </Alert>
       )}
 
-      <EntityTable
-        data={entries?.filter(entry => entry && entry.id) || []}
-        loading={entriesLoading}
-        columns={columns}
-        title=""
-        entityName="Entry"
-        onAdd={handleAdd}
-        onEdit={handleEdit}
-        onDelete={handleDelete}
-        error={entriesError}
-      />
+      {/* DataGrid */}
+      <Paper sx={{ height: 600, width: '100%' }}>
+        <DataGrid
+          rows={filteredEntries}
+          columns={columns}
+          loading={entriesLoading}
+          pageSize={25}
+          rowsPerPageOptions={[25, 50, 100]}
+          disableSelectionOnClick
+          sx={{
+            '& .MuiDataGrid-cell': {
+              borderBottom: '1px solid #e0e0e0',
+            },
+            '& .MuiDataGrid-columnHeaders': {
+              backgroundColor: '#f5f5f5',
+              borderBottom: '2px solid #e0e0e0',
+            },
+          }}
+        />
+      </Paper>
 
       <EntityFormDialog
         open={formOpen}

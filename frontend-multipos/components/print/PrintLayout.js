@@ -8,8 +8,8 @@ const PrintLayout = ({
   type = 'receipt', // 'receipt' or 'invoice'
   title = 'RECEIPT',
   companyName = 'MultiPOS Store',
-  companyAddress = '123 Business Street, City, State 12345',
-  companyPhone = '(555) 123-4567',
+  companyAddress = 'Shop no 42 unit no 2 latifabad near musarrat banquet Hyderabad',
+  companyPhone = '03111100355',
   companyEmail = 'info@multipos.com',
   receiptNumber,
   date,
@@ -21,6 +21,11 @@ const PrintLayout = ({
   tax = 0,
   total = 0,
   paymentMethod = 'Cash',
+  paymentAmount = null,
+  creditAmount = null,
+  paymentStatus = 'COMPLETED',
+  outstandingCleared = null,
+  discount = 0,
   change = 0,
   notes = '',
   footerMessage = 'Thank you for your business!',
@@ -31,7 +36,10 @@ const PrintLayout = ({
   fontSize = '12px'
 }) => {
   const [logoError, setLogoError] = React.useState(false)
-  const formatCurrency = (amount) => `${Number(amount).toFixed(2)}`
+  const formatCurrency = (amount) => {
+    const num = Number(amount)
+    return isNaN(num) ? '0.00' : num.toFixed(2)
+  }
 
   // Determine container styles based on layout
   const containerStyles = layout === 'thermal' ? {
@@ -86,7 +94,9 @@ const PrintLayout = ({
                 display: 'block',
                 margin: '0 auto',
                 width: layout === 'thermal' ? '100px' : '150px',
-                minHeight: layout === 'thermal' ? '50px' : '75px'
+                minHeight: layout === 'thermal' ? '50px' : '75px',
+                maxWidth: '100%',
+                height: 'auto'
               }}
               onError={() => {
                 setLogoError(true)
@@ -94,6 +104,7 @@ const PrintLayout = ({
               onLoad={() => {
                 setLogoError(false)
               }}
+              priority
             />
           ) : (
             <div 
@@ -335,6 +346,33 @@ const PrintLayout = ({
                 {formatCurrency((item.unitPrice || item.price || 0) * item.quantity)}
               </div>
             </div>
+            
+            {/* Show item discount if applicable */}
+            {item.discount > 0 && (
+              <div style={{ 
+                display: 'flex', 
+                marginTop: '2px',
+                justifyContent: 'flex-end'
+              }}>
+                <div style={{ 
+                  fontSize: layout === 'thermal' ? '9px' : '11px',
+                  color: '#d32f2f',
+                  fontWeight: 'bold',
+                  marginRight: '60px'
+                }}>
+                  Discount: -{formatCurrency(item.discount)}
+                </div>
+                <div style={{ 
+                  width: '60px', 
+                  textAlign: 'right', 
+                  fontWeight: 'bold', 
+                  fontSize: layout === 'thermal' ? '10px' : '12px',
+                  color: '#d32f2f'
+                }}>
+                  {formatCurrency(((item.unitPrice || item.price || 0) * item.quantity) - (item.discount || 0))}
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -376,6 +414,22 @@ const PrintLayout = ({
             fontWeight: 'bold'
           }}>{formatCurrency(tax)}</span>
         </div>
+        
+        {/* Show discount if applicable */}
+        {discount > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+            <span style={{ 
+              fontSize: layout === 'thermal' ? '10px' : '13px',
+              fontWeight: 'bold',
+              color: '#d32f2f'
+            }}>Discount:</span>
+            <span style={{ 
+              fontSize: layout === 'thermal' ? '10px' : '13px',
+              color: '#d32f2f',
+              fontWeight: 'bold'
+            }}>-{formatCurrency(discount)}</span>
+          </div>
+        )}
         <div style={{ 
           borderTop: layout === 'thermal' ? '2px solid #000' : '3px solid #000', 
           margin: '8px 0' 
@@ -406,13 +460,63 @@ const PrintLayout = ({
             fontSize: layout === 'thermal' ? '10px' : '13px',
             fontWeight: 'bold',
             color: '#000'
-          }}>Payment:</span>
+          }}>Payment Method:</span>
           <span style={{ 
             fontSize: layout === 'thermal' ? '10px' : '13px',
             color: '#000',
             fontWeight: 'bold'
           }}>{paymentMethod}</span>
         </div>
+        
+        {/* Show payment amount (what customer is paying now) */}
+        {paymentAmount !== null && paymentAmount !== undefined && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+            <span style={{ 
+              fontSize: layout === 'thermal' ? '10px' : '13px',
+              fontWeight: 'bold',
+              color: '#000'
+            }}>Payment Amount:</span>
+            <span style={{ 
+              fontSize: layout === 'thermal' ? '10px' : '13px',
+              color: '#000',
+              fontWeight: 'bold'
+            }}>{formatCurrency(paymentAmount)}</span>
+          </div>
+        )}
+        
+        {/* Show credit amount if there's a remaining balance */}
+        {creditAmount !== null && creditAmount !== undefined && creditAmount > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+            <span style={{ 
+              fontSize: layout === 'thermal' ? '10px' : '13px',
+              fontWeight: 'bold',
+              color: '#000'
+            }}>Credit Amount:</span>
+            <span style={{ 
+              fontSize: layout === 'thermal' ? '10px' : '13px',
+              color: '#000',
+              fontWeight: 'bold'
+            }}>{formatCurrency(creditAmount)}</span>
+          </div>
+        )}
+        
+        {/* Show outstanding payments cleared if applicable */}
+        {outstandingCleared !== null && outstandingCleared !== undefined && outstandingCleared > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+            <span style={{ 
+              fontSize: layout === 'thermal' ? '10px' : '13px',
+              fontWeight: 'bold',
+              color: '#2E7D32'
+            }}>Outstanding Cleared:</span>
+            <span style={{ 
+              fontSize: layout === 'thermal' ? '10px' : '13px',
+              color: '#2E7D32',
+              fontWeight: 'bold'
+            }}>{formatCurrency(outstandingCleared)}</span>
+          </div>
+        )}
+        
+        {/* Payment status removed - not needed on receipt */}
         {change > 0 && (
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
             <span style={{ 
@@ -461,6 +565,29 @@ const PrintLayout = ({
           </div>
         </>
       )}
+
+      {/* Return Policy */}
+      <div style={{ 
+        textAlign: 'center', 
+        marginTop: layout === 'thermal' ? '8px' : '16px',
+        backgroundColor: layout === 'color' ? '#fff3cd' : 'transparent',
+        padding: layout === 'color' ? '8px' : '0',
+        borderRadius: layout === 'color' ? '4px' : '0',
+        border: layout === 'color' ? '1px solid #ffc107' : 'none'
+      }}>
+        <div style={{ 
+          borderTop: layout === 'thermal' ? '2px solid #000' : '2px solid #000', 
+          marginBottom: '6px' 
+        }} />
+        <div style={{ 
+          fontSize: layout === 'thermal' ? '9px' : '11px', 
+          marginBottom: '4px',
+          color: '#000',
+          fontWeight: 'bold'
+        }}>
+          (Please return or exchange within 3 days)
+        </div>
+      </div>
 
       {/* Footer */}
       <div style={{ 

@@ -82,10 +82,10 @@ const columns = [
     width: 120, 
     type: 'number', 
     renderCell: (params) => {
-      if (!params || !params.value) return '$0.00';
+      if (!params || !params.value) return '0.00';
       const value = params.value;
-      if (isNaN(value)) return '$0.00';
-      return `$${parseFloat(value).toFixed(2)}`;
+      if (isNaN(value)) return '0.00';
+      return `${parseFloat(value).toFixed(2)}`;
     }
   },
   { field: 'description', headerName: 'Description', width: 250 },

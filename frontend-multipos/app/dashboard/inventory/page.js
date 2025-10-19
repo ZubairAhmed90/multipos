@@ -1,21 +1,59 @@
 'use client'
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useMemo } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import * as yup from 'yup'
-import { Box, Typography } from '@mui/material'
+import {
+  Box,
+  Typography,
+  Button,
+  TextField,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Chip,
+  Grid,
+  Paper,
+  InputAdornment,
+  IconButton,
+  Tooltip,
+  Card,
+  CardContent,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Alert,
+  CircularProgress,
+  Pagination
+} from '@mui/material'
+import { 
+  CloudUpload as UploadIcon,
+  Search as SearchIcon,
+  Clear as ClearIcon,
+  FilterList as FilterIcon,
+  Inventory as InventoryIcon,
+  Warning as WarningIcon,
+  CheckCircle as CheckIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon
+} from '@mui/icons-material'
 import withAuth from '../../../components/auth/withAuth.js'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../components/auth/RouteGuard'
 import PermissionCheck from '../../../components/auth/PermissionCheck'
-import EntityTable from '../../../components/crud/EntityTable'
 import EntityFormDialog from '../../../components/crud/EntityFormDialog'
 import ConfirmationDialog from '../../../components/crud/ConfirmationDialog'
 import PollingStatusIndicator from '../../../components/polling/PollingStatusIndicator'
+import ExcelUploadDialog from '../../../components/upload/ExcelUploadDialog'
 import { useInventoryPolling } from '../../../hooks/usePolling'
 import { fetchInventory, createInventoryItem, updateInventoryItem, deleteInventoryItem } from '../../store/slices/inventorySlice'
 import { fetchBranchSettings } from '../../store/slices/branchesSlice'
 import { fetchWarehouseSettings, fetchWarehouses } from '../../store/slices/warehousesSlice'
+import ScopeField from '../../../components/forms/ScopeField'
 
 // Validation schema - matches backend validation exactly
 const inventorySchema = yup.object({
@@ -25,11 +63,13 @@ const inventorySchema = yup.object({
     .max(200, 'Item name must be between 1 and 200 characters')
     .required('Item name is required'),
   sku: yup.string()
-    .trim()
-    .min(1, 'SKU must be between 1 and 20 characters')
-    .max(20, 'SKU must be between 1 and 20 characters')
-    .matches(/^[A-Za-z0-9-]+$/, 'SKU can only contain letters, numbers, and hyphens')
-    .required('SKU is required'),
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .test('sku-validation', 'SKU must be between 1 and 20 characters and can only contain letters, numbers, and hyphens', function(value) {
+      if (!value) return true // Allow empty/null values
+      if (value.length < 1 || value.length > 20) return false
+      return /^[A-Za-z0-9-]+$/.test(value)
+    }),
   barcode: yup.string()
     .nullable()
     .transform((value) => value === '' ? null : value)
@@ -71,26 +111,84 @@ const inventorySchema = yup.object({
   scopeType: yup.string()
     .oneOf(['BRANCH', 'WAREHOUSE'], 'Scope type must be BRANCH or WAREHOUSE')
     .required('Scope type is required'),
-  scopeId: yup.number()
-    .integer('Scope ID must be a valid positive integer')
-    .min(1, 'Scope ID must be a valid positive integer')
-    .required('Scope ID is required'),
+  scopeId: yup.string()
+    .min(1, 'Scope name must be between 1 and 100 characters')
+    .max(100, 'Scope name must be between 1 and 100 characters')
+    .required('Scope name is required'),
 })
 
 // Table columns configuration
 const columns = [
   { field: 'id', headerName: 'ID', width: 70 },
   { field: 'name', headerName: 'Product Name', width: 200 },
-  { field: 'sku', headerName: 'SKU', width: 120 },
   { field: 'category', headerName: 'Category', width: 120 },
   { field: 'unit', headerName: 'Unit', width: 80 },
-  { field: 'costPrice', headerName: 'Cost Price', width: 100, type: 'number', renderCell: (params) => `${params.value}` },
-  { field: 'sellingPrice', headerName: 'Selling Price', width: 120, type: 'number', renderCell: (params) => `${params.value}` },
-  { field: 'currentStock', headerName: 'Current Stock', width: 120, type: 'number' },
+  { field: 'costPrice', headerName: 'Cost Price', width: 100, type: 'number', renderCell: (params) => {
+    const value = params.value
+    if (value === null || value === undefined || isNaN(value)) return '$0.00'
+    return `${Number(value).toFixed(2)}`
+  }},
+  { field: 'sellingPrice', headerName: 'Selling Price', width: 120, type: 'number', renderCell: (params) => {
+    const value = params.value
+    if (value === null || value === undefined || isNaN(value)) return '$0.00'
+    return `${Number(value).toFixed(2)}`
+  }},
+  { 
+    field: 'currentStock', 
+    headerName: 'Current Stock', 
+    width: 140, 
+    type: 'number',
+    renderCell: (params) => {
+      const stock = params.value || 0
+      const minStock = params.row.minStockLevel || 0
+      const maxStock = params.row.maxStockLevel || 0
+      
+      let color = 'default'
+      let icon = null
+      
+      if (stock === 0) {
+        color = 'error'
+        icon = <WarningIcon fontSize="small" />
+      } else if (stock <= minStock) {
+        color = 'warning'
+        icon = <WarningIcon fontSize="small" />
+      } else if (maxStock > 0 && stock > maxStock) {
+        color = 'info'
+        icon = <InventoryIcon fontSize="small" />
+      } else {
+        color = 'success'
+        icon = <CheckIcon fontSize="small" />
+      }
+      
+      return (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          {icon}
+          <Chip 
+            label={stock} 
+            size="small" 
+            color={color}
+            variant="outlined"
+          />
+        </Box>
+      )
+    }
+  },
   { field: 'minStockLevel', headerName: 'Min Stock', width: 100, type: 'number' },
   { field: 'maxStockLevel', headerName: 'Max Stock', width: 100, type: 'number' },
-  { field: 'scopeType', headerName: 'Scope Type', width: 120 },
-  { field: 'scopeId', headerName: 'Scope ID', width: 100 },
+  { 
+    field: 'scopeType', 
+    headerName: 'Scope Type', 
+    width: 120,
+    renderCell: (params) => (
+      <Chip 
+        label={params.value} 
+        size="small" 
+        color={params.value === 'BRANCH' ? 'primary' : 'secondary'}
+        variant="outlined"
+      />
+    )
+  },
+  { field: 'scopeId', headerName: 'Scope Name', width: 100 },
   { field: 'createdAt', headerName: 'Created', width: 150 },
 ]
 
@@ -98,7 +196,6 @@ const columns = [
 const getFields = (user) => {
   const baseFields = [
     { name: 'name', label: 'Product Name', type: 'text', required: true },
-    { name: 'sku', label: 'SKU', type: 'text', required: true },
     { name: 'barcode', label: 'Barcode', type: 'text', required: false },
     { name: 'description', label: 'Description', type: 'textarea', required: false },
     { 
@@ -175,7 +272,22 @@ const getFields = (user) => {
           { value: 'WAREHOUSE', label: 'Warehouse' },
         ]
       },
-      { name: 'scopeId', label: 'Scope ID', type: 'number', required: true }
+      { 
+        name: 'scopeId', 
+        label: 'Scope Name', 
+        type: 'custom', 
+        required: true,
+        render: ({ register, errors, setValue, watch }) => (
+          <ScopeField 
+            register={register}
+            errors={errors}
+            setValue={setValue}
+            watch={watch}
+            label="Scope Name"
+            required={true}
+          />
+        )
+      }
     )
   } else if (user?.role === 'CASHIER' && user?.branchId) {
     // Cashier is automatically assigned to their branch
@@ -190,10 +302,10 @@ const getFields = (user) => {
       },
       { 
         name: 'scopeId', 
-        label: 'Branch ID', 
-        type: 'number', 
+        label: 'Branch Name', 
+        type: 'text', 
         required: true,
-        defaultValue: user.branchId,
+        defaultValue: user.branchName,
         disabled: true
       }
     )
@@ -210,10 +322,10 @@ const getFields = (user) => {
       },
       { 
         name: 'scopeId', 
-        label: 'Warehouse ID', 
-        type: 'number', 
+        label: 'Warehouse Name', 
+        type: 'text', 
         required: true,
-        defaultValue: user.warehouseId,
+        defaultValue: user.warehouseName,
         disabled: true
       }
     )
@@ -230,7 +342,7 @@ const getFields = (user) => {
           { value: 'WAREHOUSE', label: 'Warehouse' },
         ]
       },
-      { name: 'scopeId', label: 'Scope ID', type: 'number', required: true }
+      { name: 'scopeId', label: 'Scope Name', type: 'text', required: true }
     )
   }
 
@@ -241,8 +353,8 @@ function InventoryPage() {
   const dispatch = useDispatch()
   const { data: inventory, loading, error } = useSelector((state) => state.inventory)
   
-  // Ensure inventory is always an array
-  const safeInventory = Array.isArray(inventory) ? inventory : []
+  // Ensure inventory is always an array — memoized to avoid changing identity across renders
+  const safeInventory = useMemo(() => Array.isArray(inventory) ? inventory : [], [inventory])
   const { user } = useSelector((state) => state.auth)
   const { branchSettings } = useSelector((state) => state.branches)
   const { warehouseSettings, warehouses } = useSelector((state) => state.warehouses)
@@ -250,17 +362,134 @@ function InventoryPage() {
   // Dialog states
   const [formDialogOpen, setFormDialogOpen] = useState(false)
   const [confirmationDialogOpen, setConfirmationDialogOpen] = useState(false)
+  const [excelUploadOpen, setExcelUploadOpen] = useState(false)
   const [selectedEntity, setSelectedEntity] = useState(null)
   const [isEdit, setIsEdit] = useState(false)
   
   // Tab state for warehouse keepers - removed, only show current warehouse
   const [selectedWarehouseId, setSelectedWarehouseId] = useState(null)
   
+  // Search and filter states
+  const [searchTerm, setSearchTerm] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [stockFilter, setStockFilter] = useState('all')
+  const [scopeFilter, setScopeFilter] = useState('all')
+  const [soldFilter, setSoldFilter] = useState('all')
+  const [returnedFilter, setReturnedFilter] = useState('all')
+  const [sortBy, setSortBy] = useState('name')
+  const [sortOrder, setSortOrder] = useState('asc')
+  
+  // Pagination states
+  const [page, setPage] = useState(1)
+  const [rowsPerPage, setRowsPerPage] = useState(25)
+  
   // Enable real-time polling for inventory
   const { isPolling, lastUpdate, refreshData } = useInventoryPolling({
     enabled: true,
     immediate: true
   })
+
+  // Filter and search logic
+  const filteredAndSortedInventory = useMemo(() => {
+    let filtered = [...safeInventory]
+
+    // Apply search filter
+    if (searchTerm.trim()) {
+      const searchLower = searchTerm.toLowerCase()
+      filtered = filtered.filter(item => 
+        item.name?.toLowerCase().includes(searchLower) ||
+        item.category?.toLowerCase().includes(searchLower) ||
+        item.description?.toLowerCase().includes(searchLower) ||
+        item.barcode?.toLowerCase().includes(searchLower)
+      )
+    }
+
+    // Apply category filter
+    if (categoryFilter !== 'all') {
+      filtered = filtered.filter(item => item.category === categoryFilter)
+    }
+
+    // Apply stock filter
+    if (stockFilter === 'low') {
+      filtered = filtered.filter(item => item.currentStock <= item.minStockLevel)
+    } else if (stockFilter === 'out') {
+      filtered = filtered.filter(item => item.currentStock === 0)
+    } else if (stockFilter === 'high') {
+      filtered = filtered.filter(item => item.currentStock > item.maxStockLevel)
+    }
+
+    // Apply scope filter
+    if (scopeFilter !== 'all') {
+      filtered = filtered.filter(item => item.scopeType === scopeFilter)
+    }
+
+    // Apply sold filter
+    if (soldFilter === 'sold') {
+      filtered = filtered.filter(item => item.totalSold > 0)
+    } else if (soldFilter === 'not_sold') {
+      filtered = filtered.filter(item => item.totalSold === 0)
+    }
+
+    // Apply returned filter
+    if (returnedFilter === 'returned') {
+      filtered = filtered.filter(item => item.totalReturned > 0)
+    } else if (returnedFilter === 'not_returned') {
+      filtered = filtered.filter(item => item.totalReturned === 0)
+    }
+
+    // Apply sorting
+    filtered.sort((a, b) => {
+      let aValue = a[sortBy]
+      let bValue = b[sortBy]
+
+      // Handle null/undefined values
+      if (aValue == null) aValue = ''
+      if (bValue == null) bValue = ''
+
+      // Convert to string for comparison if needed
+      if (typeof aValue === 'string') aValue = aValue.toLowerCase()
+      if (typeof bValue === 'string') bValue = bValue.toLowerCase()
+
+      if (sortOrder === 'asc') {
+        return aValue < bValue ? -1 : aValue > bValue ? 1 : 0
+      } else {
+        return aValue > bValue ? -1 : aValue < bValue ? 1 : 0
+      }
+    })
+
+    return filtered
+  }, [safeInventory, searchTerm, categoryFilter, stockFilter, scopeFilter, soldFilter, returnedFilter, sortBy, sortOrder])
+
+  // Get unique categories for filter dropdown
+  const categories = useMemo(() => {
+    const uniqueCategories = [...new Set(safeInventory.map(item => item.category).filter(Boolean))]
+    return uniqueCategories.sort()
+  }, [safeInventory])
+
+  // Clear all filters
+  const clearFilters = () => {
+    setSearchTerm('')
+    setCategoryFilter('all')
+    setStockFilter('all')
+    setScopeFilter('all')
+    setSoldFilter('all')
+    setReturnedFilter('all')
+    setSortBy('name')
+    setSortOrder('asc')
+    setPage(1) // Reset to first page when clearing filters
+  }
+
+  // Get filter summary
+  const getFilterSummary = () => {
+    const filters = []
+    if (searchTerm) filters.push(`Search: "${searchTerm}"`)
+    if (categoryFilter !== 'all') filters.push(`Category: ${categoryFilter}`)
+    if (stockFilter !== 'all') filters.push(`Stock: ${stockFilter}`)
+    if (scopeFilter !== 'all') filters.push(`Scope: ${scopeFilter}`)
+    if (soldFilter !== 'all') filters.push(`Sold: ${soldFilter}`)
+    if (returnedFilter !== 'all') filters.push(`Returned: ${returnedFilter}`)
+    return filters
+  }
 
   // Load data on component mount
   useEffect(() => {
@@ -321,6 +550,13 @@ function InventoryPage() {
     setSelectedEntity(null)
   }
 
+  // Excel upload handlers
+  const handleExcelUploadSuccess = (result) => {
+    console.log('Excel upload successful:', result)
+    dispatch(fetchInventory()) // Refresh inventory data
+    setExcelUploadOpen(false)
+  }
+
   // Handle CRUD operations
   const handleCreate = async (data) => {
     try {
@@ -377,74 +613,442 @@ function InventoryPage() {
   
   // Filter inventory based on user role
   const getFilteredInventory = () => {
-    if (user?.role === 'WAREHOUSE_KEEPER') {
-      // Show only current warehouse inventory
-      return safeInventory.filter(item => 
-        item.scopeType === 'WAREHOUSE' && item.scopeId === user?.warehouseId
-      )
-    }
-    // For other roles, show all inventory
-    return safeInventory
+    let filtered = filteredAndSortedInventory
+
+    // Debug logging
+    console.log('[InventoryPage] User info:', {
+      role: user?.role,
+      branchId: user?.branchId,
+      branchName: user?.branchName,
+      warehouseId: user?.warehouseId,
+      warehouseName: user?.warehouseName
+    })
+    
+    console.log('[InventoryPage] Total inventory items before filtering:', filtered.length)
+    console.log('[InventoryPage] Sample inventory items:', filtered.slice(0, 3).map(item => ({
+      name: item.name,
+      scopeType: item.scopeType,
+      scopeId: item.scopeId
+    })))
+
+    // Note: Backend already applies role-based filtering, so we don't need to filter again here
+    // The backend returns only the inventory items that the user is allowed to see
+    // This prevents double-filtering which was causing items to be hidden
+
+    console.log('[InventoryPage] Final filtered items (no additional filtering):', filtered.length)
+    return filtered
+  }
+
+  // Pagination logic
+  const totalItems = getFilteredInventory().length
+  const totalPages = Math.ceil(totalItems / rowsPerPage)
+  const startIndex = (page - 1) * rowsPerPage
+  const endIndex = startIndex + rowsPerPage
+  const paginatedInventory = getFilteredInventory().slice(startIndex, endIndex)
+
+  // Handle page change
+  const handlePageChange = (event, newPage) => {
+    setPage(newPage)
+  }
+
+  // Handle rows per page change
+  const handleRowsPerPageChange = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10))
+    setPage(1) // Reset to first page when changing page size
   }
 
   return (
     <RouteGuard allowedRoles={['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER']}>
       <DashboardLayout>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <Typography variant="h4">Inventory Management</Typography>
-          <PollingStatusIndicator dataType="inventory" showControls={true} />
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+          <Typography variant="h5">Inventory Management</Typography>
+          <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+            <Button
+              variant="outlined"
+              startIcon={<UploadIcon />}
+              onClick={() => setExcelUploadOpen(true)}
+              size="small"
+            >
+              Import from Excel
+            </Button>
+            <Button
+              variant="contained"
+              onClick={handleAdd}
+              size="small"
+            >
+              Add Item
+            </Button>
+          </Box>
         </Box>
-        
-        {/* Removed tabs for warehouse keepers - they only see their own warehouse */}
-        
-        {(() => {
-          // Check permissions for both cashiers and warehouse keepers
-          const canEdit = user?.role === 'ADMIN' || 
-            (user?.role === 'CASHIER' && branchSettings?.allowCashierInventoryEdit) ||
-            (user?.role === 'WAREHOUSE_KEEPER' && warehouseSettings?.allowWarehouseInventoryEdit);
-          
-          // Cashiers and warehouse keepers can also delete inventory items
-          const canDelete = canEdit;
-          
-          // Get filtered inventory based on user role and tab
-          const filteredInventory = getFilteredInventory();
-          
-          if (canEdit) {
-            return (
-              <EntityTable
-                data={filteredInventory}
-                loading={loading}
-                columns={columns}
-                title={user?.role === 'WAREHOUSE_KEEPER' ? 
-                  "My Warehouse Inventory" : 
-                  "Inventory Management"
-                }
-                entityName="Inventory Item"
-                onAdd={handleAdd}
-                onEdit={handleEdit}
-                onDelete={canDelete ? handleDeleteClick : null}
-                error={error}
-              />
-            );
-          } else {
-            return (
-              <EntityTable
-                data={filteredInventory}
-                loading={loading}
-                columns={columns}
-                title={user?.role === 'WAREHOUSE_KEEPER' ? 
-                  "My Warehouse Inventory (View Only)" : 
-                  "Inventory Management (View Only)"
-                }
-                entityName="Inventory Item"
-                onAdd={null}
-                onEdit={null}
-                onDelete={null}
-                error={error}
-              />
-            );
-          }
-        })()}
+
+        {/* Simple Inventory Table */}
+        <Card>
+          <CardContent>
+
+            {/* Search and Filter Section */}
+            <Box sx={{ mb: 1 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
+                <FilterIcon sx={{ mr: 1, fontSize: 18 }} />
+                <Typography variant="subtitle2">Search & Filters</Typography>
+              </Box>
+              
+              <Grid container spacing={1} sx={{ mb: 0.5 }} alignItems="center">
+                {/* Search Input */}
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label="Search Products"
+                    placeholder="Search by name, category..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon />
+                        </InputAdornment>
+                      ),
+                      endAdornment: searchTerm && (
+                        <InputAdornment position="end">
+                          <IconButton
+                            size="small"
+                            onClick={() => setSearchTerm('')}
+                            edge="end"
+                          >
+                            <ClearIcon />
+                          </IconButton>
+                        </InputAdornment>
+                      )
+                    }}
+                  />
+                </Grid>
+
+                {/* Category Filter */}
+                <Grid item xs={12} md={1.5}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Category</InputLabel>
+                    <Select
+                      value={categoryFilter}
+                      label="Category"
+                      onChange={(e) => setCategoryFilter(e.target.value)}
+                    >
+                      <MenuItem value="all">All Categories</MenuItem>
+                      {categories.map(category => (
+                        <MenuItem key={category} value={category}>
+                          {category}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Grid>
+
+                {/* Stock Filter */}
+                <Grid item xs={12} md={1.5}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Stock Status</InputLabel>
+                    <Select
+                      value={stockFilter}
+                      label="Stock Status"
+                      onChange={(e) => setStockFilter(e.target.value)}
+                    >
+                      <MenuItem value="all">All Stock</MenuItem>
+                      <MenuItem value="low">Low Stock</MenuItem>
+                      <MenuItem value="out">Out of Stock</MenuItem>
+                      <MenuItem value="high">Overstocked</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+
+                {/* Scope Filter */}
+                <Grid item xs={12} md={1.5}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Scope</InputLabel>
+                    <Select
+                      value={scopeFilter}
+                      label="Scope"
+                      onChange={(e) => setScopeFilter(e.target.value)}
+                    >
+                      <MenuItem value="all">All Scopes</MenuItem>
+                      <MenuItem value="BRANCH">Branch</MenuItem>
+                      <MenuItem value="WAREHOUSE">Warehouse</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+
+                {/* Sold Filter */}
+                <Grid item xs={12} md={1.5}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Sold Status</InputLabel>
+                    <Select
+                      value={soldFilter}
+                      label="Sold Status"
+                      onChange={(e) => setSoldFilter(e.target.value)}
+                    >
+                      <MenuItem value="all">All Items</MenuItem>
+                      <MenuItem value="sold">Has Sales</MenuItem>
+                      <MenuItem value="not_sold">No Sales</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+
+                {/* Returned Filter */}
+                <Grid item xs={12} md={1.5}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Returned Status</InputLabel>
+                    <Select
+                      value={returnedFilter}
+                      label="Returned Status"
+                      onChange={(e) => setReturnedFilter(e.target.value)}
+                    >
+                      <MenuItem value="all">All Items</MenuItem>
+                      <MenuItem value="returned">Has Returns</MenuItem>
+                      <MenuItem value="not_returned">No Returns</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+
+                {/* Sort By */}
+                <Grid item xs={12} md={1}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Sort By</InputLabel>
+                    <Select
+                      value={sortBy}
+                      label="Sort By"
+                      onChange={(e) => setSortBy(e.target.value)}
+                    >
+                      <MenuItem value="name">Name</MenuItem>
+                      <MenuItem value="category">Category</MenuItem>
+                      <MenuItem value="currentStock">Stock</MenuItem>
+                      <MenuItem value="totalSold">Sold</MenuItem>
+                      <MenuItem value="totalReturned">Returned</MenuItem>
+                      <MenuItem value="totalPurchased">Purchased</MenuItem>
+                      <MenuItem value="sellingPrice">Price</MenuItem>
+                      <MenuItem value="createdAt">Date Created</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+
+                {/* Action Icons */}
+                <Grid item xs={12} md={1}>
+                  <Box sx={{ display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                    <Tooltip title="Clear all filters">
+                      <IconButton
+                        size="small"
+                        onClick={clearFilters}
+                        disabled={getFilterSummary().length === 0}
+                      >
+                        <ClearIcon />
+                      </IconButton>
+                    </Tooltip>
+                    
+                    <Tooltip title={sortOrder === 'asc' ? 'Sort Descending' : 'Sort Ascending'}>
+                      <IconButton
+                        size="small"
+                        onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                      >
+                        {sortOrder === 'asc' ? '↑' : '↓'}
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                </Grid>
+              </Grid>
+
+              {/* Filter Summary */}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
+                {getFilterSummary().length > 0 && (
+                  <>
+                    <Typography variant="body2" color="text.secondary">
+                      Active filters:
+                    </Typography>
+                    {getFilterSummary().map((filter, index) => (
+                      <Chip
+                        key={index}
+                        label={filter}
+                        size="small"
+                        color="primary"
+                        variant="outlined"
+                      />
+                    ))}
+                  </>
+                )}
+                {getFilterSummary().length === 0 && (
+                  <Typography variant="body2" color="text.secondary">
+                    No filters applied - showing all items
+                  </Typography>
+                )}
+              </Box>
+
+              {/* Results Summary */}
+              <Box sx={{ mt: 0.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Typography variant="body2" color="text.secondary">
+                  Showing {startIndex + 1}-{Math.min(endIndex, totalItems)} of {totalItems} items
+                </Typography>
+                
+                {totalItems !== safeInventory.length && (
+                  <Chip
+                    icon={<FilterIcon />}
+                    label={`${safeInventory.length - totalItems} items filtered out`}
+                    size="small"
+                    color="secondary"
+                    variant="outlined"
+                  />
+                )}
+              </Box>
+            </Box>
+            
+            {loading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+                <CircularProgress />
+              </Box>
+            ) : error ? (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                {error}
+              </Alert>
+            ) : (
+              <TableContainer component={Paper}>
+                <Table size="small" sx={{ '& .MuiTableCell-root': { fontSize: '0.8rem', py: 0.5 } }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Name</TableCell>
+                      <TableCell>Category</TableCell>
+                      <TableCell>Unit</TableCell>
+                      <TableCell align="right">Cost Price</TableCell>
+                      <TableCell align="right">Selling Price</TableCell>
+                      <TableCell align="right">Current Stock</TableCell>
+                      <TableCell align="right">Sold</TableCell>
+                      <TableCell align="right">Returned</TableCell>
+                      <TableCell align="right">Purchased</TableCell>
+                      <TableCell align="right">Min Stock</TableCell>
+                      <TableCell align="right">Max Stock</TableCell>
+                      <TableCell>Scope</TableCell>
+                      <TableCell>Actions</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {paginatedInventory.map((item) => (
+                      <TableRow key={item.id}>
+                        <TableCell>{item.name}</TableCell>
+                        <TableCell>
+                          <Chip label={item.category} size="small" />
+                        </TableCell>
+                        <TableCell>{item.unit}</TableCell>
+                        <TableCell align="right">{parseFloat(item.costPrice || 0).toFixed(2)}</TableCell>
+                        <TableCell align="right">{parseFloat(item.sellingPrice || 0).toFixed(2)}</TableCell>
+                        <TableCell align="right">
+                          <Chip 
+                            label={item.currentStock || 0} 
+                            size="small" 
+                            color={
+                              item.currentStock === 0 ? 'error' : 
+                              item.currentStock <= item.minStockLevel ? 'warning' : 'success'
+                            }
+                            variant="outlined"
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          <Chip 
+                            label={item.totalSold || 0} 
+                            size="small" 
+                            color="primary"
+                            variant="outlined"
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          <Chip 
+                            label={item.totalReturned || 0} 
+                            size="small" 
+                            color="warning"
+                            variant="outlined"
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          <Chip 
+                            label={item.totalPurchased || 0} 
+                            size="small" 
+                            color="success"
+                            variant="outlined"
+                          />
+                        </TableCell>
+                        <TableCell align="right">{item.minStockLevel}</TableCell>
+                        <TableCell align="right">{item.maxStockLevel}</TableCell>
+                        <TableCell>
+                          <Chip 
+                            label={item.scopeType} 
+                            size="small" 
+                            color={item.scopeType === 'BRANCH' ? 'primary' : 'secondary'}
+                            variant="outlined"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Box sx={{ display: 'flex', gap: 0.5 }}>
+                            <Tooltip title="Edit">
+                              <IconButton
+                                size="small"
+                                onClick={() => handleEdit(item)}
+                                color="primary"
+                              >
+                                <EditIcon />
+                              </IconButton>
+                            </Tooltip>
+                            {user?.role === 'ADMIN' && (
+                              <Tooltip title="Delete">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => handleDeleteClick(item)}
+                                  color="error"
+                                >
+                                  <DeleteIcon />
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Rows per page:
+                  </Typography>
+                  <FormControl size="small" sx={{ minWidth: 80 }}>
+                    <Select
+                      value={rowsPerPage}
+                      onChange={handleRowsPerPageChange}
+                      displayEmpty
+                    >
+                      <MenuItem value={10}>10</MenuItem>
+                      <MenuItem value={25}>25</MenuItem>
+                      <MenuItem value={50}>50</MenuItem>
+                      <MenuItem value={100}>100</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Box>
+                
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Page {page} of {totalPages}
+                  </Typography>
+                  <Pagination
+                    count={totalPages}
+                    page={page}
+                    onChange={handlePageChange}
+                    color="primary"
+                    size="small"
+                    showFirstButton
+                    showLastButton
+                  />
+                </Box>
+              </Box>
+            )}
+          </CardContent>
+        </Card>
 
         <EntityFormDialog
           open={formDialogOpen}
@@ -467,6 +1071,15 @@ function InventoryPage() {
           onConfirm={handleDelete}
           loading={loading}
           severity="error"
+        />
+
+        <ExcelUploadDialog
+          open={excelUploadOpen}
+          onClose={() => setExcelUploadOpen(false)}
+          onSuccess={handleExcelUploadSuccess}
+          title="Import Inventory from Excel"
+          scopeType={user?.role === 'CASHIER' ? 'BRANCH' : user?.role === 'WAREHOUSE_KEEPER' ? 'WAREHOUSE' : 'BRANCH'}
+          scopeId={user?.role === 'CASHIER' ? user?.branchId : user?.role === 'WAREHOUSE_KEEPER' ? user?.warehouseId : null}
         />
       </DashboardLayout>
     </RouteGuard>

@@ -109,10 +109,21 @@ const formatReceipt = async (sale, scopeDetails, scopeType) => {
     receipt += '\n';
     receipt += ESC_POS_COMMANDS.LEFT;
     receipt += ESC_POS_COMMANDS.BOLD_ON;
-    receipt += 'Payment:\n';
+    receipt += 'Payment Information:\n';
     receipt += ESC_POS_COMMANDS.BOLD_OFF;
-    receipt += `Method: ${sale.paymentMethod}\n`;
-    receipt += `Status: ${sale.paymentStatus}\n`;
+    receipt += `Payment Method: ${sale.paymentMethod}\n`;
+    
+    // Show payment amount (what customer is paying now)
+    if (sale.paymentAmount !== undefined && sale.paymentAmount !== null) {
+      receipt += `Payment Amount: ${formatCurrency(sale.paymentAmount)}\n`;
+    }
+    
+    // Show credit amount if there's a remaining balance
+    if (sale.creditAmount !== undefined && sale.creditAmount !== null && sale.creditAmount > 0) {
+      receipt += `Credit Amount: ${formatCurrency(sale.creditAmount)}\n`;
+    }
+    
+    receipt += `Payment Status: ${sale.paymentStatus}\n`;
     
     // Notes
     if (sale.notes) {
@@ -122,6 +133,13 @@ const formatReceipt = async (sale, scopeDetails, scopeType) => {
       receipt += ESC_POS_COMMANDS.BOLD_OFF;
       receipt += `${sale.notes}\n`;
     }
+    
+    // Return Policy
+    receipt += '\n';
+    receipt += ESC_POS_COMMANDS.CENTER;
+    receipt += ESC_POS_COMMANDS.BOLD_ON;
+    receipt += '(Please return or exchange within 3 days)\n';
+    receipt += ESC_POS_COMMANDS.BOLD_OFF;
     
     // Footer
     receipt += '\n';
@@ -178,9 +196,12 @@ const formatReceiptJSON = async (sale, scopeDetails, scopeType) => {
       },
       payment: {
         method: sale.paymentMethod,
+        amount: sale.paymentAmount,
+        creditAmount: sale.creditAmount,
         status: sale.paymentStatus
       },
       notes: sale.notes || null,
+      returnPolicy: '(Please return or exchange within 3 days)',
       footer: {
         message: 'Thank you for your business!',
         businessName: scopeDetails.name
@@ -256,15 +277,20 @@ const formatReceiptPDF = async (sale, scopeDetails, scopeType) => {
         </div>
         
         <div class="separator"></div>
-        <div class="bold">Payment:</div>
-        <div>Method: ${sale.paymentMethod}</div>
-        <div>Status: ${sale.paymentStatus}</div>
+        <div class="bold">Payment Information:</div>
+        <div>Payment Method: ${sale.paymentMethod}</div>
+        ${sale.paymentAmount !== undefined && sale.paymentAmount !== null ? `<div>Payment Amount: ${formatCurrency(sale.paymentAmount)}</div>` : ''}
+        ${sale.creditAmount !== undefined && sale.creditAmount !== null && sale.creditAmount > 0 ? `<div>Credit Amount: ${formatCurrency(sale.creditAmount)}</div>` : ''}
+        <div>Payment Status: ${sale.paymentStatus}</div>
         
         ${sale.notes ? `
           <div class="separator"></div>
           <div class="bold">Notes:</div>
           <div>${sale.notes}</div>
         ` : ''}
+        
+        <div class="separator"></div>
+        <div class="center bold">(Please return or exchange within 3 days)</div>
         
         <div class="separator"></div>
         <div class="center bold">Thank you for your business!</div>
@@ -297,7 +323,7 @@ const formatTime = (date) => {
 };
 
 const formatCurrency = (amount) => {
-  return `$${parseFloat(amount).toFixed(2)}`;
+  return `${parseFloat(amount).toFixed(2)}`;
 };
 
 module.exports = {

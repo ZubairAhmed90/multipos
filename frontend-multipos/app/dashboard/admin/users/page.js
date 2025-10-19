@@ -3,6 +3,24 @@
 import React, { useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import * as yup from 'yup'
+import { 
+  Dialog, 
+  DialogTitle, 
+  DialogContent, 
+  DialogActions, 
+  Button, 
+  TextField, 
+  Typography, 
+  Box, 
+  Alert,
+  IconButton,
+  Tooltip
+} from '@mui/material'
+import { 
+  VpnKey as ResetPasswordIcon, 
+  Visibility as ViewPasswordIcon,
+  ContentCopy as CopyIcon
+} from '@mui/icons-material'
 import withAuth from '../../../../components/auth/withAuth'
 import DashboardLayout from '../../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../../components/auth/RouteGuard'
@@ -10,7 +28,7 @@ import EntityTable from '../../../../components/crud/EntityTable'
 import EntityFormDialog from '../../../../components/crud/EntityFormDialog'
 import ConfirmationDialog from '../../../../components/crud/ConfirmationDialog'
 import useEntityCRUD from '../../../../hooks/useEntityCRUD'
-import { fetchAdminUsers, createAdminUser, updateAdminUser, deleteAdminUser } from '../../../store/slices/adminUsersSlice'
+import { fetchAdminUsers, createAdminUser, updateAdminUser, deleteAdminUser, resetUserPassword, getUserPassword, clearPasswordResetResult, clearPasswordInfo } from '../../../store/slices/adminUsersSlice'
 import { fetchAllBranches } from '../../../store/slices/branchesSlice'
 import { fetchWarehouses } from '../../../store/slices/warehousesSlice'
 
@@ -117,6 +135,68 @@ function AdminUsersPage() {
   // Get branches and warehouses from Redux store
   const { branches, loading: branchesLoading } = useSelector((state) => state.branches)
   const { data: warehouses, loading: warehousesLoading } = useSelector((state) => state.warehouses)
+  const { passwordResetResult, passwordInfo, loading: adminUsersLoading } = useSelector((state) => state.adminUsers)
+
+  // Password management state
+  const [resetPasswordDialogOpen, setResetPasswordDialogOpen] = useState(false)
+  const [viewPasswordDialogOpen, setViewPasswordDialogOpen] = useState(false)
+  const [selectedUser, setSelectedUser] = useState(null)
+  const [newPassword, setNewPassword] = useState('')
+  const [passwordError, setPasswordError] = useState('')
+
+  // Password management functions
+  const handleResetPassword = (user) => {
+    setSelectedUser(user)
+    setNewPassword('')
+    setPasswordError('')
+    setResetPasswordDialogOpen(true)
+  }
+
+  const handleViewPassword = (user) => {
+    setSelectedUser(user)
+    setViewPasswordDialogOpen(true)
+    dispatch(getUserPassword(user.id))
+  }
+
+  const handleResetPasswordSubmit = () => {
+    if (!newPassword) {
+      setPasswordError('Password is required')
+      return
+    }
+
+    if (newPassword.length < 6) {
+      setPasswordError('Password must be at least 6 characters long')
+      return
+    }
+
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/
+    if (!passwordRegex.test(newPassword)) {
+      setPasswordError('Password must contain at least one lowercase letter, one uppercase letter, and one number')
+      return
+    }
+
+    setPasswordError('')
+    dispatch(resetUserPassword({ id: selectedUser.id, newPassword }))
+  }
+
+  const handleCopyPassword = (password) => {
+    navigator.clipboard.writeText(password)
+    // You could add a toast notification here
+  }
+
+  const handleCloseResetDialog = () => {
+    setResetPasswordDialogOpen(false)
+    setSelectedUser(null)
+    setNewPassword('')
+    setPasswordError('')
+    dispatch(clearPasswordResetResult())
+  }
+
+  const handleCloseViewDialog = () => {
+    setViewPasswordDialogOpen(false)
+    setSelectedUser(null)
+    dispatch(clearPasswordInfo())
+  }
 
   // Create table columns with dynamic branch/warehouse names
   const columns = [
@@ -146,6 +226,22 @@ function AdminUsersPage() {
     },
     { field: 'shift', headerName: 'Shift', width: 100 },
     { field: 'createdAt', headerName: 'Created At', width: 180 },
+  ]
+
+  // Define custom actions for password management
+  const customActions = [
+    {
+      icon: <ResetPasswordIcon />,
+      label: 'Reset Password',
+      onClick: handleResetPassword,
+      color: 'primary'
+    },
+    {
+      icon: <ViewPasswordIcon />,
+      label: 'View Password Info',
+      onClick: handleViewPassword,
+      color: 'secondary'
+    }
   ]
 
   // Load data on component mount
@@ -219,14 +315,8 @@ function AdminUsersPage() {
     return baseFields
   }
 
-  // Load data on component mount
-  useEffect(() => {
-    dispatch(fetchAdminUsers())
-  }, [dispatch])
-
   // Handle CRUD operations
   const handleCreate = (data) => {
-('handleCreate called with data:', data)
     // Convert empty strings to null for optional fields
     const processedData = {
       ...data,
@@ -234,7 +324,7 @@ function AdminUsersPage() {
       warehouseId: data.warehouseId === '' ? null : (data.warehouseId ? parseInt(data.warehouseId) : null),
       shift: data.shift === '' ? null : data.shift
     }
-('processedData:', processedData)
+    
     dispatch(createAdminUser(processedData)).then((result) => {
       if (result.type.endsWith('/fulfilled')) {
         // Refresh the user list after successful creation
@@ -246,6 +336,11 @@ function AdminUsersPage() {
   }
 
   const handleUpdate = (data) => {
+    if (!crud.selectedEntity?.id) {
+      console.error('Cannot update: selectedEntity.id is missing')
+      return
+    }
+    
     // Convert empty strings to null for optional fields
     const processedData = {
       ...data,
@@ -267,6 +362,11 @@ function AdminUsersPage() {
   }
 
   const handleDelete = () => {
+    if (!crud.selectedEntity?.id) {
+      console.error('Cannot delete: selectedEntity.id is missing')
+      return
+    }
+    
     dispatch(deleteAdminUser(crud.selectedEntity.id)).then((result) => {
       if (result.type.endsWith('/fulfilled')) {
         // Refresh the user list after successful deletion
@@ -289,6 +389,7 @@ function AdminUsersPage() {
           onAdd={crud.handleAdd}
           onEdit={crud.handleEdit}
           onDelete={crud.handleDeleteClick}
+          customActions={customActions}
           error={crud.error}
         />
 
@@ -298,7 +399,7 @@ function AdminUsersPage() {
           title={crud.dialogTitle}
           fields={getFields(crud.isEdit)}
           validationSchema={crud.isEdit ? updateUserSchema : createUserSchema}
-          initialData={crud.selectedEntity}
+          initialData={crud.selectedEntity || {}}
           isEdit={crud.isEdit}
           onSubmit={crud.isEdit ? handleUpdate : handleCreate}
           loading={crud.loading}
@@ -314,6 +415,84 @@ function AdminUsersPage() {
           loading={crud.loading}
           severity="error"
         />
+
+        {/* Reset Password Dialog */}
+        <Dialog open={resetPasswordDialogOpen} onClose={handleCloseResetDialog} maxWidth="sm" fullWidth>
+          <DialogTitle>Reset Password for {selectedUser?.username}</DialogTitle>
+          <DialogContent>
+            <Box sx={{ pt: 2 }}>
+              <TextField
+                fullWidth
+                label="New Password"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                error={!!passwordError}
+                helperText={passwordError || "Password must be at least 6 characters with uppercase, lowercase, and number"}
+                margin="normal"
+              />
+              
+              {passwordResetResult && (
+                <Alert severity="success" sx={{ mt: 2 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                    Password reset successfully!
+                  </Typography>
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="body2">
+                      <strong>New Password:</strong> {passwordResetResult.data?.newPassword}
+                    </Typography>
+                    <Button
+                      size="small"
+                      startIcon={<CopyIcon />}
+                      onClick={() => handleCopyPassword(passwordResetResult.data?.newPassword)}
+                      sx={{ mt: 1 }}
+                    >
+                      Copy Password
+                    </Button>
+                  </Box>
+                </Alert>
+              )}
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleCloseResetDialog}>Cancel</Button>
+            <Button 
+              onClick={handleResetPasswordSubmit} 
+              variant="contained" 
+              color="primary"
+              disabled={adminUsersLoading}
+            >
+              Reset Password
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* View Password Dialog */}
+        <Dialog open={viewPasswordDialogOpen} onClose={handleCloseViewDialog} maxWidth="sm" fullWidth>
+          <DialogTitle>Password Information for {selectedUser?.username}</DialogTitle>
+          <DialogContent>
+            <Box sx={{ pt: 2 }}>
+              {passwordInfo ? (
+                <Alert severity="info">
+                  <Typography variant="body2">
+                    <strong>Username:</strong> {passwordInfo.data?.username}
+                  </Typography>
+                  <Typography variant="body2" sx={{ mt: 1 }}>
+                    <strong>Email:</strong> {passwordInfo.data?.email}
+                  </Typography>
+                  <Typography variant="body2" sx={{ mt: 1 }}>
+                    <strong>Note:</strong> {passwordInfo.data?.note}
+                  </Typography>
+                </Alert>
+              ) : (
+                <Typography>Loading password information...</Typography>
+              )}
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleCloseViewDialog}>Close</Button>
+          </DialogActions>
+        </Dialog>
       </DashboardLayout>
     </RouteGuard>
   )

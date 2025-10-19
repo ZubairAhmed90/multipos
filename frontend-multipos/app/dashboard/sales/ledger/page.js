@@ -232,8 +232,10 @@ function SalesLedger() {
   const getPaymentStatusChip = (status) => {
     const statusConfig = {
       'COMPLETED': { color: 'success', icon: <CheckIcon />, label: 'Completed' },
-      'PARTIAL': { color: 'warning', icon: <PendingIcon />, label: 'Partial' },
+      'PARTIAL': { color: 'warning', icon: <PendingIcon />, label: 'Partial Payment' },
       'PENDING': { color: 'error', icon: <PendingIcon />, label: 'Pending' },
+      'FAILED': { color: 'error', icon: <CancelIcon />, label: 'Failed' },
+      'REFUNDED': { color: 'info', icon: <CancelIcon />, label: 'Refunded' },
       'CANCELLED': { color: 'error', icon: <CancelIcon />, label: 'Cancelled' }
     }
     
@@ -280,12 +282,20 @@ function SalesLedger() {
   }
 
   if (error) {
+    // error may be an object { message, status, serverMsg } from the thunk
+    const errMsg = typeof error === 'string' ? error : (error.message || 'Failed to load sales data')
+    const status = error?.status
+    const serverMsg = error?.serverMsg
+
     return (
       <DashboardLayout>
         <Box sx={{ p: 2 }}>
           <Typography variant="h6" color="error">
-            Error loading sales data: {error}
+            Error loading sales data: {status ? `${status} — ` : ''}{errMsg}
           </Typography>
+          {serverMsg && (
+            <Typography variant="body2" color="textSecondary">Server: {String(serverMsg)}</Typography>
+          )}
         </Box>
       </DashboardLayout>
     )
@@ -398,7 +408,7 @@ function SalesLedger() {
                   <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
                     <MoneyIcon sx={{ color: 'success.main', mr: 1 }} />
                     <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
-                      ${totalRevenue.toFixed(2)}
+                      {totalRevenue.toFixed(2)}
                     </Typography>
                   </Box>
                   <Typography variant="body2" color="text.secondary">
@@ -414,7 +424,7 @@ function SalesLedger() {
                   <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
                     <PaymentIcon sx={{ color: 'success.main', mr: 1 }} />
                     <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
-                      ${totalPaid.toFixed(2)}
+                      {totalPaid.toFixed(2)}
                     </Typography>
                   </Box>
                   <Typography variant="body2" color="text.secondary">
@@ -430,7 +440,7 @@ function SalesLedger() {
                   <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
                     <CreditIcon sx={{ color: 'warning.main', mr: 1 }} />
                     <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
-                      ${totalCredit.toFixed(2)}
+                      {totalCredit.toFixed(2)}
                     </Typography>
                   </Box>
                   <Typography variant="body2" color="text.secondary">
@@ -563,13 +573,13 @@ function SalesLedger() {
                         </Box>
                       </TableCell>
                       <TableCell sx={{ fontWeight: 'bold' }}>
-                        ${parseFloat(sale.total || 0).toFixed(2)}
+                        {parseFloat(sale.total || 0).toFixed(2)}
                       </TableCell>
                       <TableCell sx={{ color: 'success.main' }}>
-                        ${parseFloat(sale.payment_amount || 0).toFixed(2)}
+                        {parseFloat(sale.payment_amount || 0).toFixed(2)}
                       </TableCell>
                       <TableCell sx={{ color: 'warning.main' }}>
-                        ${parseFloat(sale.credit_amount || 0).toFixed(2)}
+                        {parseFloat(sale.credit_amount || 0).toFixed(2)}
                       </TableCell>
                       <TableCell>
                         {getPaymentStatusChip(sale.payment_status)}
@@ -755,6 +765,17 @@ function SalesLedger() {
                         Payment Information
                       </Typography>
                       <Typography>
+                        Subtotal: ${parseFloat(selectedSale.subtotal || 0).toFixed(2)}
+                      </Typography>
+                      <Typography>
+                        Tax: ${parseFloat(selectedSale.tax || 0).toFixed(2)}
+                      </Typography>
+                      {parseFloat(selectedSale.discount || 0) > 0 && (
+                        <Typography color="error.main" sx={{ fontWeight: 'bold' }}>
+                          Total Discount: -${parseFloat(selectedSale.discount || 0).toFixed(2)}
+                        </Typography>
+                      )}
+                      <Typography sx={{ fontWeight: 'bold', fontSize: '1.1rem' }}>
                         Total: ${parseFloat(selectedSale.total || 0).toFixed(2)}
                       </Typography>
                       <Typography>
@@ -765,6 +786,55 @@ function SalesLedger() {
                       </Typography>
                     </Grid>
                   </Grid>
+                  
+                  <Divider sx={{ my: 2 }} />
+                  
+                  {/* Sale Items */}
+                  <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold' }}>
+                    Sale Items
+                  </Typography>
+                  {selectedSale.items && selectedSale.items.length > 0 ? (
+                    <TableContainer component={Paper} variant="outlined" sx={{ mb: 2 }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Item Name</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>SKU</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }} align="right">Quantity</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }} align="right">Unit Price</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }} align="right">Discount</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }} align="right">Total</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {selectedSale.items.map((item, index) => (
+                            <TableRow key={index}>
+                              <TableCell>{item.itemName || item.name || 'Unknown Item'}</TableCell>
+                              <TableCell>{item.sku || 'N/A'}</TableCell>
+                              <TableCell align="right">{item.quantity}</TableCell>
+                              <TableCell align="right">${parseFloat(item.unitPrice || 0).toFixed(2)}</TableCell>
+                              <TableCell align="right">
+                                {parseFloat(item.discount || 0) > 0 ? (
+                                  <Typography variant="body2" color="error.main" sx={{ fontWeight: 'bold' }}>
+                                    -${parseFloat(item.discount || 0).toFixed(2)}
+                                  </Typography>
+                                ) : (
+                                  <Typography variant="body2" color="text.secondary">
+                                    $0.00
+                                  </Typography>
+                                )}
+                              </TableCell>
+                              <TableCell align="right">${parseFloat(item.total || 0).toFixed(2)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                      No items found for this sale
+                    </Typography>
+                  )}
                   
                   <Divider sx={{ my: 2 }} />
                   
@@ -792,8 +862,8 @@ function SalesLedger() {
             <DialogContent>
               {selectedSale && (
                 <Box sx={{ mt: 2 }}>
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace', mb: 2 }}>
-                    Outstanding Credit: ${parseFloat(selectedSale.credit_amount || 0).toFixed(2)}
+                  <Typography variant="body2" sx={{ mb: 2, fontWeight: 500 }}>
+                    Outstanding Credit: {parseFloat(selectedSale.credit_amount || 0).toFixed(2)}
                   </Typography>
                   
                   <TextField
@@ -835,7 +905,7 @@ function SalesLedger() {
                     label="Customer Name"
                     value={editFormData.customerName}
                     onChange={(e) => setEditFormData({ ...editFormData, customerName: e.target.value })}
-                    sx={{ mb: 2, fontFamily: 'monospace' }}
+                    sx={{ mb: 2 }}
                   />
                   
                   <TextField
@@ -843,7 +913,7 @@ function SalesLedger() {
                     label="Customer Phone"
                     value={editFormData.customerPhone}
                     onChange={(e) => setEditFormData({ ...editFormData, customerPhone: e.target.value })}
-                    sx={{ mb: 2, fontFamily: 'monospace' }}
+                    sx={{ mb: 2 }}
                   />
                   
                   <TextField
@@ -852,7 +922,7 @@ function SalesLedger() {
                     label="Payment Method"
                     value={editFormData.paymentMethod}
                     onChange={(e) => setEditFormData({ ...editFormData, paymentMethod: e.target.value })}
-                    sx={{ mb: 2, fontFamily: 'monospace' }}
+                    sx={{ mb: 2 }}
                   >
                     <MenuItem value="CASH">Cash</MenuItem>
                     <MenuItem value="CARD">Card</MenuItem>
@@ -866,7 +936,7 @@ function SalesLedger() {
                     label="Payment Status"
                     value={editFormData.paymentStatus}
                     onChange={(e) => setEditFormData({ ...editFormData, paymentStatus: e.target.value })}
-                    sx={{ mb: 2, fontFamily: 'monospace' }}
+                    sx={{ mb: 2 }}
                   >
                     <MenuItem value="COMPLETED">Completed</MenuItem>
                     <MenuItem value="PARTIAL">Partial</MenuItem>
@@ -901,7 +971,7 @@ function SalesLedger() {
 
           {/* Delete Confirmation Dialog */}
           <Dialog open={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} maxWidth="sm" fullWidth>
-            <DialogTitle sx={{ fontFamily: 'monospace', color: 'error.main' }}>
+            <DialogTitle sx={{ color: 'error.main' }}>
               Confirm Delete Sale
             </DialogTitle>
             <DialogContent>
@@ -911,14 +981,14 @@ function SalesLedger() {
                     Are you sure you want to delete this sale? This action cannot be undone.
                   </Typography>
                   
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace', mb: 1 }}>
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>
                     Invoice: {deletingSale.invoice_no}
                   </Typography>
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace', mb: 1 }}>
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>
                     Customer: {deletingSale.customer_name || 'Walk-in Customer'}
                   </Typography>
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace', mb: 1 }}>
-                    Total: ${parseFloat(deletingSale.total || 0).toFixed(2)}
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>
+                    Total: {parseFloat(deletingSale.total || 0).toFixed(2)}
                   </Typography>
                   <Typography variant="body2" sx={{ fontWeight: 500 }}>
                     Date: {new Date(deletingSale.created_at).toLocaleDateString()}
@@ -947,3 +1017,4 @@ function SalesLedger() {
 }
 
 export default SalesLedger
+

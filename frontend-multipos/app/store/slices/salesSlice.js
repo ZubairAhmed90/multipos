@@ -6,10 +6,14 @@ export const fetchSales = createAsyncThunk(
   'sales/fetchSales',
   async (params = {}, { rejectWithValue }) => {
     try {
-      const response = await api.get('/sales', params)
+      // axios expects query params under the `params` key
+      const response = await api.get('/sales', { params })
       return response.data
     } catch (error) {
-      return rejectWithValue(error.message || 'Failed to fetch sales')
+      const status = error.response?.status
+      const serverMsg = error.response?.data?.message || error.response?.data || null
+      const payload = { message: error.message || 'Failed to fetch sales', status, serverMsg }
+      return rejectWithValue(payload)
     }
   }
 )
@@ -28,7 +32,12 @@ export const createSale = createAsyncThunk(
         return rejectWithValue(response.data.message || 'Failed to create sale')
       }
     } catch (error) {
-      return rejectWithValue(error.message || 'Failed to create sale')
+      console.error('[SalesSlice] createSale error:', error)
+      const errorMessage = error.response?.data?.message || 
+                          error.response?.data?.errors || 
+                          error.message || 
+                          'Failed to create sale'
+      return rejectWithValue(errorMessage)
     }
   }
 )
@@ -85,10 +94,13 @@ export const fetchSalesReturns = createAsyncThunk(
   'sales/fetchSalesReturns',
   async (params = {}, { rejectWithValue }) => {
     try {
-      const response = await api.get('/sales/returns', params)
+      const response = await api.get('/sales/returns', { params })
       return response.data
     } catch (error) {
-      return rejectWithValue(error.message || 'Failed to fetch sales returns')
+      const status = error.response?.status
+      const serverMsg = error.response?.data?.message || error.response?.data || null
+      const payload = { message: error.message || 'Failed to fetch sales returns', status, serverMsg }
+      return rejectWithValue(payload)
     }
   }
 )
@@ -97,10 +109,14 @@ export const createSalesReturn = createAsyncThunk(
   'sales/createSalesReturn',
   async (returnData, { rejectWithValue }) => {
     try {
-      const response = await api.post('api/sales/returns', returnData)
+      // fix path: should use /sales/returns
+      const response = await api.post('/sales/returns', returnData)
       return response.data
     } catch (error) {
-      return rejectWithValue(error.message || 'Failed to create sales return')
+      const status = error.response?.status
+      const serverMsg = error.response?.data?.message || error.response?.data || null
+      const payload = { message: error.message || 'Failed to create sales return', status, serverMsg }
+      return rejectWithValue(payload)
     }
   }
 )

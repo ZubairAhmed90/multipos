@@ -156,7 +156,7 @@ const RetailersPage = () => {
       width: 120,
       renderCell: (params) => (
         <Typography variant="body2">
-          ${parseFloat(params.value || 0).toFixed(2)}
+          {parseFloat(params.value || 0).toFixed(2)}
         </Typography>
       )
     },
@@ -643,7 +643,7 @@ const RetailersPage = () => {
                           Total Credits
                         </Typography>
                         <Typography variant="h6" color="success.main">
-                          ${ledgerBalance.totalCredits?.toLocaleString() || '0'}
+                          {ledgerBalance.totalCredits?.toLocaleString() || '0'}
                         </Typography>
                       </CardContent>
                     </Card>
@@ -655,7 +655,7 @@ const RetailersPage = () => {
                           Total Debits
                         </Typography>
                         <Typography variant="h6" color="error.main">
-                          ${ledgerBalance.totalDebits?.toLocaleString() || '0'}
+                          {ledgerBalance.totalDebits?.toLocaleString() || '0'}
                         </Typography>
                       </CardContent>
                     </Card>
@@ -670,7 +670,7 @@ const RetailersPage = () => {
                           variant="h6" 
                           color={ledgerBalance.balance >= 0 ? 'success.main' : 'error.main'}
                         >
-                          ${ledgerBalance.balance?.toLocaleString() || '0'}
+                          {ledgerBalance.balance?.toLocaleString() || '0'}
                         </Typography>
                       </CardContent>
                     </Card>
@@ -746,7 +746,7 @@ const RetailersPage = () => {
                                 color={entry.type === 'CREDIT' ? 'success.main' : 'error.main'}
                                 fontWeight="bold"
                               >
-                                ${entry.amount?.toLocaleString() || '0'}
+                                {entry.amount?.toLocaleString() || '0'}
                               </Typography>
                             </TableCell>
                           </TableRow>
@@ -811,7 +811,7 @@ const RetailersPage = () => {
                   <Grid item xs={6}>
                     <Box sx={{ textAlign: 'right' }}>
                       <Typography variant="h6" color="primary">
-                        ${invoiceDetails.total?.toLocaleString()}
+                        {invoiceDetails.total?.toLocaleString()}
                       </Typography>
                       <Chip 
                         label={invoiceDetails.paymentStatus} 
@@ -923,10 +923,10 @@ const RetailersPage = () => {
                           </TableCell>
                           <TableCell>{item.sku}</TableCell>
                           <TableCell align="right">{item.quantity}</TableCell>
-                          <TableCell align="right">${item.unitPrice?.toFixed(2)}</TableCell>
+                          <TableCell align="right">{item.unitPrice?.toFixed(2)}</TableCell>
                           <TableCell align="right">
                             <Typography fontWeight="bold">
-                              ${item.total?.toFixed(2)}
+                              {item.total?.toFixed(2)}
                             </Typography>
                           </TableCell>
                         </TableRow>
@@ -938,16 +938,16 @@ const RetailersPage = () => {
                 {/* Totals */}
                 <Box sx={{ mt: 2, textAlign: 'right' }}>
                   <Typography variant="body2" color="textSecondary">
-                    Subtotal: ${invoiceDetails.subtotal?.toFixed(2)}
+                    Subtotal: {invoiceDetails.subtotal?.toFixed(2)}
                   </Typography>
                   <Typography variant="body2" color="textSecondary">
-                    Tax: ${invoiceDetails.tax?.toFixed(2)}
+                    Tax: {invoiceDetails.tax?.toFixed(2)}
                   </Typography>
                   <Typography variant="body2" color="textSecondary">
-                    Discount: ${invoiceDetails.discount?.toFixed(2)}
+                    Discount: {invoiceDetails.discount?.toFixed(2)}
                   </Typography>
                   <Typography variant="h6" color="primary">
-                    Total: ${invoiceDetails.total?.toFixed(2)}
+                    Total: {invoiceDetails.total?.toFixed(2)}
                   </Typography>
                 </Box>
               </Box>

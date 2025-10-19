@@ -18,6 +18,8 @@ import {
   Divider,
   useTheme,
   Tooltip,
+  Menu,
+  MenuItem,
 } from '@mui/material'
 import {
   ExpandLess,
@@ -37,6 +39,8 @@ const Sidebar = ({ mobileOpen, sidebarOpen = true, sidebarCollapsed = false, onD
   const pathname = usePathname()
   const { user } = useSelector((state) => state.auth)
   const [expandedMenus, setExpandedMenus] = useState({})
+  const [contextMenu, setContextMenu] = useState(null)
+  const [contextMenuPath, setContextMenuPath] = useState(null)
   
   const { 
     hasPermission, 
@@ -46,9 +50,31 @@ const Sidebar = ({ mobileOpen, sidebarOpen = true, sidebarCollapsed = false, onD
 
   const handleNavigation = (path) => {
     router.push(path)
+    
     if (isMobile) {
       onDrawerToggle()
     }
+  }
+
+  const handleContextMenu = (event, path) => {
+    event.preventDefault()
+    setContextMenu({
+      mouseX: event.clientX + 2,
+      mouseY: event.clientY - 6,
+    })
+    setContextMenuPath(path)
+  }
+
+  const handleCloseContextMenu = () => {
+    setContextMenu(null)
+    setContextMenuPath(null)
+  }
+
+  const handleOpenInNewTab = () => {
+    if (contextMenuPath) {
+      window.open(contextMenuPath, '_blank')
+    }
+    handleCloseContextMenu()
   }
 
   const handleMenuToggle = (menuId) => {
@@ -171,6 +197,7 @@ const Sidebar = ({ mobileOpen, sidebarOpen = true, sidebarCollapsed = false, onD
                         },
                       }}
                       onClick={() => handleNavigation(child.path)}
+                      onContextMenu={(e) => handleContextMenu(e, child.path)}
                     >
                       <ListItemIcon sx={{ 
                         minWidth: 32,
@@ -225,6 +252,7 @@ const Sidebar = ({ mobileOpen, sidebarOpen = true, sidebarCollapsed = false, onD
       <ListItem key={item.id} disablePadding sx={{ px: sidebarCollapsed ? 0 : 1 }}>
         <ListItemButton 
           onClick={() => handleNavigation(item.path)}
+          onContextMenu={(e) => handleContextMenu(e, item.path)}
           sx={{
             minHeight: 36,
             borderRadius: '6px',
@@ -436,6 +464,30 @@ const Sidebar = ({ mobileOpen, sidebarOpen = true, sidebarCollapsed = false, onD
       >
         {drawer}
       </Drawer>
+
+      {/* Context Menu */}
+      <Menu
+        open={contextMenu !== null}
+        onClose={handleCloseContextMenu}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          contextMenu !== null
+            ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
+            : undefined
+        }
+        PaperProps={{
+          sx: {
+            borderRadius: '8px',
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+            border: '1px solid rgba(0, 0, 0, 0.1)',
+            minWidth: 160,
+          }
+        }}
+      >
+        <MenuItem onClick={handleOpenInNewTab} sx={{ fontSize: '0.9rem' }}>
+          Open in new tab
+        </MenuItem>
+      </Menu>
     </>
   )
 }

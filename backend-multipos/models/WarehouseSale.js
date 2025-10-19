@@ -1,4 +1,6 @@
 const { pool } = require('../config/database');
+const InvoiceNumberService = require('../services/invoiceNumberService');
+const LedgerService = require('../services/ledgerService');
 
 class WarehouseSale {
   constructor(data) {
@@ -28,23 +30,66 @@ class WarehouseSale {
       const {
         retailerId,
         warehouseKeeperId,
+        salespersonId, // New field for salesperson who brought the sale
+        salespersonName, // New field for salesperson name
+        salespersonPhone, // New field for salesperson phone
         items,
         totalAmount,
         taxAmount,
         discountAmount,
         finalAmount,
         paymentMethod,
+        paymentAmount = 0, // New field for partial payment amount
+        creditAmount = 0, // New field for credit amount
+        outstandingPayments = [], // New field for outstanding payments
         notes
       } = saleData;
 
-      // Generate invoice number
-      const invoiceNumber = `WS${Date.now()}`;
+      // Generate invoice number using warehouse code and salesperson identification
+      let invoiceNumber;
+      try {
+        invoiceNumber = await InvoiceNumberService.generateInvoiceNumberWithSalesperson('WAREHOUSE', warehouseKeeperId, warehouseKeeperId);
+        console.log('[WarehouseSale] Generated salesperson-specific invoice number:', invoiceNumber);
+      } catch (invoiceError) {
+        console.error('[WarehouseSale] Error generating salesperson-specific invoice number:', invoiceError);
+        // Fallback to regular warehouse invoice numbering
+        try {
+          invoiceNumber = await InvoiceNumberService.generateInvoiceNumber('WAREHOUSE', warehouseKeeperId);
+          console.log('[WarehouseSale] Using fallback warehouse invoice number:', invoiceNumber);
+        } catch (fallbackError) {
+          console.error('[WarehouseSale] Error with fallback invoice number:', fallbackError);
+          // Final fallback to old method
+          invoiceNumber = `WS${Date.now()}`;
+          console.log('[WarehouseSale] Using final fallback invoice number:', invoiceNumber);
+        }
+      }
+
+      // Prepare customer info with salesperson data
+      const customerInfo = {
+        id: retailerId,
+        name: customerName,
+        paymentTerms: paymentMethod === 'CREDIT' ? paymentTerms : null,
+        paymentMethod: paymentMethod,
+        salesperson: {
+          id: salespersonId || null,
+          name: salespersonName || null,
+          phone: salespersonPhone || null
+        }
+      };
+
+      // Determine payment status based on payment method
+      let paymentStatus = 'COMPLETED'
+      if (paymentMethod === 'FULLY_CREDIT') {
+        paymentStatus = 'PENDING'
+      } else if (paymentMethod === 'PARTIAL_PAYMENT') {
+        paymentStatus = 'PARTIAL'
+      }
 
       // Create warehouse sale record using existing sales table
       const [saleResult] = await connection.execute(
-        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_status, status, customer_info, notes, created_at, updated_at)
-         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', 'COMPLETED', ?, ?, NOW(), NOW())`,
-        [warehouseKeeperId, warehouseKeeperId, invoiceNumber, totalAmount, taxAmount, discountAmount, finalAmount, paymentMethod, JSON.stringify({id: retailerId, name: customerName, paymentTerms: paymentMethod === 'CREDIT' ? paymentTerms : null, paymentMethod: paymentMethod}), notes]
+        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_status, payment_amount, credit_amount, status, customer_info, notes, created_at, updated_at)
+         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, NOW(), NOW())`,
+        [warehouseKeeperId, warehouseKeeperId, invoiceNumber, totalAmount, taxAmount, discountAmount, finalAmount, paymentMethod, paymentStatus, paymentAmount, creditAmount, JSON.stringify(customerInfo), notes]
       );
 
       const saleId = saleResult.insertId;
@@ -64,28 +109,56 @@ class WarehouseSale {
         );
       }
 
-      // Create company ledger entry for the sale
-      await connection.execute(`
-        INSERT INTO ledger_entries (
-          entry_type, 
-          reference_id, 
-          description, 
-          debit_amount, 
-          credit_amount, 
-          branch_id, 
-          created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, [
-        'WAREHOUSE_SALE', 
-        saleId, 
-        `Warehouse Sale ${invoiceNumber} [Company ID: ${retailerId}]`, 
-        null, // No debit for company
-        finalAmount, // Credit the company account
-        null, // Set to null for company operations
-        warehouseKeeperId
-      ]);
-
       await connection.commit();
+      
+      // Clear outstanding payments if any are selected
+      if (outstandingPayments && outstandingPayments.length > 0) {
+        try {
+          console.log('[WarehouseSale] Clearing outstanding payments:', outstandingPayments);
+          // Call the clear outstanding payments API
+          const clearResponse = await fetch(`${process.env.API_BASE_URL || 'http://localhost:5000'}/api/sales/clear-outstanding`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              outstandingPaymentIds: outstandingPayments,
+              paymentAmount: paymentAmount,
+              notes: `Cleared via warehouse sale ${invoiceNumber}`
+            })
+          });
+          
+          if (clearResponse.ok) {
+            console.log('[WarehouseSale] Outstanding payments cleared successfully');
+          } else {
+            console.error('[WarehouseSale] Failed to clear outstanding payments');
+          }
+        } catch (clearError) {
+          console.error('[WarehouseSale] Error clearing outstanding payments:', clearError);
+          // Don't fail the sale if clearing outstanding payments fails
+        }
+      }
+      
+      // Record sale in ledger with proper debit/credit entries
+      try {
+        await LedgerService.recordSaleTransaction({
+          saleId: saleId,
+          invoiceNo: invoiceNumber,
+          scopeType: 'WAREHOUSE',
+          scopeId: warehouseKeeperId,
+          totalAmount: finalAmount,
+          paymentAmount: paymentAmount, // Use actual payment amount
+          creditAmount: creditAmount, // Use actual credit amount
+          paymentMethod: paymentMethod,
+          customerInfo: customerInfo,
+          userId: warehouseKeeperId,
+          items: items
+        });
+        console.log('[WarehouseSale] Sale recorded in ledger successfully');
+      } catch (ledgerError) {
+        console.error('[WarehouseSale] Error recording sale in ledger:', ledgerError);
+        // Don't fail the sale if ledger recording fails
+      }
       return await WarehouseSale.findById(saleId);
     } catch (error) {
       await connection.rollback();

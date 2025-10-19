@@ -18,7 +18,8 @@ const {
   updateLedgerAccount,
   deleteLedgerAccount,
   updateLedgerEntry,
-  deleteLedgerEntry
+  deleteLedgerEntry,
+  populateDefaultAccounts
 } = require('../controllers/ledgerController');
 
 // All routes require authentication
@@ -79,6 +80,12 @@ router.put('/accounts/:id',
 router.delete('/accounts/:id',
   rbac('ADMIN'),
   deleteLedgerAccount
+);
+
+// Populate default accounts (one-time setup)
+router.post('/accounts/populate',
+  rbac('ADMIN'),
+  populateDefaultAccounts
 );
 
 // Get all ledger entries (general endpoint)

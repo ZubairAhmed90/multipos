@@ -130,7 +130,7 @@ function AdminWarehouseLedgersPage() {
               {title}
             </Typography>
             <Typography variant="h4" component="div" color={color}>
-              ${value.toFixed(2)}
+              {value.toFixed(2)}
             </Typography>
           </Box>
           <Box sx={{ color: `${color}.main` }}>
@@ -179,7 +179,7 @@ function AdminWarehouseLedgersPage() {
                   />
                 </TableCell>
                 <TableCell align="right">
-                  ${(parseFloat(account.balance) || 0).toFixed(2)}
+                  {(parseFloat(account.balance) || 0).toFixed(2)}
                 </TableCell>
                 <TableCell>
                   <Chip 
@@ -240,7 +240,7 @@ function AdminWarehouseLedgersPage() {
                   />
                 </TableCell>
                 <TableCell align="right">
-                  ${(parseFloat(entry.amount) || 0).toFixed(2)}
+                  {(parseFloat(entry.amount) || 0).toFixed(2)}
                 </TableCell>
                 <TableCell>{entry.description}</TableCell>
                 <TableCell>{entry.reference}</TableCell>

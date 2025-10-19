@@ -9,7 +9,9 @@ class SaleItem {
     this.name = data.name;
     this.quantity = data.quantity;
     this.unitPrice = data.unit_price;
+    this.originalPrice = data.original_price;
     this.discount = data.discount;
+    this.discountType = data.discount_type;
     this.total = data.total;
     this.createdAt = data.created_at;
   }
@@ -29,6 +31,13 @@ class Sale {
     this.total = data.total;
     this.paymentMethod = data.payment_method;
     this.paymentStatus = data.payment_status;
+    this.paymentAmount = data.payment_amount;
+    this.creditAmount = data.credit_amount;
+    this.creditStatus = data.credit_status;
+    this.creditDueDate = data.credit_due_date;
+    this.customerId = data.customer_id;
+    this.customerName = data.customer_name;
+    this.customerPhone = data.customer_phone;
     this.customerInfo = data.customer_info ? JSON.parse(data.customer_info) : null;
     this.notes = data.notes;
     this.status = data.status;
@@ -43,7 +52,7 @@ class Sale {
       invoiceNo, scopeType, scopeId, userId, shiftId, items, 
       subtotal, tax, discount, total, paymentMethod, paymentStatus, 
       customerInfo, notes, status = 'COMPLETED', customerName, customerPhone,
-      paymentAmount, creditAmount, creditStatus, creditDueDate
+      paymentAmount, creditAmount, creditStatus, creditDueDate, customerId
     } = saleData;
     
     
@@ -57,13 +66,13 @@ class Sale {
         `INSERT INTO sales (invoice_no, scope_type, scope_id, user_id, shift_id, 
          subtotal, tax, discount, total, payment_method, payment_status, 
          customer_info, notes, status, customer_name, customer_phone, 
-         payment_amount, credit_amount, credit_status, credit_due_date) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         payment_amount, credit_amount, credit_status, credit_due_date, customer_id) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [invoiceNo || null, scopeType || null, scopeId || null, userId || null, shiftId || null, 
          subtotal || 0, tax || 0, discount || 0, total || 0, paymentMethod || null, 
          paymentStatus || null, customerInfo || null, notes || null, status || null, 
          customerName || null, customerPhone || null, paymentAmount || 0, 
-         creditAmount || 0, creditStatus || 'NONE', creditDueDate || null]
+         creditAmount || 0, creditStatus || 'NONE', creditDueDate || null, customerId || null]
       );
       
       const saleId = saleResult.insertId;
@@ -73,10 +82,11 @@ class Sale {
         for (const item of items) {
           await connection.execute(
             `INSERT INTO sale_items (sale_id, inventory_item_id, sku, name, 
-             quantity, unit_price, discount, total) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             quantity, unit_price, original_price, discount, discount_type, total) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [saleId, item.inventoryItemId, item.sku, item.name, 
-             item.quantity, item.unitPrice, item.discount, item.total]
+             item.quantity, item.unitPrice, item.originalPrice || item.unitPrice, 
+             item.discount || 0, item.discountType || 'amount', item.total]
           );
         }
       }
@@ -217,10 +227,11 @@ class Sale {
           for (const item of this.items) {
             await connection.execute(
               `INSERT INTO sale_items (sale_id, inventory_item_id, sku, name, 
-               quantity, unit_price, discount, total) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+               quantity, unit_price, original_price, discount, discount_type, total) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [this.id, item.inventoryItemId, item.sku, item.name, 
-               item.quantity, item.unitPrice, item.discount, item.total]
+               item.quantity, item.unitPrice, item.originalPrice || item.unitPrice, 
+               item.discount || 0, item.discountType || 'amount', item.total]
             );
           }
         }

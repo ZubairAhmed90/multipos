@@ -106,8 +106,72 @@ const SalesReportsPage = () => {
     dispatch(fetchSalesReports(params))
   }
 
-  const handleExport = () => {
-    // Mock export functionality
+  const handleExport = async () => {
+    try {
+      const XLSX = await import('xlsx')
+      
+      // Prepare data for Excel
+      const excelData = [
+        // Summary data
+        { 'Report Type': 'Sales Summary', 'Value': '' },
+        { 'Report Type': 'Total Sales', 'Value': salesReports?.summary?.totalSales || 0 },
+        { 'Report Type': 'Total Transactions', 'Value': salesReports?.summary?.totalTransactions || 0 },
+        { 'Report Type': 'Average Transaction', 'Value': salesReports?.summary?.averageTransaction || 0 },
+        { 'Report Type': '', 'Value': '' },
+        
+        // Sales by date
+        { 'Report Type': 'Sales by Date', 'Value': '' },
+        ...salesData.map(item => ({
+          'Report Type': item.date || 'N/A',
+          'Value': item.sales || 0
+        })),
+        { 'Report Type': '', 'Value': '' },
+        
+        // Sales by branch
+        { 'Report Type': 'Sales by Branch', 'Value': '' },
+        ...branchData.map(item => ({
+          'Report Type': item.branch || 'N/A',
+          'Value': item.sales || 0
+        })),
+        { 'Report Type': '', 'Value': '' },
+        
+        // Sales by cashier
+        { 'Report Type': 'Sales by Cashier', 'Value': '' },
+        ...cashierData.map(item => ({
+          'Report Type': item.cashier || 'N/A',
+          'Value': item.sales || 0
+        }))
+      ]
+      
+      // Create workbook and worksheet
+      const workbook = XLSX.utils.book_new()
+      const worksheet = XLSX.utils.json_to_sheet(excelData)
+      
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Sales Report')
+      
+      // Generate Excel file buffer
+      const excelBuffer = XLSX.write(workbook, { 
+        type: 'array', 
+        bookType: 'xlsx' 
+      })
+      
+      // Create download link
+      const blob = new Blob([excelBuffer], { 
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+      })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `sales-report-${new Date().toISOString().split('T')[0]}.xlsx`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Export error:', error)
+      alert('Failed to export sales report. Please try again.')
+    }
   }
 
   // Use real data from API - ensure it's always an array

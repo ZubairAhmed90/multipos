@@ -289,13 +289,21 @@ const warehouseValidation = [
   
   body('capacity')
     .optional()
-    .isInt({ min: 1 })
-    .withMessage('Capacity must be a positive integer'),
+    .custom((value) => {
+      if (value === null || value === undefined || value === '') return true
+      if (isNaN(value)) return false
+      return true
+    })
+    .withMessage('Capacity must be a valid number'),
   
   body('stock')
     .optional()
-    .isInt({ min: 0 })
-    .withMessage('Stock must be a non-negative integer'),
+    .custom((value) => {
+      if (value === null || value === undefined || value === '') return true
+      if (isNaN(value)) return false
+      return true
+    })
+    .withMessage('Stock must be a valid number'),
   
   body('manager')
     .optional()
@@ -391,17 +399,30 @@ const inventoryItemUpdateValidation = [
   
   body('scopeId')
     .optional()
-    .isInt({ min: 1 })
-    .withMessage('Scope ID must be a valid positive integer')
+    .isString()
+    .withMessage('Scope ID must be a string')
 ];
 
 const inventoryItemValidation = [
   body('sku')
-    .trim()
-    .isLength({ min: 1, max: 20 })
-    .withMessage('SKU must be between 1 and 20 characters')
-    .matches(/^[A-Za-z0-9-]+$/)
-    .withMessage('SKU can only contain letters, numbers, and hyphens'),
+    .optional()
+    .custom((value) => {
+      if (value === '' || value === null || value === undefined) {
+        return true; // Allow empty values
+      }
+      if (typeof value === 'string' && value.trim().length === 0) {
+        return true; // Allow empty strings
+      }
+      if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 20) {
+        // Check if it matches the pattern only if it's not empty
+        if (!/^[A-Za-z0-9-]+$/.test(value.trim())) {
+          throw new Error('SKU can only contain letters, numbers, and hyphens');
+        }
+        return true;
+      }
+      throw new Error('SKU must be between 1 and 20 characters');
+    })
+    .withMessage('SKU must be between 1 and 20 characters and can only contain letters, numbers, and hyphens'),
   
   body('barcode')
     .optional()
@@ -459,8 +480,8 @@ const inventoryItemValidation = [
     .withMessage('Scope type must be BRANCH or WAREHOUSE'),
   
   body('scopeId')
-    .isInt({ min: 1 })
-    .withMessage('Scope ID must be a valid positive integer')
+    .isString()
+    .withMessage('Scope ID must be a string')
 ];
 
 // Company validation
@@ -504,8 +525,8 @@ const companyValidation = [
     .withMessage('Scope type must be BRANCH, WAREHOUSE, or COMPANY'),
   
   body('scopeId')
-    .isInt({ min: 1 })
-    .withMessage('Scope ID must be a valid positive integer')
+    .isString()
+    .withMessage('Scope ID must be a string')
 ];
 
 // Sales validation
@@ -515,8 +536,18 @@ const validateSale = [
     .withMessage('At least one item is required'),
   
   body('items.*.inventoryItemId')
-    .isInt({ min: 1 })
-    .withMessage('Inventory item ID must be a valid positive integer'),
+    .optional()
+    .custom((value) => {
+      if (value === null || value === undefined || value === '') {
+        return true; // Allow null/empty for manual items
+      }
+      const num = parseInt(value);
+      if (isNaN(num) || num < 1) {
+        throw new Error('Inventory item ID must be a valid positive integer');
+      }
+      return true;
+    })
+    .withMessage('Inventory item ID must be a valid positive integer or null for manual items'),
   
   body('items.*.quantity')
     .isFloat({ min: 0.01 })
@@ -545,8 +576,8 @@ const validateSale = [
     .withMessage('Scope type must be BRANCH or WAREHOUSE'),
   
   body('scopeId')
-    .isInt({ min: 1 })
-    .withMessage('Scope ID must be a valid positive integer'),
+    .isString()
+    .withMessage('Scope ID must be a string'),
   
   body('subtotal')
     .optional()
@@ -597,8 +628,8 @@ const validateSale = [
     .withMessage('Status must be PENDING, COMPLETED, or CANCELLED'),
   
   body('paymentMethod')
-    .isIn(['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT'])
-    .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, or MOBILE_PAYMENT'),
+    .isIn(['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT', 'FULLY_CREDIT', 'PARTIAL_PAYMENT'])
+    .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, FULLY_CREDIT, or PARTIAL_PAYMENT'),
   
   body('paymentAmount')
     .optional()
@@ -705,8 +736,8 @@ const validateSaleUpdate = [
   
   body('paymentMethod')
     .optional()
-    .isIn(['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT'])
-    .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, or MOBILE_PAYMENT'),
+    .isIn(['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT', 'FULLY_CREDIT', 'PARTIAL_PAYMENT'])
+    .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, FULLY_CREDIT, or PARTIAL_PAYMENT'),
   
   body('customerName')
     .optional()
@@ -748,25 +779,26 @@ const validateSaleUpdate = [
 
 // Return validation
 const validateReturn = [
-  body('linkedSaleId')
+  body('saleId')
     .isInt({ min: 1 })
-    .withMessage('Linked sale ID must be a valid positive integer'),
+    .withMessage('Sale ID must be a valid positive integer'),
   
   body('items')
     .isArray({ min: 1 })
     .withMessage('At least one item is required for return'),
   
-  body('items.*.inventoryItemId')
-    .isInt({ min: 1 })
-    .withMessage('Inventory item ID must be a valid positive integer'),
+  body('items.*.productName')
+    .trim()
+    .isLength({ min: 1 })
+    .withMessage('Product name is required'),
   
   body('items.*.quantity')
     .isFloat({ min: 0.01 })
     .withMessage('Quantity must be greater than 0'),
   
-  body('items.*.originalPrice')
+  body('items.*.refundAmount')
     .isFloat({ min: 0 })
-    .withMessage('Original price must be a positive number'),
+    .withMessage('Refund amount must be a positive number'),
   
   body('reason')
     .trim()
@@ -774,10 +806,12 @@ const validateReturn = [
     .withMessage('Return reason must be between 1 and 500 characters'),
   
   body('returnType')
+    .optional()
     .isIn(['FULL', 'PARTIAL'])
     .withMessage('Return type must be FULL or PARTIAL'),
   
   body('refundMethod')
+    .optional()
     .isIn(['CASH', 'CARD_REFUND', 'STORE_CREDIT'])
     .withMessage('Refund method must be CASH, CARD_REFUND, or STORE_CREDIT'),
   
@@ -804,8 +838,18 @@ const validateHoldBill = [
     .withMessage('At least one item is required'),
   
   body('items.*.inventoryItemId')
-    .isInt({ min: 1 })
-    .withMessage('Inventory item ID must be a valid positive integer'),
+    .optional()
+    .custom((value) => {
+      if (value === null || value === undefined || value === '') {
+        return true; // Allow null/empty for manual items
+      }
+      const num = parseInt(value);
+      if (isNaN(num) || num < 1) {
+        throw new Error('Inventory item ID must be a valid positive integer');
+      }
+      return true;
+    })
+    .withMessage('Inventory item ID must be a valid positive integer or null for manual items'),
   
   body('items.*.quantity')
     .isFloat({ min: 0.01 })
@@ -876,8 +920,8 @@ const validateHoldBill = [
 // POS complete bill validation
 const validateCompleteBill = [
   body('paymentMethod')
-    .isIn(['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT'])
-    .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, or MOBILE_PAYMENT')
+    .isIn(['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT', 'FULLY_CREDIT', 'PARTIAL_PAYMENT'])
+    .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, FULLY_CREDIT, or PARTIAL_PAYMENT')
 ];
 
 // Ledger entry validation
@@ -908,16 +952,16 @@ const validateTransfer = [
     .withMessage('From scope type must be BRANCH or WAREHOUSE'),
   
   body('from.scopeId')
-    .isMongoId()
-    .withMessage('From scope ID must be a valid MongoDB ObjectId'),
+    .isString()
+    .withMessage('From scope ID must be a string'),
   
   body('to.scopeType')
     .isIn(['BRANCH', 'WAREHOUSE'])
     .withMessage('To scope type must be BRANCH or WAREHOUSE'),
   
   body('to.scopeId')
-    .isMongoId()
-    .withMessage('To scope ID must be a valid MongoDB ObjectId'),
+    .isString()
+    .withMessage('To scope ID must be a string'),
   
   body('items')
     .isArray({ min: 1 })
@@ -958,8 +1002,8 @@ const validateHardwareOperation = [
     .withMessage('Scope type must be BRANCH or WAREHOUSE'),
   
   body('scopeId')
-    .isInt({ min: 1 })
-    .withMessage('Scope ID must be a valid positive integer'),
+    .isString()
+    .withMessage('Scope ID must be a string'),
   
   body('terminalId')
     .optional()
@@ -986,8 +1030,8 @@ const validateBarcodeScan = [
     .withMessage('Scope type must be BRANCH or WAREHOUSE'),
   
   body('scopeId')
-    .isInt({ min: 1 })
-    .withMessage('Scope ID must be a valid positive integer')
+    .isString()
+    .withMessage('Scope ID must be a string')
 ];
 
 // Receipt print validation
@@ -1001,8 +1045,8 @@ const validateReceiptPrint = [
     .withMessage('Scope type must be BRANCH or WAREHOUSE'),
   
   body('scopeId')
-    .isInt({ min: 1 })
-    .withMessage('Scope ID must be a valid positive integer')
+    .isString()
+    .withMessage('Scope ID must be a string')
 ];
 
 // Weighing scale validation
@@ -1037,8 +1081,8 @@ const validateDeviceRegistration = [
     .withMessage('Scope type must be BRANCH or WAREHOUSE'),
   
   body('scopeId')
-    .isInt({ min: 1 })
-    .withMessage('Scope ID must be a valid positive integer'),
+    .isString()
+    .withMessage('Scope ID must be a string'),
   
   body('terminalId')
     .trim()
@@ -1171,8 +1215,23 @@ module.exports = {
     
     body('paymentMethod')
       .optional()
-      .isIn(['CASH', 'CARD', 'CREDIT', 'BANK_TRANSFER', 'CHEQUE', 'MOBILE_MONEY'])
-      .withMessage('Payment method must be CASH, CARD, CREDIT, BANK_TRANSFER, CHEQUE, or MOBILE_MONEY'),
+      .isIn(['CASH', 'CARD', 'CREDIT', 'PARTIAL_PAYMENT', 'FULLY_CREDIT', 'BANK_TRANSFER', 'CHEQUE', 'MOBILE_MONEY'])
+      .withMessage('Payment method must be CASH, CARD, CREDIT, PARTIAL_PAYMENT, FULLY_CREDIT, BANK_TRANSFER, CHEQUE, or MOBILE_MONEY'),
+    
+    body('paymentAmount')
+      .optional()
+      .isFloat({ min: 0 })
+      .withMessage('Payment amount must be a positive number'),
+    
+    body('creditAmount')
+      .optional()
+      .isFloat({ min: 0 })
+      .withMessage('Credit amount must be a positive number'),
+    
+    body('paymentTerms')
+      .optional()
+      .isLength({ max: 100 })
+      .withMessage('Payment terms must not exceed 100 characters'),
     
     body('notes')
       .optional()
@@ -1511,13 +1570,13 @@ module.exports = {
         if (value === null || value === undefined || value === '') {
           return true; // Allow null, undefined, or empty values
         }
-        const validMethods = ['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT'];
+        const validMethods = ['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT', 'FULLY_CREDIT', 'PARTIAL_PAYMENT'];
         if (validMethods.includes(value)) {
           return true; // Allow valid payment methods
         }
-        throw new Error('Payment method must be CASH, CARD, BANK_TRANSFER, or MOBILE_PAYMENT');
+        throw new Error('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, FULLY_CREDIT, or PARTIAL_PAYMENT');
       })
-      .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, or MOBILE_PAYMENT'),
+      .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, FULLY_CREDIT, or PARTIAL_PAYMENT'),
     
     body('paymentDate')
       .optional()
@@ -1715,12 +1774,12 @@ module.exports = {
         if (value === null || value === undefined || value === '') {
           return true; // Allow null, undefined, or empty values
         }
-        if (['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT'].includes(value)) {
+        if (['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT', 'FULLY_CREDIT', 'PARTIAL_PAYMENT'].includes(value)) {
           return true; // Allow valid payment methods
         }
-        throw new Error('Payment method must be CASH, CARD, BANK_TRANSFER, or MOBILE_PAYMENT');
+        throw new Error('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, FULLY_CREDIT, or PARTIAL_PAYMENT');
       })
-      .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, or MOBILE_PAYMENT'),
+      .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, FULLY_CREDIT, or PARTIAL_PAYMENT'),
     
     body('paymentDate')
       .optional()
@@ -1747,5 +1806,51 @@ module.exports = {
         throw new Error('Notes must not exceed 500 characters');
       })
       .withMessage('Notes must not exceed 500 characters')
+  ],
+
+  // Financial voucher validation
+  financialVoucherValidation: [
+    body('type')
+      .isIn(['INCOME', 'EXPENSE', 'TRANSFER'])
+      .withMessage('Type must be INCOME, EXPENSE, or TRANSFER'),
+    
+    body('category')
+      .isIn(['SALES', 'EXPENSE', 'TRANSFER', 'ADJUSTMENT', 'REFUND'])
+      .withMessage('Category must be SALES, EXPENSE, TRANSFER, ADJUSTMENT, or REFUND'),
+    
+    body('paymentMethod')
+      .isIn(['CASH', 'BANK', 'MOBILE', 'CARD', 'CHEQUE'])
+      .withMessage('Payment method must be CASH, BANK, MOBILE, CARD, or CHEQUE'),
+    
+    body('amount')
+      .isFloat({ min: 0.01 })
+      .withMessage('Amount must be a positive number greater than 0'),
+    
+    body('scopeType')
+      .isIn(['BRANCH', 'WAREHOUSE'])
+      .withMessage('Scope type must be BRANCH or WAREHOUSE'),
+    
+    body('scopeId')
+      .isString()
+      .isLength({ min: 1, max: 255 })
+      .withMessage('Scope ID must be a string between 1 and 255 characters'),
+    
+    body('description')
+      .optional()
+      .isString()
+      .isLength({ max: 1000 })
+      .withMessage('Description must be a string with maximum 1000 characters'),
+    
+    body('reference')
+      .optional()
+      .isString()
+      .isLength({ max: 255 })
+      .withMessage('Reference must be a string with maximum 255 characters'),
+    
+    body('notes')
+      .optional()
+      .isString()
+      .isLength({ max: 1000 })
+      .withMessage('Notes must be a string with maximum 1000 characters')
   ]
 };

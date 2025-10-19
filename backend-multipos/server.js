@@ -30,8 +30,12 @@ const warehouseSalesAnalyticsRoutes = require('./routes/warehouseSalesAnalytics'
 const customerRoutes = require('./routes/customers');
 const warehouseLedgerRoutes = require('./routes/warehouseLedger');
 const companyLedgerRoutes = require('./routes/companyLedger');
+const customerLedgerRoutes = require('./routes/customerLedger');
 const receiptRoutes = require('./routes/receipt');
 const reportsRoutes = require('./routes/reports');
+const stockReportRoutes = require('./routes/stockReportRoutes');
+const financialVoucherRoutes = require('./routes/financialVoucherRoutes');
+const salespeopleRoutes = require('./routes/salespeople');
 
 const app = express();
 
@@ -123,8 +127,12 @@ app.use('/api/warehouse-sales-analytics', warehouseSalesAnalyticsRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/warehouse-ledger', warehouseLedgerRoutes);
 app.use('/api/company-ledger', companyLedgerRoutes);
+app.use('/api/customer-ledger', customerLedgerRoutes);
 app.use('/api/receipt', receiptRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/stock-reports', stockReportRoutes);
+app.use('/api/financial-vouchers', financialVoucherRoutes);
+app.use('/api/salespeople', salespeopleRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -149,10 +157,13 @@ process.on('SIGINT', async () => {
 });
 
 const PORT = process.env.PORT || 3000;
-
 // Only start the server if not in test mode
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
+  const server = app.listen(() => {
+    const address = server.address();
+    console.log(`🚀 Server running on http://${address.address}:${PORT}`);
+    console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`⏰ Started at: ${new Date().toISOString()}`);
   });
 }
 

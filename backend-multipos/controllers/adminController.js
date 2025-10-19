@@ -153,10 +153,24 @@ const getAllInventories = async (req, res, next) => {
       SELECT 
         i.*,
         b.name as branch_name,
-        w.name as warehouse_name
+        w.name as warehouse_name,
+        COALESCE(sr.total_purchased, 0) as total_purchased,
+        COALESCE(sr.total_sold, 0) as total_sold,
+        COALESCE(sr.total_returned, 0) as total_returned,
+        COALESCE(sr.total_adjusted, 0) as total_adjusted
       FROM inventory_items i
       LEFT JOIN branches b ON i.scope_type = 'BRANCH' AND i.scope_id = b.id
       LEFT JOIN warehouses w ON i.scope_type = 'WAREHOUSE' AND i.scope_id = w.id
+      LEFT JOIN (
+        SELECT 
+          inventory_item_id,
+          SUM(CASE WHEN transaction_type = 'PURCHASE' THEN quantity_change ELSE 0 END) as total_purchased,
+          SUM(CASE WHEN transaction_type = 'SALE' THEN ABS(quantity_change) ELSE 0 END) as total_sold,
+          SUM(CASE WHEN transaction_type = 'RETURN' THEN quantity_change ELSE 0 END) as total_returned,
+          SUM(CASE WHEN transaction_type = 'ADJUSTMENT' THEN quantity_change ELSE 0 END) as total_adjusted
+        FROM stock_reports 
+        GROUP BY inventory_item_id
+      ) sr ON i.id = sr.inventory_item_id
       ${whereClause}
       ORDER BY i.created_at DESC
     `, params);
@@ -826,6 +840,135 @@ const createUser = async (req, res, next) => {
   }
 };
 
+// @desc    Reset user password
+// @route   PUT /api/admin/users/:id/reset-password
+// @access  Private (Admin only)
+const resetUserPassword = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+
+    // Validate new password
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters long'
+      });
+    }
+
+    // Check if password meets complexity requirements
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
+    if (!passwordRegex.test(newPassword)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must contain at least one lowercase letter, one uppercase letter, and one number'
+      });
+    }
+
+    // Check if user exists
+    const [users] = await pool.execute(
+      'SELECT id, username, email, role FROM users WHERE id = ?',
+      [id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const user = users[0];
+
+    // Hash new password
+    const bcrypt = require('bcrypt');
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    // Update password
+    await pool.execute(
+      'UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?',
+      [hashedPassword, id]
+    );
+
+    res.json({
+      success: true,
+      message: `Password reset successfully for user ${user.username}`,
+      data: {
+        userId: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        newPassword: newPassword, // Return plain text password for admin to share
+        resetAt: new Date().toISOString(),
+        instructions: [
+          'Share this password with the user securely',
+          'The user should change this password on first login',
+          'This password is temporary and should not be stored'
+        ],
+        securityWarning: 'Keep this password secure and delete it after sharing'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error resetting user password',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get user password information (for admin viewing)
+// @route   GET /api/admin/users/:id/password
+// @access  Private (Admin only)
+const getUserPassword = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user exists
+    const [users] = await pool.execute(
+      'SELECT id, username, email, role, created_at, updated_at FROM users WHERE id = ?',
+      [id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const user = users[0];
+
+    res.json({
+      success: true,
+      message: 'Password information retrieved',
+      data: {
+        userId: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        createdAt: user.created_at,
+        lastUpdated: user.updated_at,
+        passwordStatus: 'Password is securely hashed and cannot be retrieved',
+        instructions: [
+          'Passwords are stored securely using bcrypt hashing',
+          'Original passwords cannot be retrieved for security reasons',
+          'Use "Reset Password" to set a new password for this user',
+          'The new password will be displayed after reset for sharing with the user'
+        ],
+        securityNote: 'This is a security feature - passwords are one-way encrypted'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error retrieving user password information',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getAllBranches,
   updateBranchSettings,
@@ -839,5 +982,7 @@ module.exports = {
   createUser,
   updateUser,
   deleteUser,
+  resetUserPassword,
+  getUserPassword,
   getSystemDashboard
 };

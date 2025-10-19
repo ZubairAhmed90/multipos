@@ -75,8 +75,56 @@ const DailyReportsPage = () => {
     dispatch(fetchSalesReports(params))
   }
 
-  const handleExport = () => {
-('Exporting daily report...')
+  const handleExport = async () => {
+    try {
+      const XLSX = await import('xlsx')
+      
+      // Prepare data for Excel
+      const excelData = [
+        // Summary data
+        { 'Report Type': 'Daily Report Summary', 'Value': '' },
+        { 'Report Type': 'Total Sales', 'Value': salesReports?.summary?.totalSales || 0 },
+        { 'Report Type': 'Total Transactions', 'Value': salesReports?.summary?.totalTransactions || 0 },
+        { 'Report Type': 'Average Transaction', 'Value': salesReports?.summary?.averageTransaction || 0 },
+        { 'Report Type': '', 'Value': '' },
+        
+        // Daily sales data
+        { 'Report Type': 'Daily Sales', 'Value': '' },
+        ...dailySalesData.map(item => ({
+          'Report Type': item.date || 'N/A',
+          'Value': item.sales || 0
+        }))
+      ]
+      
+      // Create workbook and worksheet
+      const workbook = XLSX.utils.book_new()
+      const worksheet = XLSX.utils.json_to_sheet(excelData)
+      
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Daily Report')
+      
+      // Generate Excel file buffer
+      const excelBuffer = XLSX.write(workbook, { 
+        type: 'array', 
+        bookType: 'xlsx' 
+      })
+      
+      // Create download link
+      const blob = new Blob([excelBuffer], { 
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+      })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `daily-report-${new Date().toISOString().split('T')[0]}.xlsx`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Export error:', error)
+      alert('Failed to export daily report. Please try again.')
+    }
   }
 
   // Use real data from sales reports API
@@ -201,7 +249,7 @@ const DailyReportsPage = () => {
                         Total Sales
                       </Typography>
                       <Typography variant="h4">
-                        ${shiftSummary.totalSales.toLocaleString()}
+                        {shiftSummary.totalSales.toLocaleString()}
                       </Typography>
                     </Box>
                     <AttachMoney sx={{ fontSize: 40, color: 'success.main' }} />
@@ -235,7 +283,7 @@ const DailyReportsPage = () => {
                         Avg. Ticket
                       </Typography>
                       <Typography variant="h4">
-                        ${shiftSummary.averageTicket}
+                        {shiftSummary.averageTicket}
                       </Typography>
                     </Box>
                     <TrendingUp sx={{ fontSize: 40, color: 'info.main' }} />
@@ -289,32 +337,32 @@ const DailyReportsPage = () => {
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                     <Typography variant="body2">Cash</Typography>
                     <Typography variant="body2" fontWeight="bold">
-                      ${shiftSummary.cashSales}
+                      {shiftSummary.cashSales}
                     </Typography>
                   </Box>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                     <Typography variant="body2">Card</Typography>
                     <Typography variant="body2" fontWeight="bold">
-                      ${shiftSummary.cardSales}
+                      {shiftSummary.cardSales}
                     </Typography>
                   </Box>
                   <Divider sx={{ my: 1 }} />
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                     <Typography variant="body2">Refunds</Typography>
                     <Typography variant="body2" color="error.main" fontWeight="bold">
-                      -${shiftSummary.refunds}
+                      -{shiftSummary.refunds}
                     </Typography>
                   </Box>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                     <Typography variant="body2">Discounts</Typography>
                     <Typography variant="body2" color="warning.main" fontWeight="bold">
-                      -${shiftSummary.discounts}
+                      -{shiftSummary.discounts}
                     </Typography>
                   </Box>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                     <Typography variant="body2">Tax Collected</Typography>
                     <Typography variant="body2" fontWeight="bold">
-                      ${shiftSummary.taxCollected}
+                      {shiftSummary.taxCollected}
                     </Typography>
                   </Box>
                 </Box>
@@ -345,7 +393,7 @@ const DailyReportsPage = () => {
                       <TableCell>{transaction.time}</TableCell>
                       <TableCell>{transaction.customer}</TableCell>
                       <TableCell align="right">{transaction.items}</TableCell>
-                      <TableCell align="right">${transaction.amount}</TableCell>
+                      <TableCell align="right">{transaction.amount}</TableCell>
                       <TableCell>{transaction.method}</TableCell>
                       <TableCell>
                         <Chip label="Completed" color="success" size="small" />

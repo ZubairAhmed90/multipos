@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import {
   Box,
@@ -18,13 +18,21 @@ import {
   Chip,
   Alert,
   CircularProgress,
-  Button
+  Button,
+  IconButton,
+  Tooltip,
+  Divider
 } from '@mui/material'
 import {
   AccountBalance as BalanceIcon,
   TrendingUp as TrendingUpIcon,
   TrendingDown as TrendingDownIcon,
-  Refresh as RefreshIcon
+  Refresh as RefreshIcon,
+  Assessment as SummaryIcon,
+  GetApp as ExportIcon,
+  Print as PrintIcon,
+  PieChart as PieChartIcon,
+  BarChart as BarChartIcon
 } from '@mui/icons-material'
 import {
   fetchBalanceSummary,
@@ -61,8 +69,9 @@ function LedgerSummaryTab() {
     if (accounts && accounts.length > 0) {
       const summary = accounts.reduce((acc, account) => {
         const balance = parseFloat(account.balance) || 0
+        const accountType = account.accountType || account.account_type
         
-        switch (account.accountType) {
+        switch (accountType) {
           case 'asset':
             acc.totalAssets += balance
             break
@@ -108,7 +117,7 @@ function LedgerSummaryTab() {
               {title}
             </Typography>
             <Typography variant="h4" component="div" color={color}>
-              ${value.toFixed(2)}
+              {value.toFixed(2)}
             </Typography>
           </Box>
           <Box sx={{ color: `${color}.main` }}>
@@ -120,7 +129,7 @@ function LedgerSummaryTab() {
   )
 
   const AccountTypeTable = ({ type, accounts, color }) => {
-    const filteredAccounts = accounts.filter(account => account.accountType === type)
+    const filteredAccounts = accounts.filter(account => (account.accountType || account.account_type) === type)
     const total = filteredAccounts.reduce((sum, account) => sum + (parseFloat(account.balance) || 0), 0)
 
     return (
@@ -129,7 +138,7 @@ function LedgerSummaryTab() {
           <Typography variant="h6" gutterBottom sx={{ textTransform: 'capitalize' }}>
             {type} Accounts
             <Chip 
-              label={`Total: $${total.toFixed(2)}`} 
+              label={`Total: ${total.toFixed(2)}`} 
               color={color} 
               size="small" 
               sx={{ ml: 2 }}
@@ -147,14 +156,14 @@ function LedgerSummaryTab() {
               <TableBody>
                 {filteredAccounts.map((account) => (
                   <TableRow key={account.id}>
-                    <TableCell>{account.accountName}</TableCell>
+                    <TableCell>{account.accountName || account.account_name}</TableCell>
                     <TableCell align="right">
-                      ${(parseFloat(account.balance) || 0).toFixed(2)}
+                      {(parseFloat(account.balance) || 0).toFixed(2)}
                     </TableCell>
                     <TableCell align="center">
                       <Chip 
                         label={account.status} 
-                        color={account.status === 'active' ? 'success' : 'error'}
+                        color={account.status === 'ACTIVE' ? 'success' : 'error'}
                         size="small"
                       />
                     </TableCell>
@@ -168,6 +177,37 @@ function LedgerSummaryTab() {
     )
   }
 
+  // Calculate additional metrics
+  const additionalMetrics = useMemo(() => {
+    if (!accounts || accounts.length === 0) {
+      return {
+        workingCapital: 0,
+        currentRatio: 0,
+        debtToEquity: 0,
+        grossProfitMargin: 0
+      }
+    }
+
+    const currentAssets = accounts
+      .filter(acc => (acc.accountType || acc.account_type) === 'asset' && (acc.accountName || acc.account_name)?.toLowerCase().includes('cash'))
+      .reduce((sum, acc) => sum + (parseFloat(acc.balance) || 0), 0)
+    
+    const currentLiabilities = accounts
+      .filter(acc => (acc.accountType || acc.account_type) === 'liability')
+      .reduce((sum, acc) => sum + (parseFloat(acc.balance) || 0), 0)
+    
+    const totalEquity = summaryData.totalEquity
+    const totalRevenue = summaryData.totalRevenue
+    const totalExpenses = summaryData.totalExpenses
+
+    return {
+      workingCapital: currentAssets - currentLiabilities,
+      currentRatio: currentLiabilities > 0 ? currentAssets / currentLiabilities : 0,
+      debtToEquity: totalEquity > 0 ? summaryData.totalLiabilities / totalEquity : 0,
+      grossProfitMargin: totalRevenue > 0 ? ((totalRevenue - totalExpenses) / totalRevenue) * 100 : 0
+    }
+  }, [accounts, summaryData])
+
   if (balanceLoading || accountsLoading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 400 }}>
@@ -178,18 +218,39 @@ function LedgerSummaryTab() {
 
   return (
     <Box>
+      {/* Header */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h5">
-          Balance Summary
-        </Typography>
-        <Button
-          variant="outlined"
-          startIcon={<RefreshIcon />}
-          onClick={handleRefresh}
-          sx={{ textTransform: 'none' }}
-        >
-          Refresh
-        </Button>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <SummaryIcon sx={{ fontSize: 30, color: 'primary.main' }} />
+          <Box>
+            <Typography variant="h5">
+              Balance Summary
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Complete financial overview and analysis
+            </Typography>
+          </Box>
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Tooltip title="Print Report">
+            <IconButton color="primary">
+              <PrintIcon />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Export Data">
+            <IconButton color="primary">
+              <ExportIcon />
+            </IconButton>
+          </Tooltip>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshIcon />}
+            onClick={handleRefresh}
+            sx={{ textTransform: 'none' }}
+          >
+            Refresh
+          </Button>
+        </Box>
       </Box>
 
       {balanceError && (
@@ -198,7 +259,7 @@ function LedgerSummaryTab() {
         </Alert>
       )}
 
-      {/* Summary Cards */}
+      {/* Primary Financial Metrics */}
       <Grid container spacing={3} sx={{ mb: 4 }}>
         <Grid item xs={12} sm={6} md={2}>
           <SummaryCard
@@ -250,30 +311,147 @@ function LedgerSummaryTab() {
         </Grid>
       </Grid>
 
-      {/* Accounting Equation */}
-      <Card sx={{ mb: 4 }}>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>
-            Accounting Equation
-          </Typography>
-          <Typography variant="body1" sx={{ fontFamily: 'monospace', fontSize: '1.2rem' }}>
-            Assets = Liabilities + Equity
-          </Typography>
-          <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
-            ${summaryData.totalAssets.toFixed(2)} = ${summaryData.totalLiabilities.toFixed(2)} + ${summaryData.totalEquity.toFixed(2)}
-          </Typography>
-          <Typography 
-            variant="body2" 
-            color={Math.abs(summaryData.totalAssets - (summaryData.totalLiabilities + summaryData.totalEquity)) < 0.01 ? 'success.main' : 'error.main'}
-            sx={{ mt: 1, fontWeight: 'bold' }}
-          >
-            {Math.abs(summaryData.totalAssets - (summaryData.totalLiabilities + summaryData.totalEquity)) < 0.01 
-              ? '✓ Equation is balanced' 
-              : '⚠ Equation is not balanced'
-            }
-          </Typography>
-        </CardContent>
-      </Card>
+      {/* Financial Ratios */}
+      <Grid container spacing={3} sx={{ mb: 4 }}>
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Box>
+                  <Typography color="textSecondary" gutterBottom variant="body2">
+                    Working Capital
+                  </Typography>
+                  <Typography variant="h5" color={additionalMetrics.workingCapital >= 0 ? 'success.main' : 'error.main'}>
+                    ${additionalMetrics.workingCapital.toFixed(2)}
+                  </Typography>
+                </Box>
+                <PieChartIcon sx={{ color: 'primary.main', fontSize: 30 }} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Box>
+                  <Typography color="textSecondary" gutterBottom variant="body2">
+                    Current Ratio
+                  </Typography>
+                  <Typography variant="h5" color={additionalMetrics.currentRatio >= 1 ? 'success.main' : 'warning.main'}>
+                    {additionalMetrics.currentRatio.toFixed(2)}:1
+                  </Typography>
+                </Box>
+                <BarChartIcon sx={{ color: 'info.main', fontSize: 30 }} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Box>
+                  <Typography color="textSecondary" gutterBottom variant="body2">
+                    Debt to Equity
+                  </Typography>
+                  <Typography variant="h5" color={additionalMetrics.debtToEquity <= 1 ? 'success.main' : 'error.main'}>
+                    {additionalMetrics.debtToEquity.toFixed(2)}:1
+                  </Typography>
+                </Box>
+                <TrendingDownIcon sx={{ color: 'warning.main', fontSize: 30 }} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Box>
+                  <Typography color="textSecondary" gutterBottom variant="body2">
+                    Profit Margin
+                  </Typography>
+                  <Typography variant="h5" color={additionalMetrics.grossProfitMargin >= 0 ? 'success.main' : 'error.main'}>
+                    {additionalMetrics.grossProfitMargin.toFixed(1)}%
+                  </Typography>
+                </Box>
+                <TrendingUpIcon sx={{ color: 'success.main', fontSize: 30 }} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+
+      {/* Accounting Equation & Financial Health */}
+      <Grid container spacing={3} sx={{ mb: 4 }}>
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Accounting Equation
+              </Typography>
+              <Typography variant="body1" sx={{ fontSize: '1.2rem', fontWeight: 500, mb: 2 }}>
+                Assets = Liabilities + Equity
+              </Typography>
+              <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+                ${summaryData.totalAssets.toFixed(2)} = ${summaryData.totalLiabilities.toFixed(2)} + ${summaryData.totalEquity.toFixed(2)}
+              </Typography>
+              <Chip 
+                label={Math.abs(summaryData.totalAssets - (summaryData.totalLiabilities + summaryData.totalEquity)) < 0.01 
+                  ? '✓ Equation is balanced' 
+                  : '⚠ Equation is not balanced'
+                }
+                color={Math.abs(summaryData.totalAssets - (summaryData.totalLiabilities + summaryData.totalEquity)) < 0.01 ? 'success' : 'error'}
+                variant="outlined"
+              />
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Financial Health
+              </Typography>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography variant="body2">Liquidity</Typography>
+                  <Chip 
+                    label={additionalMetrics.currentRatio >= 1 ? 'Good' : 'Poor'} 
+                    color={additionalMetrics.currentRatio >= 1 ? 'success' : 'error'} 
+                    size="small" 
+                  />
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography variant="body2">Solvency</Typography>
+                  <Chip 
+                    label={additionalMetrics.debtToEquity <= 1 ? 'Good' : 'Poor'} 
+                    color={additionalMetrics.debtToEquity <= 1 ? 'success' : 'error'} 
+                    size="small" 
+                  />
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography variant="body2">Profitability</Typography>
+                  <Chip 
+                    label={summaryData.netIncome >= 0 ? 'Profitable' : 'Loss'} 
+                    color={summaryData.netIncome >= 0 ? 'success' : 'error'} 
+                    size="small" 
+                  />
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography variant="body2">Working Capital</Typography>
+                  <Chip 
+                    label={additionalMetrics.workingCapital >= 0 ? 'Positive' : 'Negative'} 
+                    color={additionalMetrics.workingCapital >= 0 ? 'success' : 'error'} 
+                    size="small" 
+                  />
+                </Box>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
 
       {/* Account Details by Type */}
       <Grid container spacing={3}>

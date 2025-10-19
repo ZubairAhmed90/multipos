@@ -15,7 +15,22 @@ import { fetchWarehouses, createWarehouse, updateWarehouse, deleteWarehouse } fr
 const warehouseSchema = yup.object({
   name: yup.string().required('Warehouse name is required'),
   location: yup.string().required('Location is required'),
-  capacity: yup.number().required('Capacity is required').min(1, 'Capacity must be greater than 0'),
+  capacity: yup.mixed()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      const num = Number(value)
+      return isNaN(num) ? null : num
+    })
+    .nullable()
+    .optional(),
+  stock: yup.mixed()
+    .transform((value) => {
+      if (value === '' || value === null || value === undefined) return null
+      const num = Number(value)
+      return isNaN(num) ? null : num
+    })
+    .nullable()
+    .optional(),
   manager: yup.string().required('Manager name is required'),
   status: yup.string().required('Status is required'),
 })
@@ -55,7 +70,8 @@ const columns = [
 const fields = [
   { name: 'name', label: 'Warehouse Name', type: 'text', required: true },
   { name: 'location', label: 'Location', type: 'text', required: true },
-  { name: 'capacity', label: 'Capacity', type: 'number', required: true },
+  { name: 'capacity', label: 'Capacity', type: 'number', required: false },
+  { name: 'stock', label: 'Stock', type: 'number', required: false },
   { name: 'manager', label: 'Manager Name', type: 'text', required: true },
   { 
     name: 'status', 

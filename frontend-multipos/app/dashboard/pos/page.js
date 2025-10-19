@@ -32,7 +32,7 @@ const posSchema = yup.object({
   name: yup.string().required('POS name is required'),
   code: yup.string().required('POS code is required'),
   scopeType: yup.string().required('Scope type is required'),
-  scopeId: yup.string().required('Scope ID is required'),
+  scopeId: yup.string().required('Scope Name is required'),
 })
 
 const tabSchema = yup.object({
@@ -61,7 +61,7 @@ const terminalFields = [
       { value: 'WAREHOUSE', label: 'Warehouse' },
     ]
   },
-  { name: 'scopeId', label: 'Scope ID', type: 'text', required: true },
+  { name: 'scopeId', label: 'Scope Name', type: 'text', required: true },
 ]
 
 const tabFields = [

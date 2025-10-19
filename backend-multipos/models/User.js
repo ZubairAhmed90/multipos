@@ -129,10 +129,32 @@ class User {
   }
 
   // Instance method to get user without sensitive data
-  toJSON() {
+  async toJSON() {
     const user = { ...this };
     delete user.password;
     delete user.refreshToken;
+    
+    // Add branch and warehouse names
+    if (this.branchId) {
+      try {
+        const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [this.branchId]);
+        user.branchName = branches[0]?.name || null;
+      } catch (error) {
+        console.error('Error fetching branch name:', error);
+        user.branchName = null;
+      }
+    }
+    
+    if (this.warehouseId) {
+      try {
+        const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [this.warehouseId]);
+        user.warehouseName = warehouses[0]?.name || null;
+      } catch (error) {
+        console.error('Error fetching warehouse name:', error);
+        user.warehouseName = null;
+      }
+    }
+    
     return user;
   }
 

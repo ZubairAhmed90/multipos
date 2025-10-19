@@ -22,6 +22,12 @@ import {
   InputAdornment,
   Skeleton,
   Fade,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
 } from '@mui/material'
 import {
   Store,
@@ -34,7 +40,6 @@ import {
   Business,
   Clear,
 } from '@mui/icons-material'
-import EntityTable from '../../../components/crud/EntityTable'
 import { fetchInventory } from '../../store/slices/inventorySlice'
 import { fetchBranches } from '../../store/slices/branchesSlice'
 
@@ -342,7 +347,7 @@ function OtherBranchesInventoryPage() {
                           Total Value
                         </Typography>
                         <Typography variant="h4" color="success.main">
-                          ${totalValue.toLocaleString()}
+                          {totalValue.toLocaleString()}
                         </Typography>
                       </Box>
                       <TrendingUp sx={{ fontSize: 40, color: 'success.main' }} />
@@ -379,20 +384,116 @@ function OtherBranchesInventoryPage() {
             </Alert>
           )}
 
-          {/* Inventory Table */}
+          {/* Simple Inventory Table */}
           {selectedBranchId ? (
             <Fade in={!!selectedBranchId}>
-              <EntityTable
-                data={filteredInventory}
-                loading={inventoryLoading}
-                columns={columns}
-                title={`${getSelectedBranchName()} Inventory (View Only)`}
-                entityName="Inventory Item"
-                onAdd={null}
-                onEdit={null}
-                onDelete={null}
-                error={inventoryError}
-              />
+              <Card>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom>
+                    {getSelectedBranchName()} Inventory (View Only) ({filteredInventory.length})
+                  </Typography>
+                  
+                  {inventoryLoading ? (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+                      <CircularProgress />
+                    </Box>
+                  ) : inventoryError ? (
+                    <Alert severity="error" sx={{ mb: 2 }}>
+                      {inventoryError}
+                    </Alert>
+                  ) : (
+                    <TableContainer>
+                      <Table>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Item Name</TableCell>
+                            <TableCell>Category</TableCell>
+                            <TableCell align="right">Quantity</TableCell>
+                            <TableCell align="right">Sold</TableCell>
+                            <TableCell align="right">Returned</TableCell>
+                            <TableCell align="right">Purchased</TableCell>
+                            <TableCell align="right">Min Stock</TableCell>
+                            <TableCell align="right">Cost Price</TableCell>
+                            <TableCell align="right">Selling Price</TableCell>
+                            <TableCell>Status</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {filteredInventory.map((item) => {
+                            const isLowStock = item.quantity <= (item.minStockLevel || 10)
+                            const isOutOfStock = item.quantity <= 0
+                            
+                            let statusColor = 'success'
+                            let statusLabel = 'In Stock'
+                            
+                            if (isOutOfStock) {
+                              statusColor = 'error'
+                              statusLabel = 'Out of Stock'
+                            } else if (isLowStock) {
+                              statusColor = 'warning'
+                              statusLabel = 'Low Stock'
+                            }
+                            
+                            return (
+                              <TableRow key={item.id}>
+                                <TableCell>{item.name}</TableCell>
+                                <TableCell>
+                                  <Chip label={item.category} size="small" />
+                                </TableCell>
+                                <TableCell align="right">
+                                  <Chip 
+                                    label={item.quantity || 0} 
+                                    size="small" 
+                                    color={
+                                      item.quantity === 0 ? 'error' : 
+                                      item.quantity <= item.minStockLevel ? 'warning' : 'success'
+                                    }
+                                    variant="outlined"
+                                  />
+                                </TableCell>
+                                <TableCell align="right">
+                                  <Chip 
+                                    label={item.totalSold || 0} 
+                                    size="small" 
+                                    color="primary"
+                                    variant="outlined"
+                                  />
+                                </TableCell>
+                                <TableCell align="right">
+                                  <Chip 
+                                    label={item.totalReturned || 0} 
+                                    size="small" 
+                                    color="warning"
+                                    variant="outlined"
+                                  />
+                                </TableCell>
+                                <TableCell align="right">
+                                  <Chip 
+                                    label={item.totalPurchased || 0} 
+                                    size="small" 
+                                    color="success"
+                                    variant="outlined"
+                                  />
+                                </TableCell>
+                                <TableCell align="right">{item.minStockLevel || 0}</TableCell>
+                                <TableCell align="right">${item.costPrice?.toFixed(2) || '0.00'}</TableCell>
+                                <TableCell align="right">${item.sellingPrice?.toFixed(2) || '0.00'}</TableCell>
+                                <TableCell>
+                                  <Chip 
+                                    label={statusLabel} 
+                                    color={statusColor} 
+                                    size="small" 
+                                  />
+                                </TableCell>
+                              </TableRow>
+                            )
+                          })}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </CardContent>
+              </Card>
             </Fade>
           ) : (
             <Card sx={{ boxShadow: 1 }}>

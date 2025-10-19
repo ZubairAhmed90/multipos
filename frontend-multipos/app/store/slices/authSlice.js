@@ -47,6 +47,7 @@ const initialState = {
   refreshToken: null,
   isAuthenticated: false,
   isLoading: false,
+  authInitialized: false,
   error: null,
 }
 
@@ -119,6 +120,7 @@ const authSlice = createSlice({
       
       // Clear loading state immediately
       state.isLoading = false
+      state.authInitialized = true
     },
     setUser: (state, action) => {
       state.user = action.payload

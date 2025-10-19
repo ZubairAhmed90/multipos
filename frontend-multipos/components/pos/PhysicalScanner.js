@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Box,
   Button,
@@ -56,6 +56,65 @@ const PhysicalScanner = ({ onScan, onClose, open, inventoryItems = [] }) => {
     }
   }, [])
 
+  // Handle scanning logic (moved above the keydown effect to avoid TDZ)
+  const handleScan = useCallback((barcode) => {
+    if (!barcode) return
+
+    setLoading(true)
+    setError('')
+
+    // Search for product in inventory
+    const product = inventoryItems.find(p => {
+      const skuMatch = p.sku && p.sku.toString().toLowerCase() === barcode.toLowerCase()
+      const barcodeMatch = p.barcode && p.barcode.toString().toLowerCase() === barcode.toLowerCase()
+      const nameMatch = p.name && p.name.toLowerCase().includes(barcode.toLowerCase())
+      return skuMatch || barcodeMatch || nameMatch
+    })
+
+    // Add to scan history
+    const scanEntry = {
+      barcode,
+      product: product ? product.name : 'Not found',
+      success: !!product,
+      timestamp: new Date().toISOString(),
+      method: 'physical'
+    }
+
+    const newHistory = [scanEntry, ...scanHistory.slice(0, 49)] // Keep last 50 scans
+    setScanHistory(newHistory)
+    localStorage.setItem('barcodeScanHistory', JSON.stringify(newHistory))
+
+    if (product) {
+      setSuccessMessage(`Product found: ${product.name}`)
+      setShowSuccessSnackbar(true)
+      onScan(barcode)
+      setManualCode('')
+    } else {
+      setError('Product not found. Please check the barcode or try manual search.')
+      // Show search results for partial matches
+      const matches = inventoryItems.filter(p => {
+        const skuMatch = p.sku && p.sku.toString().toLowerCase().includes(barcode.toLowerCase())
+        const barcodeMatch = p.barcode && p.barcode.toString().toLowerCase().includes(barcode.toLowerCase())
+        const nameMatch = p.name && p.name.toLowerCase().includes(barcode.toLowerCase())
+        return skuMatch || barcodeMatch || nameMatch
+      }).map(item => ({
+        id: item.id,
+        name: item.name,
+        price: item.sellingPrice,
+        stock: item.currentStock,
+        category: item.category,
+        sku: item.sku,
+        barcode: item.barcode,
+        unit: item.unit
+      }))
+
+      setSearchResults(matches)
+      setShowSearchResults(true)
+    }
+
+    setLoading(false)
+  }, [inventoryItems, onScan, scanHistory])
+
   // Physical Scanner Integration
   useEffect(() => {
     if (!open) return
@@ -97,67 +156,9 @@ const PhysicalScanner = ({ onScan, onClose, open, inventoryItems = [] }) => {
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [open, manualCode])
+  }, [open, manualCode, handleScan])
 
-  const handleScan = (barcode) => {
-    if (!barcode) return
-
-    setLoading(true)
-    setError('')
-
-    // Search for product in inventory
-    const product = inventoryItems.find(p => {
-      const skuMatch = p.sku && p.sku.toString().toLowerCase() === barcode.toLowerCase()
-      const barcodeMatch = p.barcode && p.barcode.toString().toLowerCase() === barcode.toLowerCase()
-      const nameMatch = p.name && p.name.toLowerCase().includes(barcode.toLowerCase())
-      
-      return skuMatch || barcodeMatch || nameMatch
-    })
-
-    // Add to scan history
-    const scanEntry = {
-      barcode,
-      product: product ? product.name : 'Not found',
-      success: !!product,
-      timestamp: new Date().toISOString(),
-      method: 'physical'
-    }
-
-    const newHistory = [scanEntry, ...scanHistory.slice(0, 49)] // Keep last 50 scans
-    setScanHistory(newHistory)
-    localStorage.setItem('barcodeScanHistory', JSON.stringify(newHistory))
-
-    if (product) {
-      setSuccessMessage(`Product found: ${product.name}`)
-      setShowSuccessSnackbar(true)
-      onScan(barcode)
-      setManualCode('')
-    } else {
-      setError('Product not found. Please check the barcode or try manual search.')
-      // Show search results for partial matches
-      const matches = inventoryItems.filter(p => {
-        const skuMatch = p.sku && p.sku.toString().toLowerCase().includes(barcode.toLowerCase())
-        const barcodeMatch = p.barcode && p.barcode.toString().toLowerCase().includes(barcode.toLowerCase())
-        const nameMatch = p.name && p.name.toLowerCase().includes(barcode.toLowerCase())
-        
-        return skuMatch || barcodeMatch || nameMatch
-      }).map(item => ({
-        id: item.id,
-        name: item.name,
-        price: item.sellingPrice,
-        stock: item.currentStock,
-        category: item.category,
-        sku: item.sku,
-        barcode: item.barcode,
-        unit: item.unit
-      }))
-      
-      setSearchResults(matches)
-      setShowSearchResults(true)
-    }
-
-    setLoading(false)
-  }
+  // duplicate removed — using single handleScan defined above
 
   const handleManualSearch = (query) => {
     if (query.length >= 2) {

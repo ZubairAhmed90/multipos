@@ -67,8 +67,56 @@ const LedgerReportsPage = () => {
     dispatch(fetchLedgerReports(filters))
   }
 
-  const handleExport = () => {
-('Exporting ledger report...')
+  const handleExport = async () => {
+    try {
+      const XLSX = await import('xlsx')
+      
+      // Prepare data for Excel
+      const excelData = [
+        // Summary data
+        { 'Report Type': 'Ledger Summary', 'Value': '' },
+        { 'Report Type': 'Total Debits', 'Value': ledgerReports?.summary?.totalDebits || 0 },
+        { 'Report Type': 'Total Credits', 'Value': ledgerReports?.summary?.totalCredits || 0 },
+        { 'Report Type': 'Net Balance', 'Value': ledgerReports?.summary?.netBalance || 0 },
+        { 'Report Type': '', 'Value': '' },
+        
+        // Ledger entries
+        { 'Report Type': 'Ledger Entries', 'Value': '' },
+        ...mockLedgerData.map(item => ({
+          'Report Type': item.date || 'N/A',
+          'Value': item.balance || 0
+        }))
+      ]
+      
+      // Create workbook and worksheet
+      const workbook = XLSX.utils.book_new()
+      const worksheet = XLSX.utils.json_to_sheet(excelData)
+      
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Ledger Report')
+      
+      // Generate Excel file buffer
+      const excelBuffer = XLSX.write(workbook, { 
+        type: 'array', 
+        bookType: 'xlsx' 
+      })
+      
+      // Create download link
+      const blob = new Blob([excelBuffer], { 
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+      })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `ledger-report-${new Date().toISOString().split('T')[0]}.xlsx`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Export error:', error)
+      alert('Failed to export ledger report. Please try again.')
+    }
   }
 
   const mockLedgerData = [
@@ -199,7 +247,7 @@ const LedgerReportsPage = () => {
                         Total Assets
                       </Typography>
                       <Typography variant="h4">
-                        ${ledgerReports?.totalAssets?.toLocaleString() || '177,000'}
+                        {ledgerReports?.totalAssets?.toLocaleString() || '177,000'}
                       </Typography>
                     </Box>
                     <AccountBalance sx={{ fontSize: 40, color: 'success.main' }} />
@@ -216,7 +264,7 @@ const LedgerReportsPage = () => {
                         Total Liabilities
                       </Typography>
                       <Typography variant="h4">
-                        ${ledgerReports?.totalLiabilities?.toLocaleString() || '5,000'}
+                        {ledgerReports?.totalLiabilities?.toLocaleString() || '5,000'}
                       </Typography>
                     </Box>
                     <TrendingDown sx={{ fontSize: 40, color: 'error.main' }} />
@@ -233,7 +281,7 @@ const LedgerReportsPage = () => {
                         Net Worth
                       </Typography>
                       <Typography variant="h4" color="success.main">
-                        ${ledgerReports?.netWorth?.toLocaleString() || '172,000'}
+                        {ledgerReports?.netWorth?.toLocaleString() || '172,000'}
                       </Typography>
                     </Box>
                     <TrendingUp sx={{ fontSize: 40, color: 'success.main' }} />
@@ -314,7 +362,7 @@ const LedgerReportsPage = () => {
                         variant="h4" 
                         color={account.balance < 0 ? 'error.main' : 'success.main'}
                       >
-                        ${Math.abs(account.balance).toLocaleString()}
+                        {Math.abs(account.balance).toLocaleString()}
                       </Typography>
                       <Typography variant="body2" color="textSecondary">
                         {account.transactions} transactions
@@ -348,7 +396,7 @@ const LedgerReportsPage = () => {
                       <TableCell>{row.date}</TableCell>
                       <TableCell>{row.description}</TableCell>
                       <TableCell>{row.account}</TableCell>
-                      <TableCell align="right">${row.amount.toLocaleString()}</TableCell>
+                      <TableCell align="right">{row.amount.toLocaleString()}</TableCell>
                       <TableCell>
                         <Chip 
                           label={row.type.toUpperCase()} 

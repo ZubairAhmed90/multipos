@@ -264,7 +264,7 @@ function AdminDashboard() {
               <h3 className="text-lg font-medium text-gray-900 mb-4">Monthly Sales</h3>
               <div className="space-y-2">
                 <p className="text-sm text-gray-600">Total Sales: {systemDashboard.overview?.monthlySales || 0}</p>
-                <p className="text-sm text-gray-600">Revenue: ${systemDashboard.overview?.monthlySalesTotal?.toFixed(2) || '0.00'}</p>
+                <p className="text-sm text-gray-600">Revenue: {systemDashboard.overview?.monthlySalesTotal?.toFixed(2) || '0.00'}</p>
               </div>
             </div>
 
@@ -272,7 +272,7 @@ function AdminDashboard() {
               <h3 className="text-lg font-medium text-gray-900 mb-4">Yearly Sales</h3>
               <div className="space-y-2">
                 <p className="text-sm text-gray-600">Total Sales: {systemDashboard.overview?.yearlySales || 0}</p>
-                <p className="text-sm text-gray-600">Revenue: ${systemDashboard.overview?.yearlySalesTotal?.toFixed(2) || '0.00'}</p>
+                <p className="text-sm text-gray-600">Revenue: {systemDashboard.overview?.yearlySalesTotal?.toFixed(2) || '0.00'}</p>
               </div>
             </div>
 
@@ -312,7 +312,7 @@ function AdminDashboard() {
                         {sale.cashierId?.username || 'N/A'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        ${sale.total?.toFixed(2) || '0.00'}
+                        {sale.total?.toFixed(2) || '0.00'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {new Date(sale.createdAt).toLocaleDateString()}
@@ -573,7 +573,7 @@ function AdminDashboard() {
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    ${inventory.salePrice?.toFixed(2) || '0.00'}
+                    {inventory.salePrice?.toFixed(2) || '0.00'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     {inventory.scope?.name || 'N/A'}

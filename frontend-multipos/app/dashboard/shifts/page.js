@@ -373,9 +373,9 @@ function ShiftsPage() {
               {('activeShift data:', activeShift)}
               <p className="text-sm text-gray-600">Status: <span className="text-green-600 font-medium">Active</span></p>
               <p className="text-sm text-gray-600">Started: {new Date(activeShift.actual_start_time).toLocaleString()}</p>
-              <p className="text-sm text-gray-600">Initial Cash: ${activeShift.initial_cash}</p>
-              <p className="text-sm text-gray-600">Current Cash: ${activeShift.initial_cash}</p>
-              <p className="text-sm text-gray-600">Total Sales: ${activeShift.total_sales || 0}</p>
+              <p className="text-sm text-gray-600">Initial Cash: {activeShift.initial_cash}</p>
+              <p className="text-sm text-gray-600">Current Cash: {activeShift.initial_cash}</p>
+              <p className="text-sm text-gray-600">Total Sales: {activeShift.total_sales || 0}</p>
             </div>
           ) : (
             <p className="text-gray-500">No active shift</p>
@@ -430,9 +430,9 @@ function ShiftsPage() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     {session.actual_end_time ? new Date(session.actual_end_time).toLocaleString() : 'Active'}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${session.initial_cash || 0}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${session.final_cash || '-'}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${session.total_sales || 0}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{session.initial_cash || 0}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{session.final_cash || '-'}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{session.total_sales || 0}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">
                     <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
                       session.status === 'ACTIVE' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
@@ -592,9 +592,9 @@ function ShiftsPage() {
             </div>
             {activeShift && (
               <div className="mb-4 p-3 bg-gray-100 rounded-md">
-                <p className="text-sm text-gray-600">Initial Cash: ${activeShift.initial_cash}</p>
-                <p className="text-sm text-gray-600">Total Sales: ${activeShift.total_sales || 0}</p>
-                <p className="text-sm text-gray-600">Expected Cash: ${(parseFloat(activeShift.initial_cash) + (parseFloat(activeShift.total_sales) || 0)).toFixed(2)}</p>
+                <p className="text-sm text-gray-600">Initial Cash: {activeShift.initial_cash}</p>
+                <p className="text-sm text-gray-600">Total Sales: {activeShift.total_sales || 0}</p>
+                <p className="text-sm text-gray-600">Expected Cash: {(parseFloat(activeShift.initial_cash) + (parseFloat(activeShift.total_sales) || 0)).toFixed(2)}</p>
               </div>
             )}
             <div className="flex justify-end space-x-3">

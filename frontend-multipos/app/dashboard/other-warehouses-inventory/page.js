@@ -206,7 +206,7 @@ function OtherWarehousesInventoryPage() {
                         Total Value
                       </Typography>
                       <Typography variant="h4" color="success.main">
-                        ${summaryStats.totalValue.toLocaleString()}
+                        {summaryStats.totalValue.toLocaleString()}
                       </Typography>
                     </Box>
                     <TrendingUp sx={{ fontSize: 40, color: theme.palette.success.main }} />
@@ -273,8 +273,8 @@ function OtherWarehousesInventoryPage() {
                       <TableCell>{item.currentStock}</TableCell>
                       <TableCell>{item.minStockLevel}</TableCell>
                       <TableCell>{item.maxStockLevel}</TableCell>
-                      <TableCell>${item.costPrice}</TableCell>
-                      <TableCell>${item.sellingPrice}</TableCell>
+                      <TableCell>{item.costPrice}</TableCell>
+                      <TableCell>{item.sellingPrice}</TableCell>
                       <TableCell>
                         <Chip
                           label={item.currentStock <= item.minStockLevel ? 'Low Stock' : 'In Stock'}

@@ -2,13 +2,20 @@ const { validationResult } = require('express-validator');
 const InventoryItem = require('../models/InventoryItem');
 const Branch = require('../models/Branch');
 const Warehouse = require('../models/Warehouse');
-const { executeQuery } = require('../config/database');
+const { executeQuery, pool } = require('../config/database');
+const { createStockReportEntry, createAdjustmentTransaction } = require('../middleware/stockTracking');
 
 // @desc    Get all inventory items
 // @route   GET /api/inventory
 // @access  Private (Admin, Warehouse Keeper, Cashier)
 const getInventoryItems = async (req, res, next) => {
   try {
+    console.log('[InventoryController] getInventoryItems called for user:', {
+      role: req.user.role,
+      branchId: req.user.branchId,
+      warehouseId: req.user.warehouseId
+    });
+    
     const { scopeType, scopeId, category, includeCrossBranch = false } = req.query;
     let whereConditions = [];
     let params = [];
@@ -25,17 +32,22 @@ const getInventoryItems = async (req, res, next) => {
         // Warehouse keepers can ONLY see their assigned warehouse inventory
         whereConditions.push('scope_type = ? AND scope_id = ?');
         params.push('WAREHOUSE', req.user.warehouseId);
-      } else if (req.user.role === 'CASHIER') {
-        // Cashiers can see ALL branch inventory (not just their own branch)
-        whereConditions.push('scope_type = ?');
-        params.push('BRANCH');
-        
-        // If specific branch requested, filter to that branch
-        if (scopeType === 'BRANCH' && scopeId) {
-          whereConditions.push('scope_id = ?');
-          params.push(scopeId);
-        }
+    } else if (req.user.role === 'CASHIER') {
+      // Cashiers can see their assigned branch inventory
+      // Use branch ID directly for filtering (inventory items store numeric IDs)
+      console.log('[InventoryController] Cashier branch filtering:', {
+        branchId: req.user.branchId,
+        role: req.user.role
+      });
+      whereConditions.push('scope_type = ? AND scope_id = ?');
+      params.push('BRANCH', req.user.branchId);
+      
+      // If specific branch requested, filter to that branch
+      if (scopeType === 'BRANCH' && scopeId) {
+        whereConditions.push('scope_id = ?');
+        params.push(scopeId);
       }
+    }
     }
     
     // Filter by category if provided
@@ -46,14 +58,34 @@ const getInventoryItems = async (req, res, next) => {
     
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
     
+    console.log('[InventoryController] Final query conditions:', {
+      whereClause,
+      params,
+      userRole: req.user.role
+    });
+    
     const inventoryItems = await executeQuery(`
       SELECT 
         i.*,
         b.name as branch_name,
-        w.name as warehouse_name
+        w.name as warehouse_name,
+        COALESCE(sr.total_purchased, 0) as total_purchased,
+        COALESCE(sr.total_sold, 0) as total_sold,
+        COALESCE(sr.total_returned, 0) as total_returned,
+        COALESCE(sr.total_adjusted, 0) as total_adjusted
       FROM inventory_items i
       LEFT JOIN branches b ON i.scope_type = 'BRANCH' AND i.scope_id = b.id
       LEFT JOIN warehouses w ON i.scope_type = 'WAREHOUSE' AND i.scope_id = w.id
+      LEFT JOIN (
+        SELECT 
+          inventory_item_id,
+          SUM(CASE WHEN transaction_type = 'PURCHASE' THEN quantity_change ELSE 0 END) as total_purchased,
+          SUM(CASE WHEN transaction_type = 'SALE' THEN ABS(quantity_change) ELSE 0 END) as total_sold,
+          SUM(CASE WHEN transaction_type = 'RETURN' THEN quantity_change ELSE 0 END) as total_returned,
+          SUM(CASE WHEN transaction_type = 'ADJUSTMENT' THEN quantity_change ELSE 0 END) as total_adjusted
+        FROM stock_reports 
+        GROUP BY inventory_item_id
+      ) sr ON i.id = sr.inventory_item_id
       ${whereClause}
       ORDER BY i.created_at DESC
     `, params);
@@ -78,7 +110,11 @@ const getInventoryItems = async (req, res, next) => {
       createdAt: item.created_at,
       updatedAt: item.updated_at,
       branchName: item.branch_name,
-      warehouseName: item.warehouse_name
+      warehouseName: item.warehouse_name,
+      totalPurchased: parseFloat(item.total_purchased) || 0,
+      totalSold: parseFloat(item.total_sold) || 0,
+      totalReturned: parseFloat(item.total_returned) || 0,
+      totalAdjusted: parseFloat(item.total_adjusted) || 0
     }));
     
     res.json({
@@ -183,17 +219,40 @@ const createInventoryItem = async (req, res, next) => {
       }
     }
 
+    // Get branch/warehouse name for scope_id
+    let scopeName = '';
+    if (scopeType === 'BRANCH' && scopeId) {
+      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [scopeId]);
+      scopeName = branches[0]?.name || scopeId;
+    } else if (scopeType === 'WAREHOUSE' && scopeId) {
+      const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [scopeId]);
+      scopeName = warehouses[0]?.name || scopeId;
+    } else {
+      scopeName = scopeId || '';
+    }
+
+    // Generate SKU from name if not provided
+    let finalSku = sku;
+    if (!finalSku || finalSku.trim() === '') {
+      // Generate SKU from product name
+      const cleanName = name.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+      const timestamp = Date.now().toString().slice(-6);
+      finalSku = `${cleanName}-${timestamp}`;
+    }
+
     // Check if SKU already exists within the same scope (branch/warehouse)
-    const existingItem = await InventoryItem.findBySkuInScope(sku, scopeType, scopeId);
-    if (existingItem) {
-      return res.status(400).json({
-        success: false,
-        message: `SKU '${sku}' already exists in this ${scopeType.toLowerCase()}`
-      });
+    if (finalSku && finalSku.trim() !== '') {
+      const existingItem = await InventoryItem.findBySkuInScope(finalSku, scopeType, scopeName);
+      if (existingItem) {
+        return res.status(400).json({
+          success: false,
+          message: `SKU '${finalSku}' already exists in this ${scopeType.toLowerCase()}`
+        });
+      }
     }
 
     const inventoryItem = await InventoryItem.create({
-      sku,
+      sku: finalSku,
       name,
       description,
       category,
@@ -204,9 +263,32 @@ const createInventoryItem = async (req, res, next) => {
       maxStockLevel,
       currentStock,
       scopeType,
-      scopeId,
+      scopeId: scopeId, // Store branch/warehouse ID instead of name
       createdBy: req.user.id
     });
+
+    // Create stock report entry for initial inventory creation
+    if (currentStock > 0) {
+      try {
+        await createStockReportEntry({
+          inventoryItemId: inventoryItem.id,
+          transactionType: 'PURCHASE', // Initial stock is treated as a purchase
+          quantityChange: currentStock,
+          previousQuantity: 0,
+          newQuantity: currentStock,
+          unitPrice: costPrice || 0,
+          totalValue: (costPrice || 0) * currentStock,
+          userId: req.user.id,
+          userName: req.user.name || req.user.username,
+          userRole: req.user.role,
+          adjustmentReason: 'Initial inventory creation'
+        });
+        console.log(`[InventoryController] Created stock report entry for initial inventory: ${inventoryItem.name}`);
+      } catch (stockError) {
+        console.error('[InventoryController] Error creating stock report entry:', stockError);
+        // Don't fail the inventory creation if stock tracking fails
+      }
+    }
 
     res.status(201).json({
       success: true,
@@ -252,7 +334,8 @@ const updateInventoryItem = async (req, res, next) => {
 
     // Warehouse keepers can only update items in their assigned warehouse
     if (req.user.role === 'WAREHOUSE_KEEPER') {
-      if (inventoryItem.scopeType !== 'WAREHOUSE' || parseInt(inventoryItem.scopeId) !== parseInt(req.user.warehouseId)) {
+      // Use warehouse ID directly for comparison (inventory items store numeric IDs)
+      if (inventoryItem.scopeType !== 'WAREHOUSE' || inventoryItem.scopeId != req.user.warehouseId) {
         return res.status(403).json({
           success: false,
           message: 'Access denied'
@@ -260,8 +343,8 @@ const updateInventoryItem = async (req, res, next) => {
       }
     }
 
-    // Check if SKU is being changed and if it already exists within the same scope
-    if (updateData.sku && updateData.sku !== inventoryItem.sku) {
+    // Check if SKU is being changed and if it already exists within the same scope - only if SKU is provided
+    if (updateData.sku && updateData.sku.trim() !== '' && updateData.sku !== inventoryItem.sku) {
       const existingItem = await InventoryItem.findBySkuInScope(updateData.sku, inventoryItem.scopeType, inventoryItem.scopeId);
       if (existingItem) {
         return res.status(400).json({
@@ -289,7 +372,7 @@ const updateInventoryItem = async (req, res, next) => {
 
 // @desc    Delete inventory item
 // @route   DELETE /api/inventory/:id
-// @access  Private (Admin, Warehouse Keeper)
+// @access  Private (Admin only)
 const deleteInventoryItem = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -302,17 +385,12 @@ const deleteInventoryItem = async (req, res, next) => {
       });
     }
 
-    // Check permissions - cashiers are now allowed to delete inventory items
-    // Permission checking is handled by middleware (checkCashierInventoryPermission)
-
-    // Warehouse keepers can only delete items in their assigned warehouse
-    if (req.user.role === 'WAREHOUSE_KEEPER') {
-      if (inventoryItem.scopeType !== 'WAREHOUSE' || parseInt(inventoryItem.scopeId) !== parseInt(req.user.warehouseId)) {
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied'
-        });
-      }
+    // Only admin can delete inventory items
+    if (req.user.role !== 'ADMIN') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only administrators can delete inventory items'
+      });
     }
 
     await InventoryItem.delete(id);
@@ -365,7 +443,8 @@ const updateStock = async (req, res, next) => {
 
     // Warehouse keepers can only update items in their assigned warehouse
     if (req.user.role === 'WAREHOUSE_KEEPER') {
-      if (inventoryItem.scopeType !== 'WAREHOUSE' || parseInt(inventoryItem.scopeId) !== parseInt(req.user.warehouseId)) {
+      // Use warehouse ID directly for comparison (inventory items store numeric IDs)
+      if (inventoryItem.scopeType !== 'WAREHOUSE' || inventoryItem.scopeId != req.user.warehouseId) {
         return res.status(403).json({
           success: false,
           message: 'Access denied'
@@ -391,6 +470,17 @@ const updateStock = async (req, res, next) => {
 
     const updatedItem = await InventoryItem.update(id, { currentStock: newStock });
 
+    // Create transaction record for stock adjustment
+    await createAdjustmentTransaction(
+      id,
+      inventoryItem.currentStock,
+      newStock,
+      req.user.id,
+      req.user.name,
+      req.user.role,
+      `Stock ${operation.toLowerCase()} by ${req.user.name}`
+    );
+
     res.json({
       success: true,
       message: 'Stock updated successfully',
@@ -415,9 +505,11 @@ const getLowStockItems = async (req, res, next) => {
     
     // Apply role-based filtering
     if (req.user.role === 'WAREHOUSE_KEEPER') {
+      // Use warehouse ID directly for filtering (inventory items store numeric IDs)
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('WAREHOUSE', req.user.warehouseId);
     } else if (req.user.role === 'CASHIER') {
+      // Use branch ID directly for filtering (inventory items store numeric IDs)
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('BRANCH', req.user.branchId);
     }
@@ -501,7 +593,11 @@ const updateQuantity = async (req, res, next) => {
 
     // Check permissions
     if (req.user.role === 'CASHIER') {
-      if (inventoryItem.scopeType !== 'BRANCH' || inventoryItem.scopeId !== req.user.branchId) {
+      // Get branch name for comparison
+      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [req.user.branchId]);
+      const branchName = branches[0]?.name || req.user.branchId;
+      
+      if (inventoryItem.scopeType !== 'BRANCH' || inventoryItem.scopeId !== branchName) {
         return res.status(403).json({
           success: false,
           message: 'Access denied'
@@ -527,6 +623,17 @@ const updateQuantity = async (req, res, next) => {
 
     const updatedItem = await InventoryItem.update(id, { currentStock: newQuantity });
 
+    // Create transaction record for quantity adjustment
+    await createAdjustmentTransaction(
+      id,
+      inventoryItem.currentStock,
+      newQuantity,
+      req.user.id,
+      req.user.name,
+      req.user.role,
+      `Quantity ${operation.toLowerCase()} by ${req.user.name}`
+    );
+
     res.json({
       success: true,
       message: 'Quantity updated successfully',
@@ -551,9 +658,11 @@ const getSummary = async (req, res, next) => {
 
     // Apply role-based filtering
     if (req.user.role === 'WAREHOUSE_KEEPER') {
+      // Use warehouse ID directly for filtering (inventory items store numeric IDs)
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('WAREHOUSE', req.user.warehouseId);
     } else if (req.user.role === 'CASHIER') {
+      // Use branch ID directly for filtering (inventory items store numeric IDs)
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('BRANCH', req.user.branchId);
     }
@@ -633,9 +742,11 @@ const getInventoryChangesSince = async (req, res, next) => {
 
     // Apply role-based filtering
     if (req.user.role === 'WAREHOUSE_KEEPER') {
+      // Use warehouse ID directly for filtering (inventory items store numeric IDs)
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('WAREHOUSE', req.user.warehouseId);
     } else if (req.user.role === 'CASHIER') {
+      // Use branch ID directly for filtering (inventory items store numeric IDs)
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('BRANCH', req.user.branchId);
     }
@@ -703,9 +814,11 @@ const getLatestInventoryChanges = async (req, res, next) => {
 
     // Apply role-based filtering
     if (req.user.role === 'WAREHOUSE_KEEPER') {
+      // Use warehouse ID directly for filtering (inventory items store numeric IDs)
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('WAREHOUSE', req.user.warehouseId);
     } else if (req.user.role === 'CASHIER') {
+      // Use branch ID directly for filtering (inventory items store numeric IDs)
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('BRANCH', req.user.branchId);
     }

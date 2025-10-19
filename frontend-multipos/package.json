@@ -1,4 +1,4 @@
-        {
+{
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
@@ -17,6 +17,7 @@
     "react-hook-form": "^7.62.0",
     "react-redux": "^9.2.0",
     "recharts": "^3.1.2",
+    "xlsx": "^0.18.5",
     "yup": "^1.7.0"
   },
   "name": "frontend-multipos",

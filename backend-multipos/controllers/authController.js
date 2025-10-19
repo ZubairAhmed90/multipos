@@ -65,7 +65,7 @@ const login = async (req, res, next) => {
         success: true,
         message: 'Login successful',
         data: {
-          user: user.toJSON(),
+          user: await user.toJSON(),
           accessToken,
           refreshToken
         }
@@ -160,7 +160,7 @@ const refresh = async (req, res, next) => {
       success: true,
       message: 'Token refreshed successfully',
       data: {
-        user: user.toJSON(),
+        user: await user.toJSON(),
         accessToken,
         refreshToken: newRefreshToken
       }

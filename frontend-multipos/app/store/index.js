@@ -24,6 +24,8 @@ import companySalesHistorySlice from './slices/companySalesHistorySlice'
 import invoiceDetailsSlice from './slices/invoiceDetailsSlice'
 import retailersSlice from './slices/retailersSlice'
 import warehouseSalesAnalyticsSlice from './slices/warehouseSalesAnalyticsSlice'
+import customerLedgerSlice from './slices/customerLedgerSlice'
+import financialVoucherSlice from './slices/financialVoucherSlice'
 
 
 export const store = configureStore({
@@ -53,6 +55,8 @@ export const store = configureStore({
     invoiceDetails: invoiceDetailsSlice,
     retailers: retailersSlice,
     warehouseSalesAnalytics: warehouseSalesAnalyticsSlice,
+    customerLedger: customerLedgerSlice,
+    financialVouchers: financialVoucherSlice,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({

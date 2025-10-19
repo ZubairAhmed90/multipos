@@ -96,7 +96,7 @@ const addDebitEntry = async (req, res) => {
     
     // Get the created entry
     const [entries] = await pool.execute(
-      'SELECT * FROM ledger_entries WHERE ledger_id = ? ORDER BY created_at DESC LIMIT 1',
+      'SELECT * FROM ledger_entries WHERE branch_id = ? ORDER BY created_at DESC LIMIT 1',
       [ledger.id]
     );
     
@@ -136,7 +136,7 @@ const addCreditEntry = async (req, res) => {
     
     // Get the created entry
     const [entries] = await pool.execute(
-      'SELECT * FROM ledger_entries WHERE ledger_id = ? ORDER BY created_at DESC LIMIT 1',
+      'SELECT * FROM ledger_entries WHERE branch_id = ? ORDER BY created_at DESC LIMIT 1',
       [ledger.id]
     );
     
@@ -162,7 +162,7 @@ const addEntryByAccountId = async (req, res) => {
     
     // Validate account exists
     const { pool } = require('../config/database');
-    const [accounts] = await pool.execute('SELECT * FROM ledger WHERE id = ?', [accountId]);
+    const [accounts] = await pool.execute('SELECT * FROM ledgers WHERE id = ?', [accountId]);
     
     if (accounts.length === 0) {
       return res.status(404).json({
@@ -174,10 +174,11 @@ const addEntryByAccountId = async (req, res) => {
     const account = accounts[0];
     
     // Insert ledger entry
+    // branch_id should reference branches table, not ledgers table
     const [result] = await pool.execute(
-      `INSERT INTO ledger_entries (ledger_id, date, type, amount, description, reference, reference_id, created_by) 
-       VALUES (?, NOW(), ?, ?, ?, ?, ?, ?)`,
-      [accountId, type, amount, description || null, reference || null, referenceId || null, req.user.id || null]
+      `INSERT INTO ledger_entries (entry_type, reference_id, description, debit_amount, credit_amount, branch_id, created_by, created_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [type, referenceId || null, description || null, type === 'DEBIT' ? amount : 0, type === 'CREDIT' ? amount : 0, 1, req.user.id || null]
     );
     
     // Update account balance
@@ -226,36 +227,51 @@ const getLedgerEntries = async (req, res) => {
       
       try {
         let query = `
-          SELECT le.*, l.account_name, l.account_type 
+          SELECT 
+            le.id,
+            le.entry_type as type,
+            le.reference_id,
+            le.description,
+            le.debit_amount,
+            le.credit_amount,
+            le.branch_id,
+            le.created_by,
+            le.created_at as date,
+            b.name as branch_name,
+            CASE 
+              WHEN le.entry_type = 'DEBIT' THEN le.debit_amount
+              WHEN le.entry_type = 'CREDIT' THEN le.credit_amount
+              ELSE 0
+            END as amount
           FROM ledger_entries le
-          LEFT JOIN ledger l ON le.ledger_id = l.id
-          WHERE 1=1
+          LEFT JOIN branches b ON le.branch_id = b.id
+          WHERE le.entry_type IS NOT NULL AND le.entry_type != ''
         `;
         const params = [];
         
         if (ledgerId) {
-          query += ' AND le.ledger_id = ?';
+          query += ' AND le.branch_id = ?';
           params.push(ledgerId);
         }
         
         if (type) {
-          query += ' AND le.type = ?';
+          query += ' AND le.entry_type = ?';
           params.push(type);
         }
         
         if (startDate) {
-          query += ' AND le.date >= ?';
+          query += ' AND le.created_at >= ?';
           params.push(startDate);
         }
         
         if (endDate) {
-          query += ' AND le.date <= ?';
+          query += ' AND le.created_at <= ?';
           params.push(endDate);
         }
         
         const limitInt = parseInt(limit) || 50;
         const offsetInt = parseInt(offset) || 0;
-        query += ` ORDER BY le.date DESC LIMIT ${limitInt} OFFSET ${offsetInt}`;
+        query += ` GROUP BY le.id ORDER BY le.created_at DESC LIMIT ${limitInt} OFFSET ${offsetInt}`;
         
         const [entries] = await pool.execute(query, params);
         
@@ -414,14 +430,73 @@ const getLedgerAccounts = async (req, res) => {
       
       // Check if ledger table is empty and return default accounts
       if (accounts.length === 0) {
+        console.log('[LedgerController] No accounts found in ledgers table, returning default accounts');
+        
+        const defaultAccounts = [
+          {
+            id: 1,
+            accountName: 'Cash Account',
+            accountType: 'asset',
+            balance: 0,
+            currency: 'USD',
+            status: 'ACTIVE',
+            description: 'Main cash account for transactions',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          },
+          {
+            id: 2,
+            accountName: 'Bank Account',
+            accountType: 'asset',
+            balance: 0,
+            currency: 'USD',
+            status: 'ACTIVE',
+            description: 'Main bank account for transactions',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          },
+          {
+            id: 3,
+            accountName: 'Accounts Receivable',
+            accountType: 'asset',
+            balance: 0,
+            currency: 'USD',
+            status: 'ACTIVE',
+            description: 'Money owed by customers',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          },
+          {
+            id: 4,
+            accountName: 'Sales Revenue',
+            accountType: 'revenue',
+            balance: 0,
+            currency: 'USD',
+            status: 'ACTIVE',
+            description: 'Revenue from sales',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          },
+          {
+            id: 5,
+            accountName: 'Cost of Goods Sold',
+            accountType: 'expense',
+            balance: 0,
+            currency: 'USD',
+            status: 'ACTIVE',
+            description: 'Cost of inventory sold',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }
+        ];
         
         const response = {
           success: true,
-          data: [],
+          data: defaultAccounts,
           pagination: {
             current: 1,
             pages: 1,
-            total: 0
+            total: defaultAccounts.length
           }
         };
         
@@ -472,6 +547,8 @@ const getLedgerAccounts = async (req, res) => {
       res.status(200).json(response);
     } catch (dbError) {
       // If ledger table doesn't exist or is empty, return default accounts
+      console.error('[LedgerController] Database error:', dbError.message);
+      console.log('[LedgerController] Returning default accounts due to database error');
       
       const defaultAccounts = [
         {
@@ -746,6 +823,59 @@ const deleteLedgerEntry = async (req, res) => {
   }
 };
 
+// Populate default ledger accounts
+const populateDefaultAccounts = async (req, res) => {
+  try {
+    const { pool } = require('../config/database');
+    
+    // Check if accounts already exist
+    const [existing] = await pool.execute('SELECT COUNT(*) as count FROM ledgers');
+    if (existing[0].count > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ledger accounts already exist. Use the regular create endpoint to add new accounts.'
+      });
+    }
+    
+    // Insert default accounts
+    const defaultAccounts = [
+      ['Cash Account', 'asset', 0.00, 'USD', 'ACTIVE', 'Main cash account for transactions', 'BRANCH', 1],
+      ['Bank Account', 'asset', 0.00, 'USD', 'ACTIVE', 'Main bank account for transactions', 'BRANCH', 1],
+      ['Accounts Receivable', 'asset', 0.00, 'USD', 'ACTIVE', 'Money owed by customers', 'BRANCH', 1],
+      ['Inventory', 'asset', 0.00, 'USD', 'ACTIVE', 'Inventory value', 'BRANCH', 1],
+      ['Accounts Payable', 'liability', 0.00, 'USD', 'ACTIVE', 'Money owed to suppliers', 'BRANCH', 1],
+      ['Sales Revenue', 'revenue', 0.00, 'USD', 'ACTIVE', 'Revenue from sales', 'BRANCH', 1],
+      ['Cost of Goods Sold', 'expense', 0.00, 'USD', 'ACTIVE', 'Cost of inventory sold', 'BRANCH', 1],
+      ['Operating Expenses', 'expense', 0.00, 'USD', 'ACTIVE', 'General operating expenses', 'BRANCH', 1]
+    ];
+    
+    for (const account of defaultAccounts) {
+      await pool.execute(`
+        INSERT INTO ledgers (account_name, account_type, balance, currency, status, description, scope_type, scope_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+      `, account);
+    }
+    
+    // Get the inserted accounts
+    const [accounts] = await pool.execute('SELECT * FROM ledgers ORDER BY account_name');
+    
+    res.status(201).json({
+      success: true,
+      message: 'Default ledger accounts created successfully',
+      data: accounts,
+      count: accounts.length
+    });
+    
+  } catch (error) {
+    console.error('[LedgerController] Error populating default accounts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to populate default accounts',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getLedger,
   getLedgersByScope,
@@ -759,5 +889,6 @@ module.exports = {
   updateLedgerAccount,
   deleteLedgerAccount,
   updateLedgerEntry,
-  deleteLedgerEntry
+  deleteLedgerEntry,
+  populateDefaultAccounts
 };
