@@ -59,6 +59,31 @@ const warehouseSchema = yup.object({
     .min(1, 'Linked branch ID must be a valid integer')
     .nullable()
     .transform((value) => value === '' ? null : value),
+  
+  // Transfer settings validation
+  'settings.allowWarehouseTransfers': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.allowWarehouseToBranchTransfers': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.allowWarehouseToWarehouseTransfers': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.requireApprovalForWarehouseTransfers': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.maxTransferAmount': yup.number()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .min(0, 'Maximum transfer amount must be positive'),
+  'settings.autoApproveSmallTransfers': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.smallTransferThreshold': yup.number()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .min(0, 'Small transfer threshold must be positive'),
 })
 
 // Table columns configuration
@@ -125,6 +150,63 @@ const fields = [
       { value: 'maintenance', label: 'Maintenance' },
       { value: 'inactive', label: 'Inactive' },
     ]
+  },
+  
+  // Transfer Settings Section
+  { 
+    name: 'transfer-settings-section', 
+    label: 'Transfer Settings', 
+    type: 'section',
+    sectionTitle: 'Transfer Permissions'
+  },
+  { 
+    name: 'settings.allowWarehouseTransfers', 
+    label: 'Allow Warehouse Transfers', 
+    type: 'switch',
+    description: 'Allow transfers from this warehouse',
+    defaultValue: true
+  },
+  { 
+    name: 'settings.allowWarehouseToBranchTransfers', 
+    label: 'Allow Warehouse to Branch Transfers', 
+    type: 'switch',
+    description: 'Allow transfers from warehouse to branch',
+    defaultValue: false
+  },
+  { 
+    name: 'settings.allowWarehouseToWarehouseTransfers', 
+    label: 'Allow Warehouse to Warehouse Transfers', 
+    type: 'switch',
+    description: 'Allow transfers from warehouse to other warehouses',
+    defaultValue: true
+  },
+  { 
+    name: 'settings.requireApprovalForWarehouseTransfers', 
+    label: 'Require Approval for Warehouse Transfers', 
+    type: 'switch',
+    description: 'Require admin approval for warehouse transfers',
+    defaultValue: true
+  },
+  { 
+    name: 'settings.maxTransferAmount', 
+    label: 'Maximum Transfer Amount', 
+    type: 'number',
+    description: 'Maximum transfer amount allowed',
+    defaultValue: 50000
+  },
+  { 
+    name: 'settings.autoApproveSmallTransfers', 
+    label: 'Auto-Approve Small Transfers', 
+    type: 'switch',
+    description: 'Auto-approve transfers under threshold',
+    defaultValue: false
+  },
+  { 
+    name: 'settings.smallTransferThreshold', 
+    label: 'Small Transfer Threshold', 
+    type: 'number',
+    description: 'Amount threshold for auto-approval',
+    defaultValue: 1000
   },
 ]
 

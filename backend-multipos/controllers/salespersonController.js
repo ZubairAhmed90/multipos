@@ -130,6 +130,24 @@ const createSalesperson = async (req, res, next) => {
       });
     }
     
+    // Check warehouse keeper permissions
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      if (!req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Warehouse keeper must be assigned to a warehouse'
+        });
+      }
+      
+      // Warehouse keepers can only create salespeople for their own warehouse
+      if (warehouseId !== req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only create salespeople for your own warehouse'
+        });
+      }
+    }
+    
     // Check if warehouse exists
     const [warehouses] = await pool.execute('SELECT id FROM warehouses WHERE id = ?', [warehouseId]);
     if (warehouses.length === 0) {
@@ -190,12 +208,38 @@ const updateSalesperson = async (req, res, next) => {
     const { name, phone, email, warehouseId, status } = req.body;
     
     // Check if salesperson exists
-    const [existing] = await pool.execute('SELECT id FROM salespeople WHERE id = ?', [id]);
+    const [existing] = await pool.execute('SELECT id, warehouse_id FROM salespeople WHERE id = ?', [id]);
     if (existing.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Salesperson not found'
       });
+    }
+    
+    // Check warehouse keeper permissions
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      if (!req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Warehouse keeper must be assigned to a warehouse'
+        });
+      }
+      
+      // Warehouse keepers can only update salespeople from their own warehouse
+      if (existing[0].warehouse_id !== req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only update salespeople from your own warehouse'
+        });
+      }
+      
+      // If trying to change warehouse, ensure it's still their warehouse
+      if (warehouseId && warehouseId !== req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only assign salespeople to your own warehouse'
+        });
+      }
     }
     
     // Check if phone already exists (excluding current salesperson)
@@ -291,18 +335,36 @@ const updateSalesperson = async (req, res, next) => {
 
 // @desc    Delete salesperson
 // @route   DELETE /api/salespeople/:id
-// @access  Private (Admin)
+// @access  Private (Admin, Warehouse Keeper)
 const deleteSalesperson = async (req, res, next) => {
   try {
     const { id } = req.params;
     
     // Check if salesperson exists
-    const [existing] = await pool.execute('SELECT id FROM salespeople WHERE id = ?', [id]);
+    const [existing] = await pool.execute('SELECT id, warehouse_id FROM salespeople WHERE id = ?', [id]);
     if (existing.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Salesperson not found'
       });
+    }
+    
+    // Check warehouse keeper permissions
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      if (!req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Warehouse keeper must be assigned to a warehouse'
+        });
+      }
+      
+      // Warehouse keepers can only delete salespeople from their own warehouse
+      if (existing[0].warehouse_id !== req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only delete salespeople from your own warehouse'
+        });
+      }
     }
     
     // Check if salesperson has any sales

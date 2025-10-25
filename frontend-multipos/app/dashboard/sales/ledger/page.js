@@ -1,8 +1,8 @@
 'use client'
-
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import api from '../../../../utils/axios'
+import { fetchSales } from '../../../store/slices/salesSlice'
 import {
   Box,
   Paper,
@@ -44,6 +44,9 @@ import {
   CalendarToday as CalendarIcon,
   AttachMoney as MoneyIcon,
   CheckCircle as CheckIcon,
+  CheckCircle as CheckCircleIcon,
+  Schedule as ScheduleIcon,
+  CreditCard as CreditCardIcon,
   Pending as PendingIcon,
   Cancel as CancelIcon,
   Edit as EditIcon,
@@ -56,12 +59,68 @@ import {
 } from '@mui/icons-material'
 import DashboardLayout from '../../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../../components/auth/RouteGuard'
-import { fetchSales, updateSale, deleteSale } from '../../../../app/store/slices/salesSlice'
 
 function SalesLedger() {
   const theme = useTheme()
   const dispatch = useDispatch()
-  const { user } = useSelector((state) => state.auth)
+  const { user: originalUser } = useSelector((state) => state.auth)
+  
+  // URL-based role switching (same as POS terminal)
+  const [urlParams, setUrlParams] = useState({})
+  const [isAdminMode, setIsAdminMode] = useState(false)
+  
+  // Parse URL parameters for role simulation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const role = params.get('role')
+      const scope = params.get('scope')
+      const id = params.get('id')
+      
+      if (role && scope && id && originalUser?.role === 'ADMIN') {
+        setUrlParams({ role, scope, id })
+        setIsAdminMode(true)
+      } else {
+        setUrlParams({})
+        setIsAdminMode(false)
+      }
+    }
+  }, [originalUser])
+  
+  // Get effective user based on URL parameters
+  const getEffectiveUser = useCallback((originalUser) => {
+    if (!isAdminMode || !urlParams.role) {
+      return originalUser
+    }
+    
+    return {
+      ...originalUser,
+      role: urlParams.role.toUpperCase(),
+      branchId: urlParams.scope === 'branch' ? parseInt(urlParams.id) : null,
+      warehouseId: urlParams.scope === 'warehouse' ? parseInt(urlParams.id) : null,
+      branchName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : null,
+      warehouseName: urlParams.scope === 'warehouse' ? `Warehouse ${urlParams.id}` : null,
+      isAdminMode: true,
+      originalRole: originalUser.role,
+      originalUser: originalUser
+    }
+  }, [isAdminMode, urlParams])
+  
+  // Get scope info
+  const getScopeInfo = useCallback(() => {
+    if (!isAdminMode || !urlParams.role) {
+      return null
+    }
+    
+    return {
+      scopeType: urlParams.scope === 'branch' ? 'BRANCH' : 'WAREHOUSE',
+      scopeId: urlParams.id,
+      scopeName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : `Warehouse ${urlParams.id}`
+    }
+  }, [isAdminMode, urlParams])
+  
+  const user = getEffectiveUser(originalUser)
+  const scopeInfo = getScopeInfo()
   const { data: sales, loading, error } = useSelector((state) => state.sales)
   
   // State for filters and search
@@ -271,6 +330,54 @@ function SalesLedger() {
     )
   }
 
+  const getPaymentMethodChip = (method) => {
+    // Remove any dollar signs that might be present in the method
+    const cleanMethod = method ? method.replace(/\$/g, '') : method;
+    
+    const methodConfig = {
+      'CASH': { color: 'success', icon: <MoneyIcon />, label: 'Cash' },
+      'CARD': { color: 'primary', icon: <CreditIcon />, label: 'Card' },
+      'BANK_TRANSFER': { color: 'info', icon: <PaymentIcon />, label: 'Bank Transfer' },
+      'MOBILE_PAYMENT': { color: 'secondary', icon: <PaymentIcon />, label: 'Mobile Payment' },
+      'CHEQUE': { color: 'warning', icon: <ReceiptIcon />, label: 'Cheque' },
+      'MOBILE_MONEY': { color: 'secondary', icon: <PaymentIcon />, label: 'Mobile Money' }
+    }
+    
+    const config = methodConfig[cleanMethod] || { color: 'default', icon: <PaymentIcon />, label: cleanMethod || 'N/A' }
+    return (
+      <Chip
+        icon={config.icon}
+        label={config.label}
+        color={config.color}
+        size="small"
+        variant="outlined"
+      />
+    )
+  }
+
+  const getPaymentTypeChip = (type) => {
+    const typeConfig = {
+      'FULL_PAYMENT': { color: 'success', icon: <CheckCircleIcon />, label: 'Full Payment' },
+      'PARTIAL_PAYMENT': { color: 'warning', icon: <ScheduleIcon />, label: 'Partial Payment' },
+      'FULLY_CREDIT': { color: 'error', icon: <CreditCardIcon />, label: 'Fully Credit' },
+      'CASH': { color: 'success', icon: <MoneyIcon />, label: 'Cash' },
+      'CARD': { color: 'primary', icon: <CreditIcon />, label: 'Card' },
+      'BANK_TRANSFER': { color: 'info', icon: <PaymentIcon />, label: 'Bank Transfer' },
+      'CHEQUE': { color: 'warning', icon: <ReceiptIcon />, label: 'Cheque' }
+    }
+    
+    const config = typeConfig[type] || { color: 'default', icon: <PaymentIcon />, label: type || 'N/A' }
+    return (
+      <Chip
+        icon={config.icon}
+        label={config.label}
+        color={config.color}
+        size="small"
+        variant="outlined"
+      />
+    )
+  }
+
   if (loading) {
     return (
       <DashboardLayout>
@@ -370,6 +477,23 @@ function SalesLedger() {
   return (
     <RouteGuard allowedRoles={['ADMIN', 'CASHIER']}>
       <DashboardLayout>
+        {/* Admin Mode Indicator */}
+        {isAdminMode && scopeInfo && (
+          <Box sx={{ 
+            bgcolor: 'warning.light', 
+            color: 'warning.contrastText', 
+            p: 1, 
+            textAlign: 'center',
+            borderBottom: 1,
+            borderColor: 'warning.main',
+            mb: 2
+          }}>
+            <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+              🔧 ADMIN MODE: Operating as {scopeInfo.scopeType === 'BRANCH' ? 'Cashier' : 'Warehouse Keeper'} for {scopeInfo.scopeName}
+            </Typography>
+          </Box>
+        )}
+        
         <Box sx={{ p: 3 }}>
           {/* Header */}
           <Box sx={{ mb: 3 }}>
@@ -548,7 +672,10 @@ function SalesLedger() {
                     <TableCell sx={{ fontWeight: 'bold' }}>Total</TableCell>
                     <TableCell sx={{ fontWeight: 'bold' }}>Paid</TableCell>
                     <TableCell sx={{ fontWeight: 'bold' }}>Credit</TableCell>
+                    <TableCell sx={{ fontWeight: 'bold' }}>Payment Method</TableCell>
+                    <TableCell sx={{ fontWeight: 'bold' }}>Payment Type</TableCell>
                     <TableCell sx={{ fontWeight: 'bold' }}>Payment Status</TableCell>
+                    <TableCell sx={{ fontWeight: 'bold' }}>Notes</TableCell>
                     <TableCell sx={{ fontWeight: 'bold' }}>Credit Status</TableCell>
                     <TableCell sx={{ fontWeight: 'bold' }}>Date</TableCell>
                     <TableCell sx={{ fontWeight: 'bold' }}>Actions</TableCell>
@@ -582,7 +709,29 @@ function SalesLedger() {
                         {parseFloat(sale.credit_amount || 0).toFixed(2)}
                       </TableCell>
                       <TableCell>
+                        {getPaymentMethodChip(sale.payment_method)}
+                      </TableCell>
+                      <TableCell>
+                        {getPaymentTypeChip(sale.payment_type)}
+                      </TableCell>
+                      <TableCell>
                         {getPaymentStatusChip(sale.payment_status)}
+                      </TableCell>
+                      <TableCell>
+                        <Typography 
+                          variant="body2" 
+                          sx={{ 
+                            fontFamily: 'monospace',
+                            fontSize: '0.75rem',
+                            maxWidth: '150px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}
+                          title={sale.notes || 'No Notes'}
+                        >
+                          {sale.notes ? (sale.notes.length > 30 ? sale.notes.substring(0, 30) + '...' : sale.notes) : 'No Notes'}
+                        </Typography>
                       </TableCell>
                       <TableCell>
                         {getCreditStatusChip(sale.credit_status)}

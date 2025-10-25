@@ -72,7 +72,12 @@ const SimplifiedBranchSettings = ({ branches, onBranchesChange }) => {
         allowCashierCustomers: false,
         allowCashierPOS: false,
         allowCashierLedger: false,
-        openAccountSystem: false
+        openAccountSystem: false,
+        // Transfer Settings
+        allowBranchTransfers: false,
+        allowBranchToBranchTransfers: false,
+        allowBranchToWarehouseTransfers: false,
+        requireApprovalForBranchTransfers: true
       };
     }
   };
@@ -164,6 +169,27 @@ const SimplifiedBranchSettings = ({ branches, onBranchesChange }) => {
       key: 'openAccountSystem',
       label: 'Open Account System',
       description: 'Enable open account functionality'
+    },
+    // Transfer Settings
+    {
+      key: 'allowBranchTransfers',
+      label: 'Allow Branch Transfers',
+      description: 'Allow transfers from this branch'
+    },
+    {
+      key: 'allowBranchToBranchTransfers',
+      label: 'Allow Branch to Branch Transfers',
+      description: 'Allow transfers from branch to other branches'
+    },
+    {
+      key: 'allowBranchToWarehouseTransfers',
+      label: 'Allow Branch to Warehouse Transfers',
+      description: 'Allow transfers from branch to warehouse'
+    },
+    {
+      key: 'requireApprovalForBranchTransfers',
+      label: 'Require Approval for Branch Transfers',
+      description: 'Require admin approval for branch transfers'
     }
   ];
 
@@ -315,7 +341,13 @@ const SimplifiedWarehouseSettings = ({ warehouses, onWarehousesChange }) => {
         allowWarehouseCompanyCRUD: false,
         requireApprovalForTransfers: true,
         autoStockAlerts: false,
-        allowWarehouseLedgerEdit: false
+        allowWarehouseLedgerEdit: false,
+        // Transfer Settings
+        allowWarehouseTransfers: true,
+        allowWarehouseToWarehouseTransfers: true,
+        allowWarehouseToBranchTransfers: false,
+        requireApprovalForWarehouseTransfers: true,
+        autoApproveSmallTransfers: false
       };
     }
   };
@@ -397,6 +429,32 @@ const SimplifiedWarehouseSettings = ({ warehouses, onWarehousesChange }) => {
       key: 'allowWarehouseLedgerEdit',
       label: 'Allow Ledger Edit',
       description: 'Enable warehouse keeper to edit ledger accounts and entries'
+    },
+    // Transfer Settings
+    {
+      key: 'allowWarehouseTransfers',
+      label: 'Allow Warehouse Transfers',
+      description: 'Allow transfers from this warehouse'
+    },
+    {
+      key: 'allowWarehouseToWarehouseTransfers',
+      label: 'Allow Warehouse to Warehouse Transfers',
+      description: 'Allow transfers from warehouse to other warehouses'
+    },
+    {
+      key: 'allowWarehouseToBranchTransfers',
+      label: 'Allow Warehouse to Branch Transfers',
+      description: 'Allow transfers from warehouse to branch'
+    },
+    {
+      key: 'requireApprovalForWarehouseTransfers',
+      label: 'Require Approval for Warehouse Transfers',
+      description: 'Require admin approval for warehouse transfers'
+    },
+    {
+      key: 'autoApproveSmallTransfers',
+      label: 'Auto-Approve Small Transfers',
+      description: 'Auto-approve transfers under threshold'
     }
   ];
 

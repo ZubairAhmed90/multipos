@@ -26,6 +26,7 @@ import retailersSlice from './slices/retailersSlice'
 import warehouseSalesAnalyticsSlice from './slices/warehouseSalesAnalyticsSlice'
 import customerLedgerSlice from './slices/customerLedgerSlice'
 import financialVoucherSlice from './slices/financialVoucherSlice'
+import purchaseOrdersSlice from './slices/purchaseOrdersSlice'
 
 
 export const store = configureStore({
@@ -57,6 +58,7 @@ export const store = configureStore({
     warehouseSalesAnalytics: warehouseSalesAnalyticsSlice,
     customerLedger: customerLedgerSlice,
     financialVouchers: financialVoucherSlice,
+    purchaseOrders: purchaseOrdersSlice,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({

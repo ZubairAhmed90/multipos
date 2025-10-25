@@ -93,8 +93,14 @@ export const exportCustomerLedger = createAsyncThunk(
         let excelData = []
         
         if (params.detailed === 'true' && response.data.data) {
-          // Detailed export - flatten items into separate rows
-          response.data.data.forEach(transaction => {
+          // Detailed export - sort by date ascending and flatten items into separate rows
+          const sortedTransactions = response.data.data.sort((a, b) => {
+            const dateA = new Date(a.transaction_date || a.created_at);
+            const dateB = new Date(b.transaction_date || b.created_at);
+            return dateA - dateB;
+          });
+          
+          sortedTransactions.forEach(transaction => {
             if (transaction.items && transaction.items.length > 0) {
               transaction.items.forEach(item => {
                 excelData.push({
@@ -129,8 +135,14 @@ export const exportCustomerLedger = createAsyncThunk(
             }
           })
         } else {
-          // Summary export
-          excelData = response.data.data.map(transaction => ({
+          // Summary export - sort by date ascending
+          const sortedTransactions = response.data.data.sort((a, b) => {
+            const dateA = new Date(a.transaction_date || a.created_at);
+            const dateB = new Date(b.transaction_date || b.created_at);
+            return dateA - dateB;
+          });
+          
+          excelData = sortedTransactions.map(transaction => ({
             'Date': new Date(transaction.transaction_date || transaction.created_at).toLocaleDateString(),
             'Invoice #': transaction.invoice_no || 'N/A',
             'Description': transaction.description || 'Sale Transaction',

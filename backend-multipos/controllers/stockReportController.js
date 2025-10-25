@@ -166,7 +166,7 @@ const getStockReportSummary = async (req, res) => {
     let params = [];
     
     // Role-based filtering
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseName) {
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('WAREHOUSE', user.warehouseName);
     } else if (user?.role === 'CASHIER' && user?.branchId) {
@@ -183,15 +183,18 @@ const getStockReportSummary = async (req, res) => {
     
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
     
-    // Get summary statistics
+    // Get summary statistics including negative quantities
     const [summaryResult] = await pool.execute(`
       SELECT 
         COUNT(*) as total_items,
         SUM(current_stock) as total_stock,
         SUM(current_stock * cost_price) as total_value,
         SUM(CASE WHEN current_stock <= 0 THEN 1 ELSE 0 END) as out_of_stock,
+        SUM(CASE WHEN current_stock < 0 THEN 1 ELSE 0 END) as negative_stock,
+        SUM(CASE WHEN current_stock = 0 THEN 1 ELSE 0 END) as zero_stock,
         SUM(CASE WHEN current_stock <= min_stock_level AND current_stock > 0 THEN 1 ELSE 0 END) as low_stock,
-        SUM(CASE WHEN current_stock > min_stock_level THEN 1 ELSE 0 END) as in_stock
+        SUM(CASE WHEN current_stock > min_stock_level THEN 1 ELSE 0 END) as in_stock,
+        SUM(CASE WHEN current_stock < 0 THEN current_stock ELSE 0 END) as total_negative_quantity
       FROM inventory_items
       ${whereClause}
     `, params);
@@ -201,8 +204,11 @@ const getStockReportSummary = async (req, res) => {
       total_stock: 0,
       total_value: 0,
       out_of_stock: 0,
+      negative_stock: 0,
+      zero_stock: 0,
       low_stock: 0,
-      in_stock: 0
+      in_stock: 0,
+      total_negative_quantity: 0
     };
     
     res.json({
@@ -212,8 +218,11 @@ const getStockReportSummary = async (req, res) => {
         totalStock: summary.total_stock,
         totalValue: summary.total_value,
         outOfStock: summary.out_of_stock,
+        negativeStock: summary.negative_stock,
+        zeroStock: summary.zero_stock,
         lowStock: summary.low_stock,
-        inStock: summary.in_stock
+        inStock: summary.in_stock,
+        totalNegativeQuantity: summary.total_negative_quantity
       }
     });
     
@@ -247,7 +256,7 @@ const getStockReportStatistics = async (req, res) => {
     let params = [];
     
     // Role-based filtering
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseName) {
       whereConditions.push('scope_type = ? AND scope_id = ?');
       params.push('WAREHOUSE', user.warehouseName);
     } else if (user?.role === 'CASHIER' && user?.branchId) {
@@ -417,7 +426,7 @@ const getStockSummary = async (req, res) => {
     let params = [];
     
     // Role-based filtering
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseName) {
       whereConditions.push('ii.scope_type = ? AND ii.scope_id = ?');
       params.push('WAREHOUSE', user.warehouseName);
     } else if (user?.role === 'CASHIER' && user?.branchId) {

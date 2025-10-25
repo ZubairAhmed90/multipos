@@ -24,7 +24,7 @@ router.route('/warehouse-billing')
 router.route('/:id')
   .get(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), getSalesperson)
   .put(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), updateSalesperson)
-  .delete(auth, rbac('ADMIN'), deleteSalesperson);
+  .delete(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), deleteSalesperson);
 
 // Salesperson performance route
 router.route('/:id/performance')

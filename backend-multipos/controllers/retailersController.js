@@ -6,7 +6,10 @@ const { pool } = require('../config/database');
 // @access  Private (Admin, Warehouse Keeper)
 const getRetailers = async (req, res) => {
   try {
-    const { status, businessType, paymentTerms } = req.query;
+    const { status, businessType, paymentTerms, warehouseId } = req.query;
+    
+    console.log('[Retailers Controller] Request params:', { status, businessType, paymentTerms, warehouseId })
+    console.log('[Retailers Controller] User:', { role: req.user.role, warehouseId: req.user.warehouseId })
     
     let whereConditions = [];
     let params = [];
@@ -14,16 +17,24 @@ const getRetailers = async (req, res) => {
     // Apply role-based filtering
     if (req.user.role === 'WAREHOUSE_KEEPER') {
       // Warehouse keepers can only see retailers in their warehouse
+      // Use query parameter warehouseId if provided, otherwise use user's warehouseId
+      const targetWarehouseId = warehouseId || req.user.warehouseId;
+      console.log('[Retailers Controller] Target warehouse ID:', targetWarehouseId)
       whereConditions.push('warehouse_id = ?');
-      params.push(req.user.warehouseId);
+      params.push(targetWarehouseId);
     } else if (req.user.role === 'CASHIER') {
       // Cashiers don't have access to retailers (they use companies)
       return res.status(403).json({
         success: false,
         message: 'Cashiers do not have access to retailers'
       });
+    } else if (req.user.role === 'ADMIN' && warehouseId) {
+      // Admin can filter by specific warehouse if requested
+      console.log('[Retailers Controller] Admin filtering by warehouse:', warehouseId)
+      whereConditions.push('warehouse_id = ?');
+      params.push(warehouseId);
     }
-    // Admins can see all retailers (no additional filtering)
+    // Admins without warehouseId filter can see all retailers
     
     if (status) {
       whereConditions.push('status = ?');
@@ -42,11 +53,17 @@ const getRetailers = async (req, res) => {
     
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
     
+    console.log('[Retailers Controller] Final query:', `SELECT * FROM retailers ${whereClause} ORDER BY name ASC`)
+    console.log('[Retailers Controller] Query params:', params)
+    
     const [retailers] = await pool.execute(`
       SELECT * FROM retailers 
       ${whereClause}
       ORDER BY name ASC
     `, params);
+    
+    console.log('[Retailers Controller] Found retailers:', retailers.length)
+    console.log('[Retailers Controller] Retailers data:', retailers)
     
     res.json({
       success: true,

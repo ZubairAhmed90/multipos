@@ -1,5 +1,4 @@
 'use client'
-
 import React, { useEffect, useState, useCallback } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { 
@@ -49,6 +48,7 @@ import {
 import withAuth from '../../../components/auth/withAuth'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../components/auth/RouteGuard'
+import api from '../../../utils/axios'
 import { 
   fetchAllCustomersWithSummaries, 
   fetchCustomerLedger, 
@@ -58,11 +58,67 @@ import {
   setCustomersPagination,
   setLedgerPagination
 } from '../../store/slices/customerLedgerSlice'
-import api from '../../../utils/axios'
 
 function CustomerLedgerPage() {
   const dispatch = useDispatch()
-  const { user } = useSelector((state) => state.auth)
+  const { user: originalUser } = useSelector((state) => state.auth)
+  
+  // URL-based role switching (same as POS terminal)
+  const [urlParams, setUrlParams] = useState({})
+  const [isAdminMode, setIsAdminMode] = useState(false)
+  
+  // Parse URL parameters for role simulation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const role = params.get('role')
+      const scope = params.get('scope')
+      const id = params.get('id')
+      
+      if (role && scope && id && originalUser?.role === 'ADMIN') {
+        setUrlParams({ role, scope, id })
+        setIsAdminMode(true)
+      } else {
+        setUrlParams({})
+        setIsAdminMode(false)
+      }
+    }
+  }, [originalUser])
+  
+  // Get effective user based on URL parameters
+  const getEffectiveUser = useCallback((originalUser) => {
+    if (!isAdminMode || !urlParams.role) {
+      return originalUser
+    }
+    
+    return {
+      ...originalUser,
+      role: urlParams.role.toUpperCase(),
+      branchId: urlParams.scope === 'branch' ? parseInt(urlParams.id) : null,
+      warehouseId: urlParams.scope === 'warehouse' ? parseInt(urlParams.id) : null,
+      branchName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : null,
+      warehouseName: urlParams.scope === 'warehouse' ? `Warehouse ${urlParams.id}` : null,
+      isAdminMode: true,
+      originalRole: originalUser.role,
+      originalUser: originalUser
+    }
+  }, [isAdminMode, urlParams])
+  
+  // Get scope info
+  const getScopeInfo = useCallback(() => {
+    if (!isAdminMode || !urlParams.role) {
+      return null
+    }
+    
+    return {
+      scopeType: urlParams.scope === 'branch' ? 'BRANCH' : 'WAREHOUSE',
+      scopeId: urlParams.id,
+      scopeName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : `Warehouse ${urlParams.id}`
+    }
+  }, [isAdminMode, urlParams])
+  
+  const user = getEffectiveUser(originalUser)
+  const scopeInfo = getScopeInfo()
   const { 
     customers, 
     currentCustomerLedger, 
@@ -101,16 +157,14 @@ function CustomerLedgerPage() {
   // Export dropdown state
   const [exportAnchorEl, setExportAnchorEl] = useState(null)
   
-  // Auto-refresh state
-  const [lastRefresh, setLastRefresh] = useState(Date.now())
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true)
 
   const loadCustomers = useCallback(() => {
     const params = {
       search: searchTerm,
-      hasBalance: hasBalanceFilter === 'true' ? 'true' : undefined,
+      hasBalance: hasBalanceFilter === 'all' ? undefined : hasBalanceFilter,
       limit: 20,
-      offset: (customersPage - 1) * 20
+      offset: (customersPage - 1) * 20,
+      _t: Date.now() // Force fresh data by adding timestamp
     }
     console.log('Loading customers with params:', params)
     console.log('Current user:', user)
@@ -125,14 +179,14 @@ function CustomerLedgerPage() {
     loadCustomers()
   }, [loadCustomers])
 
-  const loadCustomerLedger = (customerId) => {
+  const loadCustomerLedger = useCallback((customerId) => {
     const params = {
       ...ledgerFilters,
       limit: 50,
       offset: (ledgerPage - 1) * 50
     }
     dispatch(fetchCustomerLedger({ customerId, params }))
-  }
+  }, [dispatch, ledgerFilters, ledgerPage])
 
   const handleSearch = () => {
     setCustomersPage(1)
@@ -144,6 +198,12 @@ function CustomerLedgerPage() {
     setLedgerDialogOpen(true)
     setLedgerPage(1)
     loadCustomerLedger(customer.customer_name || customer.customer_phone)
+  }
+
+  const handleViewDetailedLedger = (customer) => {
+    const customerId = customer.customer_name || customer.customer_phone
+    // Open detailed ledger view in new tab
+    window.open(`/dashboard/customer-ledger/detailed/${encodeURIComponent(customerId)}`, '_blank')
   }
 
   const handleExportLedger = (customerId, format = 'pdf', detailed = false) => {
@@ -173,12 +233,7 @@ function CustomerLedgerPage() {
 
   // Manual refresh function
   const handleManualRefresh = useCallback(() => {
-    console.log('🚨🚨🚨 MANUAL REFRESH TRIGGERED 🚨🚨🚨')
-    console.log('🚨🚨🚨 MANUAL REFRESH TRIGGERED 🚨🚨🚨')
-    console.log('🚨🚨🚨 MANUAL REFRESH TRIGGERED 🚨🚨🚨')
-    
     console.log('[Customer Ledger] Manual refresh triggered')
-    setLastRefresh(Date.now())
     
     // Refresh customers list
     loadCustomers()
@@ -187,19 +242,8 @@ function CustomerLedgerPage() {
     if (selectedCustomer && ledgerDialogOpen) {
       loadCustomerLedger(selectedCustomer.customer_name || selectedCustomer.customer_phone)
     }
-  }, [loadCustomers, selectedCustomer, ledgerDialogOpen])
+  }, [loadCustomers, selectedCustomer, ledgerDialogOpen, loadCustomerLedger])
 
-  // Auto-refresh effect
-  useEffect(() => {
-    if (!autoRefreshEnabled) return
-
-    const interval = setInterval(() => {
-      console.log('[Customer Ledger] Auto-refresh triggered')
-      handleManualRefresh()
-    }, 30000) // Refresh every 30 seconds
-
-    return () => clearInterval(interval)
-  }, [autoRefreshEnabled, handleManualRefresh])
 
   // Calculate summary totals
   const calculateSummaryTotals = () => {
@@ -220,45 +264,43 @@ function CustomerLedgerPage() {
     const transactions = currentCustomerLedger.transactions
     console.log('Processing transactions:', transactions.length, 'transactions')
     
-    // Calculate running balance properly
-    let runningBalance = 0
+    // Calculate totals properly
     const totals = transactions.reduce((acc, transaction) => {
-      // Use the correct fields based on the table structure
-      const subtotal = parseFloat(transaction.subtotal || transaction.total || 0) // Current bill amount
-      const totalAmount = parseFloat(transaction.total_amount || transaction.total || 0) // Total bill including outstanding
-      const paid = parseFloat(transaction.paid_amount || 0)
-      const credit = parseFloat(transaction.credit_amount || 0)
-      const outstanding = parseFloat(transaction.outstanding || 0) // Current outstanding for this transaction
+      // Use Amount column only (current bill amounts, not including old balances) and corrected paid_amount
+      const currentAmount = parseFloat(transaction.subtotal || transaction.amount || transaction.total || 0) // Amount column only
+      // Use corrected payment amount (0 for FULLY_CREDIT)
+      const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0)
       
       console.log('Transaction:', transaction.invoice_no, {
-        subtotal,
-        totalAmount,
-        paid,
-        credit,
-        outstanding,
-        runningBalance
+        currentAmount,
+        correctedPaid
       })
-      
-      // Update running balance: previous balance + new credit - new payment
-      runningBalance = runningBalance + credit - paid
       
       return {
         totalTransactions: acc.totalTransactions + 1,
-        totalAmount: acc.totalAmount + totalAmount, // Sum of all total amounts
-        totalPaid: acc.totalPaid + paid,
-        totalCredit: acc.totalCredit + credit,
-        currentBalance: runningBalance // Use running balance
+        totalAmount: acc.totalAmount + currentAmount, // Sum of Amount column only (not including old balances)
+        totalPaid: acc.totalPaid + correctedPaid,
+        totalCredit: 0 // We'll set this to outstanding balance later
       }
     }, {
       totalTransactions: 0,
       totalAmount: 0,
       totalPaid: 0,
-      totalCredit: 0,
-      currentBalance: 0
+      totalCredit: 0
     })
     
+    // Calculate outstanding balance as Total Amount - Total Paid
+    // Since totalAmount already includes old balances, we just subtract totalPaid
+    const outstandingBalance = totals.totalAmount - totals.totalPaid
+    
+    // Set totalCredit to be the same as outstandingBalance for consistency
+    totals.totalCredit = outstandingBalance
+    
     console.log('Final totals:', totals)
-    return totals
+    return {
+      ...totals,
+      outstandingBalance: outstandingBalance
+    }
   }
 
   const handleSort = (field) => {
@@ -337,13 +379,18 @@ function CustomerLedgerPage() {
 
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-US', {
-      minimumFractionDigits: 2,
+      minimumFractionDigits: 0,
       maximumFractionDigits: 2
     }).format(amount || 0)
   }
 
   const formatDate = (dateString) => {
-    return new Date(dateString).toLocaleDateString()
+    if (!dateString) return 'N/A';
+    const date = new Date(dateString);
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}/${month}/${year}`;
   }
 
   const getTransactionTypeColor = (scopeType) => {
@@ -391,6 +438,23 @@ function CustomerLedgerPage() {
   return (
     <RouteGuard allowedRoles={['ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER']}>
       <DashboardLayout>
+        {/* Admin Mode Indicator */}
+        {isAdminMode && scopeInfo && (
+          <Box sx={{ 
+            bgcolor: 'warning.light', 
+            color: 'warning.contrastText', 
+            p: 1, 
+            textAlign: 'center',
+            borderBottom: 1,
+            borderColor: 'warning.main',
+            mb: 2
+          }}>
+            <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+              🔧 ADMIN MODE: Operating as {scopeInfo.scopeType === 'BRANCH' ? 'Cashier' : 'Warehouse Keeper'} for {scopeInfo.scopeName}
+            </Typography>
+          </Box>
+        )}
+        
         <Box sx={{ p: 3 }}>
           {/* Header */}
           <Box sx={{ mb: 3 }}>
@@ -399,15 +463,6 @@ function CustomerLedgerPage() {
                 Customer Ledger
               </Typography>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Tooltip title="Auto-refresh every 30 seconds">
-                  <Chip 
-                    label={autoRefreshEnabled ? "Auto-refresh ON" : "Auto-refresh OFF"}
-                    color={autoRefreshEnabled ? "success" : "default"}
-                    size="small"
-                    onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)}
-                    sx={{ cursor: 'pointer' }}
-                  />
-                </Tooltip>
                 <Tooltip title="Refresh customer data">
                   <IconButton onClick={handleManualRefresh} size="small">
                     <RefreshIcon />
@@ -450,7 +505,10 @@ function CustomerLedgerPage() {
                     <InputLabel>Balance Filter</InputLabel>
                     <Select
                       value={hasBalanceFilter}
-                      onChange={(e) => setHasBalanceFilter(e.target.value)}
+                      onChange={(e) => {
+                        setHasBalanceFilter(e.target.value)
+                        setCustomersPage(1) // Reset to first page when filter changes
+                      }}
                       label="Balance Filter"
                     >
                       <MenuItem value="all">All Customers</MenuItem>
@@ -502,8 +560,8 @@ function CustomerLedgerPage() {
                           <TableCell>Customer Name</TableCell>
                           <TableCell>Phone</TableCell>
                           <TableCell>Total Transactions</TableCell>
+                          <TableCell>Total Amount</TableCell>
                           <TableCell>Total Paid</TableCell>
-                          <TableCell>Total Credit</TableCell>
                           <TableCell>Current Balance</TableCell>
                           <TableCell>Actions</TableCell>
                         </TableRow>
@@ -524,12 +582,26 @@ function CustomerLedgerPage() {
                             </TableCell>
                             <TableCell>{customer.customer_phone || 'N/A'}</TableCell>
                             <TableCell>{customer.total_transactions}</TableCell>
-                            <TableCell>{formatCurrency(customer.total_paid)}</TableCell>
-                            <TableCell>{formatCurrency(customer.total_credit)}</TableCell>
+                            <TableCell>
+                              {(() => {
+                                console.log('Customer data for', customer.customer_name, ':', customer)
+                                return formatCurrency(customer.total_amount || 0)
+                              })()}
+                            </TableCell>
+                            <TableCell>
+                              {(() => {
+                                console.log('Total paid for', customer.customer_name, ':', customer.total_paid)
+                                return formatCurrency(customer.total_paid || 0)
+                              })()}
+                            </TableCell>
                             <TableCell>
                               <Chip
-                                label={formatCurrency(customer.current_balance)}
-                                color={getBalanceColor(customer.current_balance)}
+                                label={(() => {
+                                  const balance = customer.current_balance || 0
+                                  console.log('Balance for', customer.customer_name, ':', balance)
+                                  return formatCurrency(balance)
+                                })()}
+                                color={getBalanceColor(customer.current_balance || 0)}
                                 size="small"
                               />
                             </TableCell>
@@ -541,6 +613,15 @@ function CustomerLedgerPage() {
                                   color="primary"
                                 >
                                   <ViewIcon />
+                                </IconButton>
+                              </Tooltip>
+                              <Tooltip title="View Detailed Ledger">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => handleViewDetailedLedger(customer)}
+                                  color="info"
+                                >
+                                  <ReceiptIcon />
                                 </IconButton>
                               </Tooltip>
                               <Tooltip title="Export PDF">
@@ -599,15 +680,6 @@ function CustomerLedgerPage() {
                   Customer Ledger: {selectedCustomer?.customer_name || selectedCustomer?.customer_phone}
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Tooltip title="Auto-refresh every 30 seconds">
-                    <Chip 
-                      label={autoRefreshEnabled ? "Auto-refresh ON" : "Auto-refresh OFF"}
-                      color={autoRefreshEnabled ? "success" : "default"}
-                      size="small"
-                      onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)}
-                      sx={{ cursor: 'pointer' }}
-                    />
-                  </Tooltip>
                   <Tooltip title="Refresh data">
                     <IconButton onClick={handleManualRefresh} size="small">
                       <RefreshIcon />
@@ -619,62 +691,6 @@ function CustomerLedgerPage() {
             <DialogContent>
               {currentCustomerLedger && (
                 <>
-                  {/* Summary */}
-                  <Box sx={{ mb: 3 }}>
-                    <Grid container spacing={2}>
-                      <Grid item xs={12} md={3}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="h6" color="primary">
-                              {formatCurrency(currentCustomerLedger.summary.totalDebit)}
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Total Paid
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                      <Grid item xs={12} md={3}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="h6" color="error">
-                              {formatCurrency(currentCustomerLedger.summary.totalCredit)}
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Total Credit
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                      <Grid item xs={12} md={3}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography 
-                              variant="h6" 
-                              color={getBalanceColor(currentCustomerLedger.summary.currentBalance)}
-                            >
-                              {formatCurrency(currentCustomerLedger.summary.currentBalance)}
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Current Balance
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                      <Grid item xs={12} md={3}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="h6">
-                              {currentCustomerLedger.summary.totalTransactions}
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Total Transactions
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                    </Grid>
-                  </Box>
 
                   {/* Filters */}
                   <Box sx={{ mb: 3 }}>
@@ -734,15 +750,6 @@ function CustomerLedgerPage() {
                         <TableRow>
                           <TableCell 
                             sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('invoice_no')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Invoice
-                              {getSortIcon('invoice_no')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
                             onClick={() => handleSort('transaction_date')}
                           >
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -750,7 +757,15 @@ function CustomerLedgerPage() {
                               {getSortIcon('transaction_date')}
                             </Box>
                           </TableCell>
-                          <TableCell>Type</TableCell>
+                          <TableCell 
+                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                            onClick={() => handleSort('invoice_no')}
+                          >
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                              Invoice
+                              {getSortIcon('invoice_no')}
+                            </Box>
+                          </TableCell>
                           <TableCell 
                             sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
                             onClick={() => handleSort('amount')}
@@ -762,20 +777,20 @@ function CustomerLedgerPage() {
                           </TableCell>
                           <TableCell 
                             sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('total_amount')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Total Amount
-                              {getSortIcon('total_amount')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
                             onClick={() => handleSort('old_balance')}
                           >
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                               Old Balance
                               {getSortIcon('old_balance')}
+                            </Box>
+                          </TableCell>
+                          <TableCell 
+                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                            onClick={() => handleSort('total_amount')}
+                          >
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                              Total Amount
+                              {getSortIcon('total_amount')}
                             </Box>
                           </TableCell>
                           <TableCell 
@@ -820,28 +835,14 @@ function CustomerLedgerPage() {
                       <TableBody>
                         {sortTransactions(currentCustomerLedger.transactions).map((transaction) => (
                           <TableRow key={transaction.transaction_id}>
-                            <TableCell>{transaction.invoice_no}</TableCell>
                             <TableCell>{formatDate(transaction.transaction_date)}</TableCell>
-                            <TableCell>
-                              <Chip
-                                label={transaction.transaction_type_display}
-                                color={getTransactionTypeColor(transaction.scope_type)}
-                                size="small"
-                              />
-                            </TableCell>
+                            <TableCell>{transaction.invoice_no}</TableCell>
                             <TableCell>{formatCurrency(transaction.subtotal)}</TableCell>
                             <TableCell>
                               <Typography 
                                 variant="body2"
-                                color="primary.main"
-                                fontWeight="bold"
-                              >
-                                {formatCurrency(transaction.total)}
-                              </Typography>
-                            </TableCell>
-                            <TableCell>
-                              <Typography 
-                                variant="body2"
+
+
                                 color="warning.main"
                                 fontWeight="medium"
                               >
@@ -851,10 +852,23 @@ function CustomerLedgerPage() {
                             <TableCell>
                               <Typography 
                                 variant="body2"
+                                color="primary.main"
+                                fontWeight="bold"
+                              >
+                                {formatCurrency(transaction.total_amount || transaction.total)}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Typography 
+                                variant="body2"
                                 color="success.main"
                                 fontWeight="medium"
                               >
-                                {formatCurrency(transaction.paid_amount || 0)}
+                                {(() => {
+                                  // Use corrected payment amount (0 for FULLY_CREDIT)
+                                  const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0);
+                                  return formatCurrency(correctedPaid);
+                                })()}
                               </Typography>
                             </TableCell>
                             <TableCell>{transaction.payment_method}</TableCell>
@@ -868,10 +882,22 @@ function CustomerLedgerPage() {
                             <TableCell>
                               <Typography 
                                 variant="body2"
-                                color={getBalanceColor(transaction.running_balance)}
+                                color={(() => {
+                                  const totalAmount = parseFloat(transaction.total_amount || transaction.total || 0);
+                                  // Use corrected payment amount (0 for FULLY_CREDIT)
+                                  const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0);
+                                  const balance = totalAmount - correctedPaid;
+                                  return balance > 0 ? 'error.main' : 'success.main';
+                                })()}
                                 fontWeight="medium"
                               >
-                                {formatCurrency(transaction.running_balance)}
+                                {(() => {
+                                  const totalAmount = parseFloat(transaction.total_amount || transaction.total || 0);
+                                  // Use corrected payment amount (0 for FULLY_CREDIT)
+                                  const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0);
+                                  const balance = totalAmount - correctedPaid;
+                                  return formatCurrency(balance);
+                                })()}
                               </Typography>
                             </TableCell>
                             <TableCell>
@@ -926,7 +952,7 @@ function CustomerLedgerPage() {
                               Outstanding Balance
                             </Typography>
                             <Typography variant="h6" color="error.main">
-                              {formatCurrency(calculateSummaryTotals().currentBalance)}
+                              {formatCurrency(calculateSummaryTotals().outstandingBalance)}
                             </Typography>
                           </Grid>
                         </Grid>

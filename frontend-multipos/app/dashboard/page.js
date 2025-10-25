@@ -305,7 +305,7 @@ export default function DashboardPage() {
     switch (role) {
       case 'ADMIN':
         return [
-          { title: "Total Sales", value: loading ? "..." : dashboardData.totalSales > 0 ? `$${dashboardData.totalSales.toLocaleString()}` : "No data", icon: <AttachMoney sx={{ fontSize: 28 }} />, color: "success", subtitle: "This month" },
+          { title: "Total Sales", value: loading ? "..." : dashboardData.totalSales > 0 ? `${dashboardData.totalSales.toLocaleString()}` : "No data", icon: <AttachMoney sx={{ fontSize: 28 }} />, color: "success", subtitle: "This month" },
           { title: "Total Orders", value: loading ? "..." : dashboardData.totalOrders > 0 ? dashboardData.totalOrders.toLocaleString() : "No data", icon: <ShoppingCart sx={{ fontSize: 28 }} />, color: "primary", subtitle: "Orders processed" },
           { title: "Customers", value: loading ? "..." : dashboardData.totalCustomers > 0 ? dashboardData.totalCustomers.toLocaleString() : "No data", icon: <People sx={{ fontSize: 28 }} />, color: "info", subtitle: "Active customers" },
           { title: "Products", value: loading ? "..." : dashboardData.totalProducts > 0 ? dashboardData.totalProducts.toLocaleString() : "No data", icon: <Inventory sx={{ fontSize: 28 }} />, color: "warning", subtitle: "In inventory" }
@@ -320,7 +320,7 @@ export default function DashboardPage() {
       case 'CASHIER':
         return [
           { title: "My Products", value: loading ? "..." : dashboardData.totalProducts > 0 ? dashboardData.totalProducts.toLocaleString() : "No data", icon: <Inventory sx={{ fontSize: 28 }} />, color: "primary", subtitle: "Available in my branch" },
-          { title: "Today's Sales", value: loading ? "..." : dashboardData.totalSales > 0 ? `$${dashboardData.totalSales.toLocaleString()}` : "No data", icon: <AttachMoney sx={{ fontSize: 28 }} />, color: "success", subtitle: "Current shift" },
+          { title: "Today's Sales", value: loading ? "..." : dashboardData.totalSales > 0 ? `${dashboardData.totalSales.toLocaleString()}` : "No data", icon: <AttachMoney sx={{ fontSize: 28 }} />, color: "success", subtitle: "Current shift" },
           { title: "Orders Today", value: loading ? "..." : dashboardData.totalOrders > 0 ? dashboardData.totalOrders.toLocaleString() : "No data", icon: <ShoppingCart sx={{ fontSize: 28 }} />, color: "info", subtitle: "Processed" },
           { title: "Active Shift", value: "Morning", icon: <Schedule sx={{ fontSize: 28 }} />, color: "secondary", subtitle: "Current shift" }
         ]

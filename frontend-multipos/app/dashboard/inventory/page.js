@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import * as yup from 'yup'
 import {
@@ -30,6 +30,9 @@ import {
   CircularProgress,
   Pagination
 } from '@mui/material'
+import { DatePicker } from '@mui/x-date-pickers/DatePicker'
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns'
 import { 
   CloudUpload as UploadIcon,
   Search as SearchIcon,
@@ -54,6 +57,7 @@ import { fetchInventory, createInventoryItem, updateInventoryItem, deleteInvento
 import { fetchBranchSettings } from '../../store/slices/branchesSlice'
 import { fetchWarehouseSettings, fetchWarehouses } from '../../store/slices/warehousesSlice'
 import ScopeField from '../../../components/forms/ScopeField'
+import SupplierField from '../../../components/forms/SupplierField'
 
 // Validation schema - matches backend validation exactly
 const inventorySchema = yup.object({
@@ -97,9 +101,8 @@ const inventorySchema = yup.object({
     .min(0, 'Selling price must be a positive number')
     .required('Selling price is required'),
   currentStock: yup.number()
-    .integer('Current stock must be a non-negative integer')
-    .min(0, 'Current stock must be a non-negative integer')
-    .required('Current stock is required'),
+    .integer('Current stock must be an integer')
+    .required('Current stock is required'), // Allow negative values
   minStockLevel: yup.number()
     .integer('Minimum stock level must be a non-negative integer')
     .min(0, 'Minimum stock level must be a non-negative integer')
@@ -115,6 +118,38 @@ const inventorySchema = yup.object({
     .min(1, 'Scope name must be between 1 and 100 characters')
     .max(100, 'Scope name must be between 1 and 100 characters')
     .required('Scope name is required'),
+  // Supplier tracking fields
+  supplierId: yup.number()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  supplierName: yup.string()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  purchaseDate: yup.date()
+    .nullable()
+    .transform((value) => {
+      if (value === '' || !value) return null;
+      // Handle DD/MM/YY format
+      if (typeof value === 'string' && value.includes('/')) {
+        const parts = value.split('/');
+        if (parts.length === 3) {
+          // Convert DD/MM/YY to YYYY-MM-DD
+          const day = parts[0].padStart(2, '0');
+          const month = parts[1].padStart(2, '0');
+          const year = parts[2].length === 2 ? `20${parts[2]}` : parts[2];
+          return new Date(`${year}-${month}-${day}`);
+        }
+      }
+      return value;
+    })
+    .test('is-valid-date', 'Please enter a valid date (DD/MM/YY or use date picker)', function(value) {
+      if (!value) return true; // Allow null/empty values
+      return value instanceof Date && !isNaN(value.getTime());
+    }),
+  purchasePrice: yup.number()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .min(0, 'Purchase price must be a positive number'),
 })
 
 // Table columns configuration
@@ -189,6 +224,16 @@ const columns = [
     )
   },
   { field: 'scopeId', headerName: 'Scope Name', width: 100 },
+  { field: 'supplierName', headerName: 'Supplier', width: 150 },
+  { field: 'purchaseDate', headerName: 'Purchase Date', width: 120, type: 'date', renderCell: (params) => {
+    if (!params.value) return '-'
+    return new Date(params.value).toLocaleDateString()
+  }},
+  { field: 'purchasePrice', headerName: 'Purchase Price', width: 120, type: 'number', renderCell: (params) => {
+    const value = params.value
+    if (value === null || value === undefined || isNaN(value)) return '-'
+    return `$${Number(value).toFixed(2)}`
+  }},
   { field: 'createdAt', headerName: 'Created', width: 150 },
 ]
 
@@ -256,6 +301,27 @@ const getFields = (user) => {
     { name: 'currentStock', label: 'Current Stock', type: 'number', required: true },
     { name: 'minStockLevel', label: 'Minimum Stock Level', type: 'number', required: true },
     { name: 'maxStockLevel', label: 'Maximum Stock Level', type: 'number', required: false },
+    
+    // Supplier tracking fields
+    { 
+      name: 'supplierId', 
+      label: 'Supplier', 
+      type: 'custom', 
+      required: false,
+      render: ({ register, errors, setValue, watch }) => (
+        <SupplierField 
+          register={register}
+          errors={errors}
+          setValue={setValue}
+          watch={watch}
+          label="Supplier"
+          required={false}
+        />
+      )
+    },
+    { name: 'supplierName', label: 'Supplier Name (Manual)', type: 'text', required: false },
+    { name: 'purchaseDate', label: 'Purchase Date', type: 'date', required: false },
+    { name: 'purchasePrice', label: 'Purchase Price', type: 'number', required: false, step: 0.01 },
   ]
 
   // Add scope fields based on user role
@@ -355,9 +421,66 @@ function InventoryPage() {
   
   // Ensure inventory is always an array — memoized to avoid changing identity across renders
   const safeInventory = useMemo(() => Array.isArray(inventory) ? inventory : [], [inventory])
-  const { user } = useSelector((state) => state.auth)
+  const { user: originalUser } = useSelector((state) => state.auth)
+  
+  // URL-based role switching (same as POS terminal)
+  const [urlParams, setUrlParams] = useState({})
+  const [isAdminMode, setIsAdminMode] = useState(false)
+  
+  // Parse URL parameters for role simulation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const role = params.get('role')
+      const scope = params.get('scope')
+      const id = params.get('id')
+      
+      if (role && scope && id && originalUser?.role === 'ADMIN') {
+        setUrlParams({ role, scope, id })
+        setIsAdminMode(true)
+      } else {
+        setUrlParams({})
+        setIsAdminMode(false)
+      }
+    }
+  }, [originalUser])
+  
+  // Get effective user based on URL parameters
+  const getEffectiveUser = useCallback((originalUser) => {
+    if (!isAdminMode || !urlParams.role) {
+      return originalUser
+    }
+    
+    return {
+      ...originalUser,
+      role: urlParams.role.toUpperCase(),
+      branchId: urlParams.scope === 'branch' ? parseInt(urlParams.id) : null,
+      warehouseId: urlParams.scope === 'warehouse' ? parseInt(urlParams.id) : null,
+      branchName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : null,
+      warehouseName: urlParams.scope === 'warehouse' ? `Warehouse ${urlParams.id}` : null,
+      isAdminMode: true,
+      originalRole: originalUser.role,
+      originalUser: originalUser
+    }
+  }, [isAdminMode, urlParams])
+  
+  // Get scope info
+  const getScopeInfo = useCallback(() => {
+    if (!isAdminMode || !urlParams.role) {
+      return null
+    }
+    
+    return {
+      scopeType: urlParams.scope === 'branch' ? 'BRANCH' : 'WAREHOUSE',
+      scopeId: urlParams.id,
+      scopeName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : `Warehouse ${urlParams.id}`
+    }
+  }, [isAdminMode, urlParams])
+  
+  const user = useMemo(() => getEffectiveUser(originalUser), [getEffectiveUser, originalUser])
+  const scopeInfo = useMemo(() => getScopeInfo(), [getScopeInfo])
   const { branchSettings } = useSelector((state) => state.branches)
-  const { warehouseSettings, warehouses } = useSelector((state) => state.warehouses)
+  const { warehouseSettings, data: warehouses } = useSelector((state) => state.warehouses)
   
   // Dialog states
   const [formDialogOpen, setFormDialogOpen] = useState(false)
@@ -378,6 +501,23 @@ function InventoryPage() {
   const [returnedFilter, setReturnedFilter] = useState('all')
   const [sortBy, setSortBy] = useState('name')
   const [sortOrder, setSortOrder] = useState('asc')
+
+  // Auto-set scope filter based on admin role simulation
+  useEffect(() => {
+    if (isAdminMode && scopeInfo) {
+      // When admin is acting as cashier/warehouse keeper, automatically filter to their scope
+      setScopeFilter(scopeInfo.scopeType)
+    } else if (user?.role === 'CASHIER' && user?.branchId) {
+      // Regular cashier - show only their branch
+      setScopeFilter('BRANCH')
+    } else if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+      // Regular warehouse keeper - show only their warehouse
+      setScopeFilter('WAREHOUSE')
+    } else {
+      // Admin or other roles - show all scopes
+      setScopeFilter('all')
+    }
+  }, [isAdminMode, scopeInfo, user])
   
   // Pagination states
   const [page, setPage] = useState(1)
@@ -413,14 +553,39 @@ function InventoryPage() {
     if (stockFilter === 'low') {
       filtered = filtered.filter(item => item.currentStock <= item.minStockLevel)
     } else if (stockFilter === 'out') {
-      filtered = filtered.filter(item => item.currentStock === 0)
+      filtered = filtered.filter(item => item.currentStock <= 0) // Include zero and negative stock
+    } else if (stockFilter === 'negative') {
+      filtered = filtered.filter(item => item.currentStock < 0) // Only negative stock
     } else if (stockFilter === 'high') {
       filtered = filtered.filter(item => item.currentStock > item.maxStockLevel)
     }
 
     // Apply scope filter
     if (scopeFilter !== 'all') {
-      filtered = filtered.filter(item => item.scopeType === scopeFilter)
+      filtered = filtered.filter(item => {
+        // First check scope type
+        if (item.scopeType !== scopeFilter) {
+          return false
+        }
+        
+        // If admin is acting as cashier/warehouse keeper, also filter by specific scope ID
+        if (isAdminMode && scopeInfo) {
+          return item.scopeId === scopeInfo.scopeId
+        }
+        
+        // For regular cashiers, filter by their branch ID
+        if (user?.role === 'CASHIER' && user?.branchId) {
+          return item.scopeId === String(user.branchId)
+        }
+        
+        // For regular warehouse keepers, filter by their warehouse ID
+        if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+          return item.scopeId === String(user.warehouseId)
+        }
+        
+        // For admins or other cases, just filter by scope type
+        return true
+      })
     }
 
     // Apply sold filter
@@ -458,7 +623,7 @@ function InventoryPage() {
     })
 
     return filtered
-  }, [safeInventory, searchTerm, categoryFilter, stockFilter, scopeFilter, soldFilter, returnedFilter, sortBy, sortOrder])
+  }, [safeInventory, searchTerm, categoryFilter, stockFilter, scopeFilter, soldFilter, returnedFilter, sortBy, sortOrder, isAdminMode, scopeInfo, user])
 
   // Get unique categories for filter dropdown
   const categories = useMemo(() => {
@@ -485,7 +650,20 @@ function InventoryPage() {
     if (searchTerm) filters.push(`Search: "${searchTerm}"`)
     if (categoryFilter !== 'all') filters.push(`Category: ${categoryFilter}`)
     if (stockFilter !== 'all') filters.push(`Stock: ${stockFilter}`)
-    if (scopeFilter !== 'all') filters.push(`Scope: ${scopeFilter}`)
+    
+    // Show specific scope info when automatically filtered
+    if (scopeFilter !== 'all') {
+      if (isAdminMode && scopeInfo) {
+        filters.push(`Scope: ${scopeInfo.scopeName}`)
+      } else if (user?.role === 'CASHIER' && user?.branchId) {
+        filters.push(`Scope: Branch ${user.branchId}`)
+      } else if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+        filters.push(`Scope: Warehouse ${user.warehouseId}`)
+      } else {
+        filters.push(`Scope: ${scopeFilter}`)
+      }
+    }
+    
     if (soldFilter !== 'all') filters.push(`Sold: ${soldFilter}`)
     if (returnedFilter !== 'all') filters.push(`Returned: ${returnedFilter}`)
     return filters
@@ -660,6 +838,22 @@ function InventoryPage() {
   return (
     <RouteGuard allowedRoles={['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER']}>
       <DashboardLayout>
+        {/* Admin Mode Indicator */}
+        {isAdminMode && scopeInfo && (
+          <Box sx={{ 
+            bgcolor: 'warning.light', 
+            color: 'warning.contrastText', 
+            p: 1, 
+            textAlign: 'center',
+            borderBottom: 1,
+            borderColor: 'warning.main'
+          }}>
+            <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+              🔧 ADMIN MODE: Operating as {scopeInfo.scopeType === 'BRANCH' ? 'Cashier' : 'Warehouse Keeper'} for {scopeInfo.scopeName}
+            </Typography>
+          </Box>
+        )}
+        
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
           <Typography variant="h5">Inventory Management</Typography>
           <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
@@ -753,7 +947,8 @@ function InventoryPage() {
                     >
                       <MenuItem value="all">All Stock</MenuItem>
                       <MenuItem value="low">Low Stock</MenuItem>
-                      <MenuItem value="out">Out of Stock</MenuItem>
+                      <MenuItem value="out">Out of Stock (≤0)</MenuItem>
+                      <MenuItem value="negative">Negative Stock (&lt;0)</MenuItem>
                       <MenuItem value="high">Overstocked</MenuItem>
                     </Select>
                   </FormControl>
@@ -767,6 +962,7 @@ function InventoryPage() {
                       value={scopeFilter}
                       label="Scope"
                       onChange={(e) => setScopeFilter(e.target.value)}
+                      disabled={isAdminMode || (user?.role === 'CASHIER') || (user?.role === 'WAREHOUSE_KEEPER')}
                     >
                       <MenuItem value="all">All Scopes</MenuItem>
                       <MenuItem value="BRANCH">Branch</MenuItem>
@@ -921,6 +1117,9 @@ function InventoryPage() {
                       <TableCell align="right">Min Stock</TableCell>
                       <TableCell align="right">Max Stock</TableCell>
                       <TableCell>Scope</TableCell>
+                      <TableCell>Supplier</TableCell>
+                      <TableCell>Purchase Date</TableCell>
+                      <TableCell>Purchase Price</TableCell>
                       <TableCell>Actions</TableCell>
                     </TableRow>
                   </TableHead>
@@ -939,8 +1138,9 @@ function InventoryPage() {
                             label={item.currentStock || 0} 
                             size="small" 
                             color={
-                              item.currentStock === 0 ? 'error' : 
-                              item.currentStock <= item.minStockLevel ? 'warning' : 'success'
+                              item.currentStock < 0 ? 'error' : // Negative stock - critical
+                              item.currentStock === 0 ? 'error' : // Zero stock - critical
+                              item.currentStock <= item.minStockLevel ? 'warning' : 'success' // Low stock - warning, good stock - success
                             }
                             variant="outlined"
                           />
@@ -978,6 +1178,36 @@ function InventoryPage() {
                             color={item.scopeType === 'BRANCH' ? 'primary' : 'secondary'}
                             variant="outlined"
                           />
+                        </TableCell>
+                        <TableCell>
+                          {item.supplierName ? (
+                            <Chip 
+                              label={item.supplierName} 
+                              size="small" 
+                              color="info"
+                              variant="outlined"
+                            />
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">-</Typography>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {item.purchaseDate ? (
+                            <Typography variant="body2">
+                              {new Date(item.purchaseDate).toLocaleDateString()}
+                            </Typography>
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">-</Typography>
+                          )}
+                        </TableCell>
+                        <TableCell align="right">
+                          {item.purchasePrice ? (
+                            <Typography variant="body2" fontWeight="medium">
+                              ${parseFloat(item.purchasePrice).toFixed(2)}
+                            </Typography>
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">-</Typography>
+                          )}
                         </TableCell>
                         <TableCell>
                           <Box sx={{ display: 'flex', gap: 0.5 }}>

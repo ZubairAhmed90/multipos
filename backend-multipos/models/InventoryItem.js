@@ -18,21 +18,30 @@ class InventoryItem {
     this.createdBy = data.created_by;
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
+    
+    // Supplier tracking fields
+    this.supplierId = data.supplier_id;
+    this.supplierName = data.supplier_name;
+    this.purchaseDate = data.purchase_date;
+    this.purchasePrice = data.purchase_price;
   }
 
   // Static method to create a new inventory item
   static async create(itemData) {
     const { 
       sku, name, description, category, unit, costPrice, sellingPrice, 
-      minStockLevel, maxStockLevel, currentStock, scopeType, scopeId, createdBy 
+      minStockLevel, maxStockLevel, currentStock, scopeType, scopeId, createdBy,
+      supplierId, supplierName, purchaseDate, purchasePrice
     } = itemData;
     
     const result = await executeQuery(
       `INSERT INTO inventory_items (sku, name, description, category, unit, cost_price, selling_price, 
-       min_stock_level, max_stock_level, current_stock, scope_type, scope_id, created_by) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       min_stock_level, max_stock_level, current_stock, scope_type, scope_id, created_by,
+       supplier_id, supplier_name, purchase_date, purchase_price) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [sku, name, description, category, unit, costPrice, sellingPrice, 
-       minStockLevel, maxStockLevel, currentStock, scopeType, scopeId, createdBy]
+       minStockLevel, maxStockLevel, currentStock, scopeType, scopeId, createdBy,
+       supplierId || null, supplierName || null, purchaseDate || null, purchasePrice || null]
     );
     
     return await InventoryItem.findById(result.insertId || result.lastID);
@@ -120,21 +129,26 @@ class InventoryItem {
       await executeQuery(
         `UPDATE inventory_items SET sku = ?, name = ?, description = ?, category = ?, unit = ?, 
          cost_price = ?, selling_price = ?, min_stock_level = ?, max_stock_level = ?, 
-         current_stock = ?, scope_type = ?, scope_id = ?, created_by = ? 
+         current_stock = ?, scope_type = ?, scope_id = ?, created_by = ?,
+         supplier_id = ?, supplier_name = ?, purchase_date = ?, purchase_price = ?
          WHERE id = ?`,
         [this.sku, this.name, this.description, this.category, this.unit, 
          this.costPrice, this.sellingPrice, this.minStockLevel, this.maxStockLevel, 
-         this.currentStock, this.scopeType, this.scopeId, this.createdBy, this.id]
+         this.currentStock, this.scopeType, this.scopeId, this.createdBy,
+         this.supplierId || null, this.supplierName || null, this.purchaseDate || null, this.purchasePrice || null,
+         this.id]
       );
     } else {
       // Create new inventory item
       const result = await executeQuery(
         `INSERT INTO inventory_items (sku, name, description, category, unit, cost_price, selling_price, 
-         min_stock_level, max_stock_level, current_stock, scope_type, scope_id, created_by) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         min_stock_level, max_stock_level, current_stock, scope_type, scope_id, created_by,
+         supplier_id, supplier_name, purchase_date, purchase_price) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [this.sku, this.name, this.description, this.category, this.unit, 
          this.costPrice, this.sellingPrice, this.minStockLevel, this.maxStockLevel, 
-         this.currentStock, this.scopeType, this.scopeId, this.createdBy]
+         this.currentStock, this.scopeType, this.scopeId, this.createdBy,
+         this.supplierId || null, this.supplierName || null, this.purchaseDate || null, this.purchasePrice || null]
       );
       this.id = result.insertId || result.lastID;
     }
@@ -256,7 +270,12 @@ class InventoryItem {
     const setClauses = [];
 
     // Fields to exclude from updates (computed fields from JOINs)
-    const excludedFields = ['id', 'branchName', 'warehouseName'];
+    const excludedFields = [
+      'id', 'branchName', 'warehouseName', 
+      'totalPurchased', 'totalSold', 'totalReturned', 'totalAdjusted',
+      'scopeName', 'createdByName', 'updatedByName',
+      'supplierContact', 'supplierPhone', 'supplierEmail'
+    ];
     
     Object.keys(updateData).forEach(key => {
       if (!excludedFields.includes(key)) {
@@ -271,7 +290,11 @@ class InventoryItem {
           'scopeId': 'scope_id',
           'createdBy': 'created_by',
           'createdAt': 'created_at',
-          'updatedAt': 'updated_at'
+          'updatedAt': 'updated_at',
+          'supplierId': 'supplier_id',
+          'supplierName': 'supplier_name',
+          'purchaseDate': 'purchase_date',
+          'purchasePrice': 'purchase_price'
         };
         
         const dbColumn = fieldMapping[key] || key;
@@ -351,7 +374,7 @@ class InventoryItem {
     return this.maxStockLevel && this.currentStock >= this.maxStockLevel;
   }
 
-  // Static method to update stock by ID
+  // Static method to update stock by ID (allows negative quantities)
   static async updateStock(id, quantityChange) {
     const [result] = await pool.execute(
       'UPDATE inventory_items SET current_stock = current_stock + ? WHERE id = ?',
@@ -363,6 +386,28 @@ class InventoryItem {
     }
     
     return await InventoryItem.findById(id);
+  }
+
+  // Static method to update stock by ID with negative quantity validation (for manual adjustments)
+  static async updateStockWithValidation(id, quantityChange, allowNegative = false) {
+    if (!allowNegative) {
+      // Check current stock before updating
+      const [currentStock] = await pool.execute(
+        'SELECT current_stock FROM inventory_items WHERE id = ?',
+        [id]
+      );
+      
+      if (currentStock.length === 0) {
+        throw new Error('Inventory item not found');
+      }
+      
+      const newStock = currentStock[0].current_stock + quantityChange;
+      if (newStock < 0) {
+        throw new Error('Insufficient stock. Cannot go below zero.');
+      }
+    }
+    
+    return await this.updateStock(id, quantityChange);
   }
 }
 

@@ -1,5 +1,4 @@
 'use client'
-
 import { useState, useEffect } from 'react'
 import { useSelector, useDispatch } from 'react-redux'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
@@ -9,6 +8,7 @@ import ConfirmationDialog from '../../../components/crud/ConfirmationDialog'
 import { usePermissions } from '../../../hooks/usePermissions'
 import { fetchReturns, createReturn, updateReturn, deleteReturn } from '../../store/slices/returnsSlice'
 import { fetchWarehouseSettings } from '../../store/slices/warehousesSlice'
+import { fetchBranchSettings } from '../../store/slices/branchesSlice'
 import api from '../../../utils/axios'
 import {
   Box,
@@ -54,6 +54,7 @@ import {
   Clear,
   FilterList,
   Visibility as ViewIcon,
+  Inventory as RestockIcon,
 } from '@mui/icons-material'
 import * as yup from 'yup'
 
@@ -62,12 +63,12 @@ const ReturnsPage = () => {
   const { user } = useSelector((state) => state.auth)
   const { data: returns, loading, error } = useSelector((state) => state.returns)
   const { warehouseSettings } = useSelector((state) => state.warehouses || { warehouseSettings: null })
-  const { hasPermission } = usePermissions()
+  const { branchSettings } = useSelector((state) => state.branches || { branchSettings: null })
   
-  // Check if warehouse keeper can manage returns
+  // Check if user can manage returns based on role and settings
   const canManageReturns = user?.role === 'ADMIN' || 
     (user?.role === 'WAREHOUSE_KEEPER' && warehouseSettings?.allowWarehouseReturns) ||
-    (user?.role === 'CASHIER' && hasPermission('CASHIER_RETURNS'))
+    (user?.role === 'CASHIER' && branchSettings?.allowCashierReturns)
   
   
   const [filters, setFilters] = useState({
@@ -184,6 +185,12 @@ const ReturnsPage = () => {
   const [invoiceSearchLoading, setInvoiceSearchLoading] = useState(false)
   const [invoiceItems, setInvoiceItems] = useState([])
   const [selectedInvoice, setSelectedInvoice] = useState(null)
+  
+  // Restock functionality state
+  const [restockDialog, setRestockDialog] = useState(false)
+  const [selectedItemForRestock, setSelectedItemForRestock] = useState(null)
+  const [restockQuantity, setRestockQuantity] = useState(0)
+  const [restockLoading, setRestockLoading] = useState(false)
 
   // Load returns data on component mount
   useEffect(() => {
@@ -203,6 +210,11 @@ const ReturnsPage = () => {
     // Load warehouse settings for warehouse keepers
     if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
       dispatch(fetchWarehouseSettings(user.warehouseId))
+    }
+    
+    // Load branch settings for cashiers
+    if (user?.role === 'CASHIER' && user?.branchId) {
+      dispatch(fetchBranchSettings(user.branchId))
     }
   }, [dispatch, user])
 
@@ -252,6 +264,58 @@ const ReturnsPage = () => {
         i === index ? { ...item, [field]: value } : item
       )
     }))
+  }
+
+  // Restock functionality
+  const handleRestockItem = (returnItem, item) => {
+    setSelectedItemForRestock({
+      returnId: returnItem.id,
+      itemId: item.id,
+      itemName: item.name || item.productName || item.itemName,
+      sku: item.sku,
+      quantity: item.quantity,
+      remainingQuantity: item.quantity // Assuming all quantity is available for restock initially
+    })
+    setRestockQuantity(0)
+    setRestockDialog(true)
+  }
+
+  const handleRestockConfirm = async () => {
+    if (!selectedItemForRestock || restockQuantity <= 0) {
+      return
+    }
+
+    setRestockLoading(true)
+    try {
+      const response = await api.post(
+        `/returns/${selectedItemForRestock.returnId}/items/${selectedItemForRestock.itemId}/restock`,
+        { qty: restockQuantity }
+      )
+
+      if (response.data.success) {
+        // Refresh the returns data
+        dispatch(fetchReturns())
+        
+        // Close dialog and show success message
+        setRestockDialog(false)
+        setSelectedItemForRestock(null)
+        setRestockQuantity(0)
+        
+        // You could add a success notification here
+        console.log('Restock successful:', response.data.data)
+      }
+    } catch (error) {
+      console.error('Error restocking item:', error)
+      // You could add an error notification here
+    } finally {
+      setRestockLoading(false)
+    }
+  }
+
+  const handleRestockCancel = () => {
+    setRestockDialog(false)
+    setSelectedItemForRestock(null)
+    setRestockQuantity(0)
   }
 
   // Search products function
@@ -468,18 +532,23 @@ const ReturnsPage = () => {
     const params = {};
     if (user?.role === 'WAREHOUSE_KEEPER') {
       params.scopeType = 'WAREHOUSE';
-      params.scopeId = user.warehouseName;
+      params.scopeId = user.warehouseId;
     } else if (user?.role === 'CASHIER') {
       params.scopeType = 'BRANCH';
-      params.scopeId = user.branchName;
+      params.scopeId = user.branchId;
     }
     // Admin doesn't need scope filtering - can see all returns
     
     dispatch(fetchReturns(params))
     
     // Reload warehouse settings for warehouse keepers
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseName) {
-      dispatch(fetchWarehouseSettings(user.warehouseName))
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+      dispatch(fetchWarehouseSettings(user.warehouseId))
+    }
+    
+    // Reload branch settings for cashiers
+    if (user?.role === 'CASHIER' && user?.branchId) {
+      dispatch(fetchBranchSettings(user.branchId))
     }
   }
 
@@ -993,7 +1062,7 @@ const ReturnsPage = () => {
           <DialogContent>
             <Box sx={{ pt: 2 }}>
               <Grid container spacing={2}>
-                <Grid item xs={12} sm={6}>
+                <Grid item xs={12} sm={8}>
                   <TextField
                     fullWidth
                     label="Sale ID / Invoice Number"
@@ -1020,7 +1089,7 @@ const ReturnsPage = () => {
                     required
                   />
                 </Grid>
-                <Grid item xs={12} sm={6}>
+                <Grid item xs={12} sm={4}>
                   <FormControl fullWidth required>
                     <InputLabel>Reason</InputLabel>
                     <Select
@@ -1121,7 +1190,7 @@ const ReturnsPage = () => {
                 <Card key={index} sx={{ mb: 2 }}>
                   <CardContent>
                     <Grid container spacing={2} alignItems="center">
-                      <Grid item xs={12} sm={9}>
+                      <Grid item xs={12} sm={7}>
                         <Autocomplete
                           freeSolo
                           options={productSearchResults[index] || []}
@@ -1176,7 +1245,7 @@ const ReturnsPage = () => {
                           )}
                         />
                       </Grid>
-                      <Grid item xs={12} sm={1.5}>
+                      <Grid item xs={12} sm={2}>
                         <TextField
                           fullWidth
                           label="Quantity"
@@ -1186,7 +1255,7 @@ const ReturnsPage = () => {
                           required
                         />
                       </Grid>
-                      <Grid item xs={12} sm={1}>
+                      <Grid item xs={12} sm={2}>
                         <TextField
                           fullWidth
                           label="Refund Amount"
@@ -1196,7 +1265,7 @@ const ReturnsPage = () => {
                           required
                         />
                       </Grid>
-                      <Grid item xs={12} sm={0.5}>
+                      <Grid item xs={12} sm={1}>
                         <IconButton 
                           onClick={() => removeItem(index)}
                           disabled={returnForm.items.length === 1}
@@ -1386,32 +1455,74 @@ const ReturnsPage = () => {
                               <TableCell align="right">Quantity</TableCell>
                               <TableCell align="right">Unit Price</TableCell>
                               <TableCell align="right">Refund Amount</TableCell>
+                              <TableCell align="center">Actions</TableCell>
                             </TableRow>
                           </TableHead>
                           <TableBody>
                             {returnDetails.items.map((item, index) => (
                               <TableRow key={index}>
                                 <TableCell>
-                                  <Typography variant="body2" fontWeight="medium">
-                                    {item.name || item.productName || item.itemName || 'N/A'}
-                                  </Typography>
-                                  {item.category && (
-                                    <Typography variant="caption" color="text.secondary">
-                                      {item.category}
+                                  <Box>
+                                    <Typography variant="body2" fontWeight="medium">
+                                      {item.name || item.productName || item.itemName || 'N/A'}
                                     </Typography>
-                                  )}
+                                    {item.category && (
+                                      <Typography variant="caption" color="text.secondary">
+                                        {item.category}
+                                      </Typography>
+                                    )}
+                                    {item.barcode && (
+                                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                        Barcode: {item.barcode}
+                                      </Typography>
+                                    )}
+                                  </Box>
                                 </TableCell>
-                                <TableCell>{item.sku || 'N/A'}</TableCell>
-                                <TableCell align="right">
-                                  {parseFloat(item.quantity || 0).toFixed(2)}
+                                <TableCell>
+                                  <Typography variant="body2" fontWeight="medium">
+                                    {item.sku || 'N/A'}
+                                  </Typography>
                                 </TableCell>
                                 <TableCell align="right">
-                                  ${parseFloat(item.unit_price || item.unitPrice || 0).toFixed(2)}
+                                  <Box>
+                                    <Typography variant="body2" fontWeight="medium">
+                                      {parseFloat(item.quantity || 0).toFixed(2)}
+                                    </Typography>
+                                    {item.originalQuantity && item.originalQuantity !== item.quantity && (
+                                      <Typography variant="caption" color="text.secondary">
+                                        (of {parseFloat(item.originalQuantity).toFixed(2)} purchased)
+                                      </Typography>
+                                    )}
+                                  </Box>
+                                </TableCell>
+                                <TableCell align="right">
+                                  <Typography variant="body2" fontWeight="medium">
+                                    ${parseFloat(item.unit_price || item.unitPrice || 0).toFixed(2)}
+                                  </Typography>
                                 </TableCell>
                                 <TableCell align="right">
                                   <Typography variant="body2" fontWeight="medium" color="error.main">
                                     ${parseFloat(item.refund_amount || item.refundAmount || 0).toFixed(2)}
                                   </Typography>
+                                </TableCell>
+                                <TableCell align="center">
+                                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+                                    <Tooltip title="Restock Item">
+                                      <IconButton
+                                        size="small"
+                                        onClick={() => handleRestockItem(returnDetails, item)}
+                                        color="success"
+                                        disabled={restockLoading}
+                                      >
+                                        <RestockIcon />
+                                      </IconButton>
+                                    </Tooltip>
+                                    {item.remainingQuantity !== undefined && (
+                                      <Typography variant="caption" color="text.secondary">
+                                        {parseFloat(item.remainingQuantity).toFixed(2)} remaining
+                                      </Typography>
+                                    )}
+                                  </Box>
                                 </TableCell>
                               </TableRow>
                             ))}
@@ -1436,6 +1547,66 @@ const ReturnsPage = () => {
           <DialogActions sx={{ p: 2 }}>
             <Button onClick={handleCloseViewDetails} variant="outlined">
               Close
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Restock Dialog */}
+        <Dialog 
+          open={restockDialog} 
+          onClose={handleRestockCancel}
+          maxWidth="sm"
+          fullWidth
+        >
+          <DialogTitle>
+            <Typography variant="h6">
+              Restock Item
+            </Typography>
+          </DialogTitle>
+          <DialogContent dividers>
+            {selectedItemForRestock && (
+              <Box>
+                <Typography variant="body2" color="text.secondary" gutterBottom>
+                  Item Details:
+                </Typography>
+                <Typography variant="body1" fontWeight="medium">
+                  {selectedItemForRestock.itemName}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  SKU: {selectedItemForRestock.sku || 'N/A'}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Available Quantity: {selectedItemForRestock.remainingQuantity}
+                </Typography>
+                
+                <Box sx={{ mt: 3 }}>
+                  <TextField
+                    fullWidth
+                    label="Restock Quantity"
+                    type="number"
+                    value={restockQuantity}
+                    onChange={(e) => setRestockQuantity(parseInt(e.target.value) || 0)}
+                    inputProps={{ 
+                      min: 1, 
+                      max: selectedItemForRestock.remainingQuantity 
+                    }}
+                    helperText={`Enter quantity to restock (max: ${selectedItemForRestock.remainingQuantity})`}
+                  />
+                </Box>
+              </Box>
+            )}
+          </DialogContent>
+          <DialogActions sx={{ p: 2 }}>
+            <Button onClick={handleRestockCancel} variant="outlined">
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleRestockConfirm} 
+              variant="contained" 
+              color="success"
+              disabled={restockLoading || restockQuantity <= 0 || restockQuantity > selectedItemForRestock?.remainingQuantity}
+            >
+              {restockLoading ? 'Restocking...' : 'Restock Item'}
             </Button>
           </DialogActions>
         </Dialog>

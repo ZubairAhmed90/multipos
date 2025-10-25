@@ -30,6 +30,9 @@ import {
   InputAdornment,
   IconButton,
 } from '@mui/material'
+import { DatePicker } from '@mui/x-date-pickers/DatePicker'
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns'
 import { Visibility, VisibilityOff } from '@mui/icons-material'
 
 const EntityFormDialog = ({
@@ -303,6 +306,38 @@ const EntityFormDialog = ({
       case 'custom':
         // For custom field components
         return field.render ? field.render({ register, errors, setValue, watch }) : null
+
+      case 'date':
+        return (
+          <LocalizationProvider key={name} dateAdapter={AdapterDateFns}>
+            <DatePicker
+              label={label}
+              value={watch(name) ? new Date(watch(name)) : null}
+              onChange={(newValue) => {
+                setValue(name, newValue ? newValue.toISOString().split('T')[0] : '')
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  fullWidth
+                  margin="normal"
+                  error={!!errors[name]}
+                  helperText={errors[name]?.message}
+                  {...fieldProps}
+                />
+              )}
+              slotProps={{
+                textField: {
+                  fullWidth: true,
+                  margin: "normal",
+                  error: !!errors[name],
+                  helperText: errors[name]?.message,
+                  ...fieldProps
+                }
+              }}
+            />
+          </LocalizationProvider>
+        )
 
       default:
         return (

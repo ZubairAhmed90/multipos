@@ -107,9 +107,10 @@ const companiesSlice = createSlice({
       })
       .addCase(updateCompany.fulfilled, (state, action) => {
         state.loading = false
-        const index = state.data.findIndex(company => company._id === action.payload._id)
+        const updatedCompany = action.payload.data || action.payload
+        const index = state.data.findIndex(company => company.id === updatedCompany.id)
         if (index !== -1) {
-          state.data[index] = action.payload
+          state.data[index] = updatedCompany
         }
         state.error = null
       })
@@ -123,7 +124,8 @@ const companiesSlice = createSlice({
       })
       .addCase(deleteCompany.fulfilled, (state, action) => {
         state.loading = false
-        state.data = state.data.filter(company => company._id !== action.payload._id)
+        const deletedCompany = action.payload.data || action.payload
+        state.data = state.data.filter(company => company.id !== deletedCompany.id)
         state.error = null
       })
       .addCase(deleteCompany.rejected, (state, action) => {

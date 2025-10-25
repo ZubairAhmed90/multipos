@@ -1,11 +1,9 @@
 'use client'
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-
 import { useDispatch, useSelector } from 'react-redux'
-
 import api from '../../../../utils/axios'
-
+import { useRouter } from 'next/navigation'
 import {
   Box,
   Paper,
@@ -74,14 +72,15 @@ import {
   Error as ErrorIcon,
   AccountBalance as OutstandingIcon,
   CheckBox as CheckBoxIcon,
-  CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon
+  CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon,
+  Inventory as InventoryIcon
 } from '@mui/icons-material'
 import PrintDialog from '../../../../components/print/PrintDialog'
 import DashboardLayout from '../../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../../components/auth/RouteGuard'
 import PhysicalScanner from '../../../../components/pos/PhysicalScanner'
-import { fetchInventory } from '../../../../app/store/slices/inventorySlice'
-import { createSale, fetchSales } from '../../../../app/store/slices/salesSlice'
+import { fetchInventory } from '../../../store/slices/inventorySlice'
+import { createSale, fetchSales } from '../../../store/slices/salesSlice'
 
 // Tab management utilities
 const generateTabId = () => `tab_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -90,17 +89,74 @@ const generateTabName = (tabNumber) => `Sale ${tabNumber}`
 function POSTerminal() {
   const theme = useTheme()
   const dispatch = useDispatch()
-  const { user } = useSelector((state) => state.auth)
+  const router = useRouter()
+  
+  const { user: originalUser } = useSelector((state) => state.auth)
+  
+  // URL-based role switching (same as other pages)
+  const [urlParams, setUrlParams] = useState({})
+  const [isAdminMode, setIsAdminMode] = useState(false)
+  
+  // Parse URL parameters for role simulation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const role = params.get('role')
+      const scope = params.get('scope')
+      const id = params.get('id')
+      
+      if (role && scope && id && originalUser?.role === 'ADMIN') {
+        setUrlParams({ role, scope, id })
+        setIsAdminMode(true)
+      } else {
+        setUrlParams({})
+        setIsAdminMode(false)
+      }
+    }
+  }, [originalUser])
+  
+  // Get effective user based on URL parameters
+  const getEffectiveUser = useCallback((originalUser) => {
+    if (!isAdminMode || !urlParams.role) {
+      return originalUser
+    }
+    
+    return {
+      ...originalUser,
+      role: urlParams.role.toUpperCase(),
+      branchId: urlParams.scope === 'branch' ? parseInt(urlParams.id) : null,
+      warehouseId: urlParams.scope === 'warehouse' ? parseInt(urlParams.id) : null,
+      branchName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : null,
+      warehouseName: urlParams.scope === 'warehouse' ? `Warehouse ${urlParams.id}` : null,
+      isAdminMode: true,
+      originalRole: originalUser.role,
+      originalUser: originalUser
+    }
+  }, [isAdminMode, urlParams])
+  
+  // Get scope info
+  const getScopeInfo = useCallback(() => {
+    if (!isAdminMode || !urlParams.role) {
+      return null
+    }
+    
+    return {
+      scopeType: urlParams.scope === 'branch' ? 'BRANCH' : 'WAREHOUSE',
+      scopeId: urlParams.id,
+      scopeName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : `Warehouse ${urlParams.id}`
+    }
+  }, [isAdminMode, urlParams])
+  
+  const user = useMemo(() => getEffectiveUser(originalUser), [getEffectiveUser, originalUser])
+  const scopeInfo = useMemo(() => getScopeInfo(), [getScopeInfo])
+  
   const { data: inventoryItems, loading: inventoryLoading, error: inventoryError } = useSelector((state) => state.inventory)
   const salesData = useSelector((state) => state.sales.data) || []
-  // Debug: component render/mount info will be logged after tab state is initialized
   
   // Tab management state
   const [tabs, setTabs] = useState([])
   const [activeTabId, setActiveTabId] = useState(null)
   const [tabCounter, setTabCounter] = useState(1)
-  // Debug: component render/mount info (safe — tabs and activeTabId are initialized)
-  console.log('[POS] Render POSTerminal', { tabsCount: tabs?.length, activeTabId })
   
 
   // Current tab state
@@ -113,6 +169,7 @@ function POSTerminal() {
   const [paymentAmount, setPaymentAmount] = useState('')
   const [creditAmount, setCreditAmount] = useState('')
   const [isPartialPayment, setIsPartialPayment] = useState(false)
+  const [isFullyCredit, setIsFullyCredit] = useState(false)
   const [selectedSalesperson, setSelectedSalesperson] = useState(null)
   const [salespeople, setSalespeople] = useState([])
   const [customerSearchResults, setCustomerSearchResults] = useState([])
@@ -122,11 +179,16 @@ function POSTerminal() {
   const [showPhysicalScanner, setShowPhysicalScanner] = useState(false)
   const [taxRate, setTaxRate] = useState(0) // Tax rate as percentage (0-100)
   const [totalDiscount, setTotalDiscount] = useState(0) // Total discount amount
+  const [notes, setNotes] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [showSettings, setShowSettings] = useState(false)
   const [showPrinterDialog, setShowPrinterDialog] = useState(false)
   const [showPrintDialog, setShowPrintDialog] = useState(false)
+  
+  // Loading states for preventing duplicate submissions
+  const [isProcessingSale, setIsProcessingSale] = useState(false)
+  const [isProcessingSaleOnly, setIsProcessingSaleOnly] = useState(false)
   const [printData, setPrintData] = useState(null)
   const [selectedLayout, setSelectedLayout] = useState('thermal')
   const [availablePrinters, setAvailablePrinters] = useState([])
@@ -170,32 +232,24 @@ function POSTerminal() {
   }, [activeTabId])
   // Add product to cart - defined after dependencies
   const addToCart = useCallback((product) => {
-    console.log('[POS] addToCart called', { product })
     const existingItem = currentCart.find(item => item.id === product.id)
     let newCart
     if (existingItem) {
       const newQuantity = existingItem.quantity + 1
-      if (newQuantity > product.stock) {
-        alert(`Insufficient stock! Only ${product.stock} ${product.unit || 'units'} available.`)
-        return
-      }
+      // Allow negative quantities without warnings
       newCart = currentCart.map(item => 
         item.id === product.id 
           ? { ...item, quantity: newQuantity }
           : item
       )
     } else {
-      if (product.stock <= 0) {
-        alert(`Product out of stock!`)
-        return
-      }
+      // Allow adding products with zero or negative stock without warnings
       newCart = [...currentCart, { ...product, quantity: 1, discount: 0, customPrice: product.sellingPrice }]
     }
     updateCurrentTab({ cart: newCart })
   }, [currentCart, updateCurrentTab])
   // Handle barcode scanning - defined early to avoid temporal dead zone
   const handleBarcodeScan = useCallback((barcode) => {
-    console.log('[POS] handleBarcodeScan', { barcode })
     // Search in real inventory data with multiple field matching
     const product = inventoryItems.find(p => {
       // Check multiple fields for barcode match
@@ -292,9 +346,7 @@ function POSTerminal() {
 
     const handlePhysicalScanner = (event) => {
 
-      // Debug physical scanner key events
-
-      console.log('[POS] physical scanner keydown', { key: event.key, barcodeInput, lastScanTime: lastScanTimeRef.current })
+      // Handle physical scanner key events
 
       // Check if it's rapid keystrokes (typical of scanner)
 
@@ -336,7 +388,7 @@ function POSTerminal() {
 
         event.preventDefault()
 
-        console.log('[POS] physical scanner Enter detected, processing barcode', { barcode: barcodeInput.trim(), timeDiff })
+        // Process barcode from physical scanner
 
         
         
@@ -430,8 +482,6 @@ function POSTerminal() {
 
   const loadAvailablePrinters = useCallback(async () => {
 
-    console.log('[POS] loadAvailablePrinters')
-
     try {
 
       // Use Web API to get available printers
@@ -442,7 +492,7 @@ function POSTerminal() {
 
         const ports = await navigator.serial.getPorts()
 
-        console.log('[POS] Found serial ports:', ports.map(p => p.getInfo()))
+        // Serial ports loaded
 
         setAvailablePrinters(ports.map(port => {
 
@@ -533,22 +583,19 @@ function POSTerminal() {
       
       
       if (user.role === 'CASHIER') {
-
-        // Cashiers can see ALL branch inventory (not just their own branch)
-
+        // Cashiers can see inventory for their specific branch
         params.scopeType = 'BRANCH'
-
-        // Don't set scopeId to allow all branches
-
-      } else if (user.role === 'WAREHOUSE_KEEPER' && user.warehouseName) {
-
+        if (user.branchId) {
+          params.scopeId = user.branchId
+        }
+      } else if (user.role === 'WAREHOUSE_KEEPER' && user.warehouseId) {
+        // Warehouse keepers can see inventory for their specific warehouse
         params.scopeType = 'WAREHOUSE'
-
-        params.scopeId = user.warehouseName
-
+        params.scopeId = user.warehouseId
+      } else if (user.role === 'ADMIN' && !isAdminMode) {
+        // Admin without role simulation can see all inventory
+        // No scope restrictions
       }
-
-      // Admin can see all inventory (no scope restrictions)
 
       
       
@@ -568,7 +615,7 @@ function POSTerminal() {
 
     loadAvailablePrinters()
 
-  }, [dispatch, user, loadAvailablePrinters])
+  }, [dispatch, user, loadAvailablePrinters, isAdminMode])
 
 
 
@@ -618,7 +665,7 @@ function POSTerminal() {
           created_at: new Date().toISOString()
         }))
 
-        console.log('[POS] Found outstanding payments:', outstandingPayments)
+        // Outstanding payments loaded
         setOutstandingPayments(outstandingPayments)
         
         // Auto-select all outstanding payments by default
@@ -1348,13 +1395,7 @@ Thank you for your business!
 
       const item = currentCart.find(item => item.id === productId)
 
-      if (item && newQuantity > item.stock) {
-
-        alert(`Insufficient stock! Only ${item.stock} ${item.unit || 'units'} available.`)
-
-        return
-
-      }
+      // Allow quantities exceeding stock without warnings
 
       const newCart = currentCart.map(item => 
 
@@ -1495,20 +1536,14 @@ Thank you for your business!
   
   
   const total = useMemo(() => {
-    // Only include outstanding total if there are items in cart
-    // Outstanding-only settlements should not affect the cart total
+    // Calculate cart total
     const cartTotal = subtotal + tax - totalDiscount
-    const finalTotal = currentCart.length > 0 ? cartTotal + outstandingTotal : cartTotal
     
-    console.log('[POS] Total calculation:', {
-      subtotal,
-      tax,
-      totalDiscount,
-      outstandingTotal,
-      currentCartLength: currentCart.length,
-      cartTotal,
-      finalTotal
-    })
+    // For outstanding-only settlements (no items in cart), use outstanding total
+    // For regular sales with items, add outstanding total to cart total
+    const finalTotal = currentCart.length > 0 ? cartTotal + outstandingTotal : outstandingTotal
+    
+    // Calculate final total
     
     return finalTotal
   }, [subtotal, tax, outstandingTotal, totalDiscount, currentCart.length])
@@ -1632,6 +1667,7 @@ Thank you for your business!
     setPaymentAmount('')
     setCreditAmount('')
     setIsPartialPayment(false)
+    setIsFullyCredit(false)
     setPaymentMethod('CASH')
     
     // Clear outstanding payments
@@ -1666,6 +1702,9 @@ Thank you for your business!
     // Clear search query
     setSearchQuery('')
     setSelectedCategory('all')
+    
+    // Clear notes
+    setNotes('')
     
     console.log('[POS] All POS terminal state cleared successfully')
   }
@@ -1702,9 +1741,10 @@ Thank you for your business!
 
       
       
-      if (!currentCart || currentCart.length === 0) {
+      // Allow empty cart only if there are outstanding payments to settle
+      if (!currentCart || (currentCart.length === 0 && selectedOutstandingPayments.length === 0)) {
 
-        alert('❌ Cart is empty. Please add items before processing payment.')
+        alert('❌ Cart is empty and no outstanding payments selected. Please add items or select outstanding payments.')
 
         return
 
@@ -1723,7 +1763,7 @@ Thank you for your business!
       
       
       // Validate outstanding payments selection
-      if (selectedOutstandingPayments.length > 0 && currentCart.length > 0) {
+      if (selectedOutstandingPayments.length > 0) {
         console.log('[POS] Outstanding payments validation:', {
           selectedCount: selectedOutstandingPayments.length,
           cartLength: currentCart.length,
@@ -1771,11 +1811,11 @@ Thank you for your business!
       console.log('[POS] Total amount:', total);
       console.log('[POS] Is partial payment:', isPartialPayment);
 
-      const finalPaymentAmount = paymentMethod === 'FULLY_CREDIT' ? 0 : (isPartialPayment ? parseFloat(paymentAmount) || 0 : total)
+      const finalPaymentAmount = isFullyCredit ? 0 : (isPartialPayment ? parseFloat(paymentAmount) || 0 : total)
 
-      const finalCreditAmount = paymentMethod === 'FULLY_CREDIT' ? total : (isPartialPayment ? (total - (parseFloat(paymentAmount) || 0)) : 0)
+      const finalCreditAmount = isFullyCredit ? total : (isPartialPayment ? (total - (parseFloat(paymentAmount) || 0)) : 0)
 
-      const finalPaymentStatus = (paymentMethod === 'FULLY_CREDIT' || finalCreditAmount > 0) ? 'PENDING' : 'COMPLETED'
+      const finalPaymentStatus = (isFullyCredit || finalCreditAmount > 0) ? 'PENDING' : 'COMPLETED'
 
       console.log('[POS] Final payment amount:', finalPaymentAmount);
       console.log('[POS] Final credit amount:', finalCreditAmount);
@@ -1814,24 +1854,44 @@ Thank you for your business!
       }
 
       
+    
+      // Prepare sale data      
+      // Handle admin not in simulation mode
+      if (user.role === 'ADMIN' && !isAdminMode) {
+        alert('Please select a branch or warehouse from the Admin Dashboard to simulate a role before making sales.')
+        return
+      }
       
-      // Prepare sale data
-
+      // Validate customer info for partial payment or fully credit
+      if ((isPartialPayment || isFullyCredit) && (!customerName || !customerPhone)) {
+        alert('❌ Customer name and phone number are required for partial payments and credit sales.')
+        return
+      }
+      
+      // Validate customer info for partial payment or fully credit
+      if ((isPartialPayment || isFullyCredit) && (!customerName || !customerPhone)) {
+        alert('❌ Customer name and phone number are required for partial payments and credit sales.')
+        return
+      }
+      
+      console.log('[POS] Sale data scope info:', {
+        scopeType: scopeInfo?.scopeType || (user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE'),
+        scopeId: scopeInfo?.scopeId || (user.role === 'CASHIER' ? String(user.branchId) : String(user.warehouseId)),
+        userRole: user.role,
+        userBranchId: user.branchId,
+        userWarehouseId: user.warehouseId,
+        scopeInfo: scopeInfo
+      })
+      
       const saleData = {
-
-        scopeType: user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE',
-
-        scopeId: user.role === 'CASHIER' ? (user.branchName || 'Default Branch') : (user.warehouseName || 'Default Warehouse'),
-
+        scopeType: scopeInfo?.scopeType || (user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE'),
+        scopeId: scopeInfo?.scopeId || (user.role === 'CASHIER' ? String(user.branchId) : String(user.warehouseId)),
         subtotal: subtotal,
-
         tax: tax,
-
         discount: totalDiscount,
-
         total: total,
-
-        paymentMethod: isPartialPayment ? 'PARTIAL_PAYMENT' : paymentMethod.toUpperCase(),
+        paymentMethod: isFullyCredit ? 'FULLY_CREDIT' : paymentMethod.toUpperCase(), // Keep actual payment method (CASH, BANK_TRANSFER, etc.)
+        paymentType: isPartialPayment ? 'PARTIAL_PAYMENT' : (isFullyCredit ? 'FULLY_CREDIT' : 'FULL_PAYMENT'), // Add payment type
         paymentAmount: finalPaymentAmount,
         creditAmount: finalCreditAmount,
 
@@ -2062,9 +2122,28 @@ Thank you for your business!
 
   // Sale only function - creates sale without printing
   const handleSaleOnly = async () => {
+    // Prevent duplicate submissions
+    if (isProcessingSaleOnly) {
+      console.log('[POS] Sale only already in progress, ignoring duplicate click')
+      return
+    }
+    
+    setIsProcessingSaleOnly(true)
     console.log('[POS] handleSaleOnly start', { currentCartLength: currentCart.length, total })
 
     try {
+      // Handle admin not in simulation mode
+      if (user.role === 'ADMIN' && !isAdminMode) {
+        alert('Please select a branch or warehouse from the Admin Dashboard to simulate a role before making sales.')
+        return
+      }
+      
+      // Validate customer info for partial payment or fully credit
+      if ((isPartialPayment || isFullyCredit) && (!customerName || !customerPhone)) {
+        alert('❌ Customer name and phone number are required for partial payments and credit sales.')
+        return
+      }
+      
       // First validate required data
       if (!user) {
         alert('❌ User not authenticated. Please login again.')
@@ -2167,8 +2246,20 @@ Thank you for your business!
         return
       }
 
+      // Handle admin not in simulation mode
+      if (user.role === 'ADMIN' && !isAdminMode) {
+        alert('Please select a branch or warehouse from the Admin Dashboard to simulate a role before making sales.')
+        return
+      }
+      
+      // Validate customer info for partial payment or fully credit
+      if ((isPartialPayment || isFullyCredit) && (!customerName || !customerPhone)) {
+        alert('❌ Customer name and phone number are required for partial payments and credit sales.')
+        return
+      }
+
       // Validate outstanding payments selection
-      if (selectedOutstandingPayments.length > 0 && currentCart.length > 0) {
+      if (selectedOutstandingPayments.length > 0) {
         console.log('[POS] Outstanding payments validation:', {
           selectedCount: selectedOutstandingPayments.length,
           cartLength: currentCart.length,
@@ -2199,9 +2290,9 @@ Thank you for your business!
       console.log('[POS] Total amount:', total);
       console.log('[POS] Is partial payment:', isPartialPayment);
 
-      const finalPaymentAmount = paymentMethod === 'FULLY_CREDIT' ? 0 : (isPartialPayment ? parseFloat(paymentAmount) || 0 : total)
-      const finalCreditAmount = paymentMethod === 'FULLY_CREDIT' ? total : (isPartialPayment ? (total - (parseFloat(paymentAmount) || 0)) : 0)
-      const finalPaymentStatus = (paymentMethod === 'FULLY_CREDIT' || finalCreditAmount > 0) ? 'PENDING' : 'COMPLETED'
+      const finalPaymentAmount = isFullyCredit ? 0 : (isPartialPayment ? parseFloat(paymentAmount) || 0 : total)
+      const finalCreditAmount = isFullyCredit ? total : (isPartialPayment ? (total - (parseFloat(paymentAmount) || 0)) : 0)
+      const finalPaymentStatus = (isFullyCredit || finalCreditAmount > 0) ? 'PENDING' : 'COMPLETED'
 
       console.log('[POS] Final payment amount:', finalPaymentAmount);
       console.log('[POS] Final credit amount:', finalCreditAmount);
@@ -2235,6 +2326,15 @@ Thank you for your business!
         }
       }
 
+      console.log('[POS] Sale data scope info (handleSaleOnly):', {
+        scopeType: scopeInfo?.scopeType || (user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE'),
+        scopeId: scopeInfo?.scopeId || (user.role === 'CASHIER' ? String(user.branchId) : String(user.warehouseId)),
+        userRole: user.role,
+        userBranchId: user.branchId,
+        userWarehouseId: user.warehouseId,
+        scopeInfo: scopeInfo
+      })
+      
       // Create sale without printing
       const saleData = {
         items: currentCart.map(item => ({
@@ -2243,13 +2343,14 @@ Thank you for your business!
           unitPrice: parseFloat(item.customPrice !== null && item.customPrice !== undefined ? item.customPrice : item.price || 0),          discount: parseFloat(item.discount || 0),
           total: (parseFloat(item.customPrice !== null && item.customPrice !== undefined ? item.customPrice : item.price || 0) * parseFloat(item.quantity)) - parseFloat(item.discount || 0)
         })),
-        scopeType: user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE',
-        scopeId: user.role === 'CASHIER' ? (user.branchName || 'Default Branch') : (user.warehouseName || 'Default Warehouse'),
+        scopeType: scopeInfo?.scopeType || (user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE'),
+        scopeId: scopeInfo?.scopeId || (user.role === 'CASHIER' ? String(user.branchId) : String(user.warehouseId)),
         subtotal: parseFloat(subtotal),
         tax: parseFloat(tax),
         discount: parseFloat(totalDiscount),
         total: parseFloat(total),
-        paymentMethod: isPartialPayment ? 'PARTIAL_PAYMENT' : (paymentMethod || 'CASH'),
+        paymentMethod: isFullyCredit ? 'FULLY_CREDIT' : (paymentMethod || 'CASH'), // Keep actual payment method
+        paymentType: isPartialPayment ? 'PARTIAL_PAYMENT' : (isFullyCredit ? 'FULLY_CREDIT' : 'FULL_PAYMENT'), // Add payment type
         paymentStatus: finalPaymentStatus,
         paymentAmount: finalPaymentAmount,
         creditAmount: finalCreditAmount,
@@ -2257,12 +2358,10 @@ Thank you for your business!
           name: customerName || 'Walk-in Customer',
           phone: customerPhone || ''
         },
-        notes: 'Sale completed without printing'
+        notes: notes || 'Sale completed without printing'
       }
 
-      console.log('[POS] handleSaleOnly saleData:', saleData)
-      console.log('[POS] User object:', user)
-      console.log('[POS] ScopeId type:', typeof saleData.scopeId, 'Value:', saleData.scopeId)
+      console.log('[POS] Creating sale with scope:', saleData.scopeType, saleData.scopeId)
       const result = await dispatch(createSale(saleData))
       
       if (createSale.fulfilled.match(result)) {
@@ -2340,7 +2439,8 @@ Thank you for your business!
             receiptNumber: sale.invoice_no || `POS-${Date.now()}`,
             branchName: user?.branchName || 'Main Branch',
             cashierName: user?.name || user?.username || 'Cashier',
-            paymentMethod: isPartialPayment ? 'PARTIAL_PAYMENT' : (paymentMethod || 'CASH'),
+            paymentMethod: isFullyCredit ? 'FULLY_CREDIT' : (paymentMethod || 'CASH'), // Keep actual payment method
+            paymentType: isPartialPayment ? 'PARTIAL_PAYMENT' : (isFullyCredit ? 'FULLY_CREDIT' : 'FULL_PAYMENT'), // Add payment type
             printerType: 'thermal' // Force thermal printer
           }
 
@@ -2404,6 +2504,238 @@ Thank you for your business!
     }
   }
 
+  // Sale without print function - creates sale but skips printing
+  const handleSaleWithoutPrint = async () => {
+    // Prevent duplicate submissions
+    if (isProcessingSale) {
+      console.log('[POS] Sale without print already in progress, ignoring duplicate click')
+      return
+    }
+    
+    setIsProcessingSale(true)
+    console.log('[POS] handleSaleWithoutPrint start', { currentCartLength: currentCart.length, total })
+
+    try {
+      // Handle admin not in simulation mode
+      if (user.role === 'ADMIN' && !isAdminMode) {
+        alert('Please select a branch or warehouse from the Admin Dashboard to simulate a role before making sales.')
+        return
+      }
+      
+      // Validate customer info for partial payment or fully credit
+      if ((isPartialPayment || isFullyCredit) && (!customerName || !customerPhone)) {
+        alert('❌ Customer name and phone number are required for partial payments and credit sales.')
+        return
+      }
+      
+      // First validate required data
+      if (!user) {
+        alert('❌ User not authenticated. Please login again.')
+        return
+      }
+      
+      if (!currentCart || currentCart.length === 0) {
+        // Check if customer is here only to clear outstanding payments
+        if (selectedOutstandingPayments.length > 0) {
+          console.log('[POS] Customer clearing outstanding payments only - no items in cart')
+          
+          const confirmOutstandingOnly = confirm(
+            `💰 Outstanding Payment Settlement (No Print)\n\n` +
+            `Customer: ${customerName || 'Unknown'}\n` +
+            `Phone: ${customerPhone || 'N/A'}\n` +
+            `Outstanding Amount: ${outstandingTotal.toFixed(2)}\n\n` +
+            `This will create a settlement transaction and mark all selected outstanding payments as COMPLETED.\n\n` +
+            `Do you want to proceed with the settlement?`
+          )
+          
+          if (!confirmOutstandingOnly) {
+            console.log('[POS] User cancelled outstanding-only settlement')
+            return
+          }
+          
+          console.log('[POS] Proceeding with outstanding-only settlement (no print)')
+          
+          // Process outstanding payments directly without creating a sale
+          try {
+            console.log('[POS] Processing outstanding payments only:', selectedOutstandingPayments)
+            
+            // Use the clear-outstanding API for each selected customer
+            for (const paymentId of selectedOutstandingPayments) {
+              const payment = outstandingPayments.find(p => p.id === paymentId)
+              if (payment) {
+                console.log('[POS] Clearing outstanding payment for customer:', payment.customer_name, payment.customer_phone)
+                
+                const clearResponse = await api.post('/sales/clear-outstanding', {
+                  customerName: payment.customer_name,
+                  phone: payment.customer_phone,
+                  paymentAmount: payment.outstandingAmount,
+                  paymentMethod: paymentMethod.toUpperCase()
+                })
+                
+                if (clearResponse.data.success) {
+                  console.log('[POS] Successfully cleared outstanding payment:', clearResponse.data.data)
+                } else {
+                  console.error('[POS] Failed to clear outstanding payment:', clearResponse.data.message)
+                  alert(`❌ Failed to clear outstanding payment for ${payment.customer_name}. Please check manually.`)
+                  return
+                }
+              }
+            }
+            
+            // Show success message
+            alert(`✅ Outstanding Payments Settled Successfully!\n\n` +
+                  `Customer: ${customerName || 'Unknown'}\n` +
+                  `Settled Amount: ${outstandingTotal.toFixed(2)}\n` +
+                  `Payment Method: ${paymentMethod}\n\n` +
+                  `All selected outstanding payments have been marked as COMPLETED.`)
+            
+            // Clear all POS terminal state after successful settlement
+            clearAllPOSState()
+            
+            // Refresh outstanding payments data to ensure clean state
+            setTimeout(() => {
+              refreshOutstandingPayments()
+            }, 2000)
+            
+            return // Exit early since we handled outstanding-only settlement
+            
+          } catch (error) {
+            console.error('[POS] Error processing outstanding-only settlement:', error)
+            alert(`❌ Error processing outstanding payment settlement: ${error.message}`)
+            return
+          }
+        } else {
+          alert('❌ Cart is empty. Please add items before processing sale.')
+          return
+        }
+      }
+
+      if (total <= 0) {
+        alert('❌ Total amount must be greater than 0.')
+        return
+      }
+
+      // Validate outstanding payments selection
+      if (selectedOutstandingPayments.length > 0) {
+        const confirmOutstanding = confirm(
+          `⚠️ You have selected ${selectedOutstandingPayments.length} outstanding payment(s) totaling ${outstandingTotal.toFixed(2)} to settle.\n\n` +
+          `This will mark the selected outstanding payments as COMPLETED.\n\n` +
+          `Do you want to proceed with settling these outstanding payments?`
+        )
+        
+        if (!confirmOutstanding) {
+          console.log('[POS] User cancelled outstanding payment processing')
+          return
+        }
+      }
+
+      // Calculate payment amounts
+      const finalPaymentAmount = isFullyCredit ? 0 : (isPartialPayment ? parseFloat(paymentAmount) || 0 : total)
+      const finalCreditAmount = isFullyCredit ? total : (isPartialPayment ? (total - (parseFloat(paymentAmount) || 0)) : 0)
+      const finalPaymentStatus = (isFullyCredit || finalCreditAmount > 0) ? 'PENDING' : 'COMPLETED'
+
+      // Enhanced partial payment validation
+      if (isPartialPayment && paymentMethod !== 'FULLY_CREDIT') {
+        if (finalPaymentAmount <= 0) {
+          alert('❌ Payment amount must be greater than 0 for partial payments.')
+          return
+        }
+        if (finalPaymentAmount >= total) {
+          alert('❌ Payment amount must be less than total for partial payments.')
+          return
+        }
+      }
+
+      // Create sale data
+      const saleData = {
+        items: currentCart.map(item => ({
+          inventoryItemId: item.id,
+          name: item.name,
+          quantity: parseFloat(item.quantity),
+          unitPrice: parseFloat(item.customPrice !== null && item.customPrice !== undefined ? item.customPrice : item.price || 0),
+          discount: parseFloat(item.discount || 0),
+          total: (parseFloat(item.customPrice !== null && item.customPrice !== undefined ? item.customPrice : item.price || 0) * parseFloat(item.quantity)) - parseFloat(item.discount || 0)
+        })),
+        scopeType: scopeInfo?.scopeType || (user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE'),
+        scopeId: scopeInfo?.scopeId || (user.role === 'CASHIER' ? String(user.branchId) : String(user.warehouseId)),
+        subtotal: parseFloat(subtotal),
+        tax: parseFloat(tax),
+        discount: parseFloat(totalDiscount),
+        total: parseFloat(total),
+        paymentMethod: isFullyCredit ? 'FULLY_CREDIT' : (paymentMethod || 'CASH'),
+        paymentType: isPartialPayment ? 'PARTIAL_PAYMENT' : (isFullyCredit ? 'FULLY_CREDIT' : 'FULL_PAYMENT'),
+        paymentStatus: finalPaymentStatus,
+        paymentAmount: finalPaymentAmount,
+        creditAmount: finalCreditAmount,
+        customerInfo: {
+          name: customerName || 'Walk-in Customer',
+          phone: customerPhone || ''
+        },
+        notes: notes || 'Sale completed without printing'
+      }
+
+      console.log('[POS] handleSaleWithoutPrint saleData:', saleData)
+      const result = await dispatch(createSale(saleData))
+      
+      if (createSale.fulfilled.match(result)) {
+        const sale = result.payload.data || result.payload
+        
+        // Process outstanding payments if any are selected
+        if (selectedOutstandingPayments.length > 0) {
+          try {
+            for (const paymentId of selectedOutstandingPayments) {
+              const payment = outstandingPayments.find(p => p.id === paymentId)
+              if (payment) {
+                const clearResponse = await api.post('/sales/clear-outstanding', {
+                  customerName: payment.customer_name,
+                  phone: payment.customer_phone,
+                  paymentAmount: payment.outstandingAmount,
+                  paymentMethod: paymentMethod.toUpperCase()
+                })
+                
+                if (!clearResponse.data.success) {
+                  console.error('[POS] Failed to clear outstanding payment:', clearResponse.data.message)
+                  alert(`❌ Failed to clear outstanding payment for ${payment.customer_name}. Please check manually.`)
+                  return
+                }
+              }
+            }
+          } catch (error) {
+            console.error('[POS] Error processing outstanding payments:', error)
+            alert(`❌ Error processing outstanding payments: ${error.message}`)
+            return
+          }
+        }
+        
+        // Show success message (no printing)
+        alert(`✅ Sale completed successfully!\n\n` +
+              `Invoice: ${sale.invoice_no}\n` +
+              `Total: ${total.toFixed(2)}\n` +
+              `Payment: ${paymentMethod.toUpperCase()}\n` +
+              `Customer: ${customerName || 'Walk-in Customer'}\n` +
+              `Phone: ${customerPhone || 'N/A'}\n\n` +
+              `Receipt was NOT printed.`)
+        
+        // Clear all POS terminal state after successful sale
+        clearAllPOSState()
+        
+        // Refresh outstanding payments data to ensure clean state
+        setTimeout(() => {
+          refreshOutstandingPayments()
+        }, 2000)
+      } else if (createSale.rejected.match(result)) {
+        const error = result.payload || result.error
+        alert(`❌ Sale failed: ${error.message || 'Unknown error'}`)
+      }
+    } catch (error) {
+      console.error('[POS] handleSaleWithoutPrint error:', error)
+      alert(`❌ Sale failed: ${error.message || 'Unknown error'}`)
+    } finally {
+      // Always reset loading state
+      setIsProcessingSale(false)
+    }
+  }
+
   // Direct print function - prints current cart without creating sale
   const handleDirectPrint = async () => {
     console.log('[POS] handleDirectPrint start', { currentCartLength: currentCart.length })
@@ -2439,7 +2771,7 @@ Thank you for your business!
         subtotal: subtotal,
         tax: tax,
         total: total,
-        paymentMethod: paymentMethod,
+        paymentMethod: isFullyCredit ? 'FULLY_CREDIT' : paymentMethod,
         notes: 'DRAFT - Not a completed sale',
         footerMessage: 'Thank you for your business!'
       }
@@ -2939,14 +3271,35 @@ Thank you for your business!
     } catch (error) {
       console.error('[POS] Browser print error:', error)
       return { success: false, message: 'Failed to open print dialog' }
+    } finally {
+      // Always reset loading state
+      setIsProcessingSaleOnly(false)
     }
   }
 
   const printReceipt = async () => {
-
+    // Prevent duplicate submissions
+    if (isProcessingSale) {
+      console.log('[POS] Sale already in progress, ignoring duplicate click')
+      return
+    }
+    
+    setIsProcessingSale(true)
     console.log('[POS] printReceipt start', { currentCartLength: currentCart.length, total })
 
     try {
+
+      // Handle admin not in simulation mode
+      if (user.role === 'ADMIN' && !isAdminMode) {
+        alert('Please select a branch or warehouse from the Admin Dashboard to simulate a role before making sales.')
+        return
+      }
+      
+      // Validate customer info for partial payment or fully credit
+      if ((isPartialPayment || isFullyCredit) && (!customerName || !customerPhone)) {
+        alert('❌ Customer name and phone number are required for partial payments and credit sales.')
+        return
+      }
 
       // First validate required data
 
@@ -2982,9 +3335,9 @@ Thank you for your business!
       
       // Calculate payment amounts
 
-      const finalPaymentAmount = paymentMethod === 'FULLY_CREDIT' ? 0 : (isPartialPayment ? parseFloat(paymentAmount) || 0 : total)
+      const finalPaymentAmount = isFullyCredit ? 0 : (isPartialPayment ? parseFloat(paymentAmount) || 0 : total)
 
-      const finalCreditAmount = paymentMethod === 'FULLY_CREDIT' ? total : (isPartialPayment ? (total - (parseFloat(paymentAmount) || 0)) : 0)
+      const finalCreditAmount = isFullyCredit ? total : (isPartialPayment ? (total - (parseFloat(paymentAmount) || 0)) : 0)
 
       const finalPaymentStatus = isPartialPayment ? 'PENDING' : 'COMPLETED'
 
@@ -2996,7 +3349,7 @@ Thank you for your business!
 
         scopeType: user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE',
 
-        scopeId: user.role === 'CASHIER' ? (user.branchName || 'Default Branch') : (user.warehouseName || 'Default Warehouse'),
+        scopeId: user.role === 'CASHIER' ? String(user.branchId) : String(user.warehouseId),
 
         subtotal: subtotal,
 
@@ -3006,7 +3359,8 @@ Thank you for your business!
 
         total: total,
 
-        paymentMethod: isPartialPayment ? 'PARTIAL_PAYMENT' : paymentMethod.toUpperCase(),
+        paymentMethod: isFullyCredit ? 'FULLY_CREDIT' : paymentMethod.toUpperCase(), // Keep actual payment method (CASH, BANK_TRANSFER, etc.)
+        paymentType: isPartialPayment ? 'PARTIAL_PAYMENT' : (isFullyCredit ? 'FULLY_CREDIT' : 'FULL_PAYMENT'), // Add payment type
         paymentAmount: finalPaymentAmount,
         creditAmount: finalCreditAmount,
 
@@ -3032,7 +3386,7 @@ Thank you for your business!
 
         creditStatus: finalCreditAmount > 0 ? 'PENDING' : 'NONE',
 
-        notes: `POS Terminal Print Receipt - Tab: ${currentTab?.name || 'Unknown'}${isPartialPayment ? ` (Credit: ${finalCreditAmount.toFixed(2)})` : ''}${outstandingTotal > 0 ? ` (Outstanding Payments: ${outstandingTotal.toFixed(2)})` : ''}`,
+        notes: notes || `POS Terminal Print Receipt - Tab: ${currentTab?.name || 'Unknown'}${isPartialPayment ? ` (Credit: ${finalCreditAmount.toFixed(2)})` : ''}${outstandingTotal > 0 ? ` (Outstanding Payments: ${outstandingTotal.toFixed(2)})` : ''}`,
 
         items: currentCart.map(item => ({
 
@@ -3122,7 +3476,7 @@ Thank you for your business!
 
           total: total,
 
-          paymentMethod: paymentMethod,
+          paymentMethod: isFullyCredit ? 'FULLY_CREDIT' : paymentMethod,
 
           paymentAmount: finalPaymentAmount,
 
@@ -3204,6 +3558,9 @@ Thank you for your business!
 
       alert(`❌ Print receipt error: ${error.message}`)
 
+    } finally {
+      // Always reset loading state
+      setIsProcessingSale(false)
     }
 
   }
@@ -3267,8 +3624,6 @@ Thank you for your business!
     const itemCount = tab.cart.reduce((sum, item) => sum + item.quantity, 0)
 
     const hasItems = itemCount > 0
-
-
 
   return (
 
@@ -3386,11 +3741,27 @@ Thank you for your business!
 
 
 
+
   return (
 
     <RouteGuard allowedRoles={['CASHIER', 'ADMIN', 'MANAGER']}>
 
       <DashboardLayout>
+        {/* Admin Mode Indicator */}
+        {isAdminMode && scopeInfo && (
+          <Box sx={{ 
+            bgcolor: 'warning.light', 
+            color: 'warning.contrastText', 
+            p: 1, 
+            textAlign: 'center',
+            borderBottom: 1,
+            borderColor: 'warning.main'
+          }}>
+            <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+              🔧 ADMIN MODE: Operating as {scopeInfo.scopeType === 'BRANCH' ? 'Cashier' : 'Warehouse Keeper'} for {scopeInfo.scopeName}
+            </Typography>
+          </Box>
+        )}
 
         <Box sx={{ 
 
@@ -3705,7 +4076,7 @@ Thank you for your business!
                     variant="outlined"
                     size="small"
 
-                    onClick={() => setShowPhysicalScanner(true)}
+                    onClick={() => router.push('/dashboard/inventory')}
 
                 sx={{ 
 
@@ -3719,9 +4090,9 @@ Thank you for your business!
 
               >
 
-                <ScannerIcon sx={{ mr: 1, fontSize: 18 }} />
+                <InventoryIcon sx={{ mr: 1, fontSize: 18 }} />
 
-                SCAN
+                INVENTORY
 
               </Button>
 
@@ -4051,8 +4422,6 @@ Thank you for your business!
                     
                     {outstandingPayments.length > 0 ? (
                       <>
-                        {console.log('[POS] Rendering outstanding payments:', outstandingPayments)}
-                        {console.log('[POS] Current selection:', selectedOutstandingPayments)}
                         {selectedOutstandingPayments.length > 0 && (
                           <Box sx={{ 
                             mb: 2, 
@@ -4174,24 +4543,12 @@ Thank you for your business!
 
                 value={paymentMethod}
 
+                disabled={isFullyCredit}
+
                 onChange={(e) => {
                   const selectedMethod = e.target.value
                   setPaymentMethod(selectedMethod)
-                  
-                  // Handle partial payment selection
-                  if (selectedMethod === 'PARTIAL_PAYMENT') {
-                    setIsPartialPayment(true)
-                    // Initialize with empty payment amount
-                    setPaymentAmount('')
-                    setCreditAmount(total.toString())
-                    console.log('[POS] Partial payment selected from dropdown')
-                  } else {
-                    setIsPartialPayment(false)
-                    // Clear partial payment amounts when switching away
-                    setPaymentAmount('')
-                    setCreditAmount('')
-                    console.log('[POS] Payment method changed to:', selectedMethod)
-                  }
+                  console.log('[POS] Payment method changed to:', selectedMethod)
                 }}
 
                 sx={{ mb: 1, fontFamily: 'monospace' }}
@@ -4206,11 +4563,14 @@ Thank you for your business!
 
                 <MenuItem value="MOBILE_PAYMENT">Mobile Payment</MenuItem>
 
+                <MenuItem value="CHEQUE">Cheque</MenuItem>
+
+                <MenuItem value="MOBILE_MONEY">Mobile Money</MenuItem>
+
                 <MenuItem value="FULLY_CREDIT">Fully Credit</MenuItem>
 
-                <MenuItem value="PARTIAL_PAYMENT">Partial Payment</MenuItem>
-
               </TextField>
+
 
               {/* Salesperson Selection (for warehouse keepers) */}
               {user?.role === 'WAREHOUSE_KEEPER' && salespeople.length > 0 && (
@@ -4237,7 +4597,7 @@ Thank you for your business!
                 </TextField>
               )}
 
-              {/* Partial Payment Option */}
+              {/* Payment Type Selection */}
 
               <Box sx={{ mb: 2, p: 2, bgcolor: alpha(theme.palette.primary.main, 0.1), borderRadius: 2 }}>
 
@@ -4251,18 +4611,18 @@ Thank you for your business!
 
                   <Button
 
-                    variant={!isPartialPayment ? 'contained' : 'outlined'}
+                    variant={!isPartialPayment && !isFullyCredit ? 'contained' : 'outlined'}
 
                     size="small"
 
                     onClick={() => {
-
                       setIsPartialPayment(false)
-
+                      setIsFullyCredit(false)
                       setPaymentAmount('')
-
                       setCreditAmount('')
-
+                      // Reset payment method to default (CASH)
+                      setPaymentMethod('CASH')
+                      console.log('[POS] Full payment selected, payment method reset to CASH')
                     }}
 
                     sx={{ fontFamily: 'monospace', flex: 1 }}
@@ -4286,6 +4646,7 @@ Thank you for your business!
                       console.log('[POS] Current credit amount:', creditAmount)
                       
                       setIsPartialPayment(true)
+                      setIsFullyCredit(false)
                       
                       // Initialize partial payment amounts
                       if (!paymentAmount || paymentAmount === '') {
@@ -4311,17 +4672,41 @@ Thank you for your business!
 
                   </Button>
 
+                  <Button
+
+                    variant={isFullyCredit ? 'contained' : 'outlined'}
+
+                    size="small"
+
+                    onClick={() => {
+                      setIsPartialPayment(false)
+                      setIsFullyCredit(true)
+                      // Set full amount as credit
+                      setPaymentAmount('')
+                      setCreditAmount(total.toString())
+                      // Keep the current payment method (CASH, CARD, etc.) - don't change it to FULLY_CREDIT
+                      console.log('[POS] Fully credit selected, keeping current payment method:', paymentMethod)
+                    }}
+
+                    sx={{ fontFamily: 'monospace', flex: 1 }}
+
+                  >
+
+                    Fully Credit
+
+                  </Button>
+
                 </Box>
 
               </Box>
 
 
 
-              {/* Partial Payment Fields */}
-              {isPartialPayment && (
+              {/* Payment Fields */}
+              {(isPartialPayment || isFullyCredit) && (
                 <Box sx={{ mb: 2, p: 3, bgcolor: alpha(theme.palette.warning.main, 0.15), borderRadius: 2, border: '2px solid', borderColor: 'warning.main' }}>
                   <Typography variant="h6" sx={{ mb: 2, color: 'warning.main', fontWeight: 'bold' }}>
-                    💰 Partial Payment Details
+                    {isFullyCredit ? '💳 Fully Credit Details' : '💰 Partial Payment Details'}
                   </Typography>
 
                   <>
@@ -4329,17 +4714,19 @@ Thank you for your business!
                     <TextField
                       fullWidth
                       size="small"
-                      label="Payment Amount (Paid Now)"
-                      value={paymentAmount || ''}
+                      label={isFullyCredit ? "Payment Amount (Not Applicable)" : "Payment Amount (Paid Now)"}
+                      value={isFullyCredit ? "0.00" : (paymentAmount || '')}
                       placeholder="0"
                       type="number"
                       color="warning"
+                      disabled={isFullyCredit}
                       inputProps={{ min: 0, max: total, step: 0.01 }}
                       onFocus={(e) => {
                         // Prevent any automatic value changes on focus
                         e.preventDefault()
                       }}
                       onChange={(e) => {
+                        if (isFullyCredit) return; // Don't allow changes in fully credit mode
                         const inputValue = e.target.value
                         
                         // Allow empty string for clearing
@@ -4407,11 +4794,14 @@ Thank you for your business!
                       fullWidth
                       size="small"
 
-                      label="Credit Amount (Remaining)"
+                      label={isFullyCredit ? "Credit Amount (Full Amount)" : "Credit Amount (Remaining)"}
 
                       value={creditAmount || ''}
 
+                      disabled={isFullyCredit}
+
                       onChange={(e) => {
+                        if (isFullyCredit) return; // Don't allow changes in fully credit mode
 
                         const amount = parseFloat(e.target.value) || 0
                         const newPaymentAmount = total - amount
@@ -4526,80 +4916,59 @@ Thank you for your business!
 
 
 
-              {/* Quick Add Buttons */}
+              {/* Notes Section */}
 
               <Box sx={{ mt: 'auto' }}>
 
                 <Typography variant="subtitle2" gutterBottom>
 
-                  Quick Add:
+                  Notes:
 
                 </Typography>
 
-                {inventoryLoading ? (
+                <TextField
 
-                  <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                  fullWidth
 
-                    <CircularProgress size={24} />
+                  multiline
 
-                  </Box>
+                  rows={3}
 
-                ) : inventoryError ? (
+                  placeholder="Add notes for this sale (max 500 characters)..."
 
-                  <Alert severity="error" sx={{ mb: 2 }}>
+                  value={notes}
 
-                    Error loading inventory: {inventoryError}
+                  onChange={(e) => {
 
-                  </Alert>
+                    const value = e.target.value;
 
-                ) : (
+                    if (value.length <= 500) {
 
-                <Grid container spacing={0.5}>
+                      setNotes(value);
 
-                    {inventoryItems.slice(0, 4).map((product) => (
+                    }
 
-                      <Grid size={6} key={product.id}>
+                  }}
 
-                      <Button
+                  sx={{ 
 
-                        fullWidth
+                    fontFamily: 'monospace',
 
-                        variant="outlined"
+                    '& .MuiInputBase-input': {
 
-                        size="small"
-                        sx={{ fontFamily: 'monospace', fontSize: '0.7rem', py: 0.5 }}
+                      fontSize: '0.8rem',
 
-                          onClick={() => addToCart({
+                      lineHeight: 1.2
 
-                            id: product.id,
+                    }
 
-                            name: product.name,
+                  }}
 
-                            price: product.sellingPrice,
+                  helperText={`${notes.length}/500 characters`}
 
-                            stock: product.currentStock,
+                  inputProps={{ maxLength: 500 }}
 
-                            category: product.category,
-
-                            sku: product.sku,
-
-                            unit: product.unit
-
-                          })}
-
-                      >
-
-                        {product.name.split(' ')[0]}
-
-                      </Button>
-
-                    </Grid>
-
-                  ))}
-
-                </Grid>
-
-                )}
+                />
 
               </Box>
 
@@ -4947,18 +5316,36 @@ Thank you for your business!
                   variant="contained"
                   size="small"
                   color="success"
-                  startIcon={<CartIcon sx={{ fontSize: 18 }} />}
+                  startIcon={isProcessingSaleOnly ? <CircularProgress size={18} color="inherit" /> : <CartIcon sx={{ fontSize: 18 }} />}
                   onClick={handleSaleOnly}
                   disabled={
+                    isProcessingSaleOnly ||
+                    isProcessingSale ||
                     (currentCart.length === 0 && selectedOutstandingPayments.length === 0) || 
                     (currentCart.length > 0 && total <= 0)
                   }
                   sx={{ fontFamily: 'monospace', py: 1, flex: 1 }}
                 >
-                  {currentCart.length === 0 && selectedOutstandingPayments.length > 0 
+                  {isProcessingSaleOnly ? 'PROCESSING...' : (currentCart.length === 0 && selectedOutstandingPayments.length > 0 
                     ? 'SETTLE' 
                     : 'PRINT'
+                  )}
+                </Button>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  color="primary"
+                  startIcon={isProcessingSale ? <CircularProgress size={18} color="inherit" /> : <CartIcon sx={{ fontSize: 18 }} />}
+                  onClick={handleSaleWithoutPrint}
+                  disabled={
+                    isProcessingSale ||
+                    isProcessingSaleOnly ||
+                    (currentCart.length === 0 && selectedOutstandingPayments.length === 0) || 
+                    (currentCart.length > 0 && total <= 0)
                   }
+                  sx={{ fontFamily: 'monospace', py: 1, minWidth: 100 }}
+                >
+                  SALE ONLY
                 </Button>
                 <Button
                   variant="outlined"
@@ -5086,7 +5473,7 @@ Thank you for your business!
                              subtotal: subtotal,
                              tax: tax,
                              total: total,
-                             paymentMethod: paymentMethod,
+                             paymentMethod: isFullyCredit ? 'FULLY_CREDIT' : paymentMethod,
                              notes: '',
                              footerMessage: 'Thank you for your business!'
                            })
@@ -5131,7 +5518,7 @@ Thank you for your business!
                              subtotal: subtotal,
                              tax: tax,
                              total: total,
-                             paymentMethod: paymentMethod,
+                             paymentMethod: isFullyCredit ? 'FULLY_CREDIT' : paymentMethod,
                              notes: '',
                              footerMessage: 'Thank you for your business!'
                            })

@@ -42,7 +42,7 @@ function OtherWarehousesInventoryPage() {
   const dispatch = useDispatch()
   const { user } = useSelector((state) => state.auth)
   const { data: inventory, loading, error } = useSelector((state) => state.inventory)
-  const { warehouses } = useSelector((state) => state.warehouses)
+  const { data: warehouses } = useSelector((state) => state.warehouses)
   
   const [selectedWarehouse, setSelectedWarehouse] = useState('')
   const [filteredInventory, setFilteredInventory] = useState([])

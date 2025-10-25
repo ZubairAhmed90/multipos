@@ -30,6 +30,7 @@ class Sale {
     this.discount = data.discount;
     this.total = data.total;
     this.paymentMethod = data.payment_method;
+    this.paymentType = data.payment_type;
     this.paymentStatus = data.payment_status;
     this.paymentAmount = data.payment_amount;
     this.creditAmount = data.credit_amount;
@@ -50,7 +51,7 @@ class Sale {
   static async create(saleData) {
     const { 
       invoiceNo, scopeType, scopeId, userId, shiftId, items, 
-      subtotal, tax, discount, total, paymentMethod, paymentStatus, 
+      subtotal, tax, discount, total, paymentMethod, paymentType, paymentStatus, 
       customerInfo, notes, status = 'COMPLETED', customerName, customerPhone,
       paymentAmount, creditAmount, creditStatus, creditDueDate, customerId
     } = saleData;
@@ -64,13 +65,13 @@ class Sale {
       // Insert sale (removed warehouse_sale_id column)
       const [saleResult] = await connection.execute(
         `INSERT INTO sales (invoice_no, scope_type, scope_id, user_id, shift_id, 
-         subtotal, tax, discount, total, payment_method, payment_status, 
+         subtotal, tax, discount, total, payment_method, payment_type, payment_status, 
          customer_info, notes, status, customer_name, customer_phone, 
          payment_amount, credit_amount, credit_status, credit_due_date, customer_id) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [invoiceNo || null, scopeType || null, scopeId || null, userId || null, shiftId || null, 
          subtotal || 0, tax || 0, discount || 0, total || 0, paymentMethod || null, 
-         paymentStatus || null, customerInfo || null, notes || null, status || null, 
+         paymentType || null, paymentStatus || null, customerInfo || null, notes || null, status || null, 
          customerName || null, customerPhone || null, paymentAmount || 0, 
          creditAmount || 0, creditStatus || 'NONE', creditDueDate || null, customerId || null]
       );

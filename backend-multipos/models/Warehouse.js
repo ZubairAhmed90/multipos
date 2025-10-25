@@ -14,6 +14,19 @@ class Warehouse {
     this.status = data.status || 'active';
     this.settings = data.settings ? JSON.parse(data.settings) : {};
     this.allow_warehouse_company_crud = data.allow_warehouse_company_crud || 0;
+    
+    // Transfer settings - check both database columns and settings JSON
+    const settings = data.settings ? (typeof data.settings === 'string' ? JSON.parse(data.settings) : data.settings) : {};
+    
+    this.allowWarehouseTransfers = data.allow_warehouse_transfers || settings.allowWarehouseTransfers || false;
+    this.allowWarehouseToBranchTransfers = data.allow_warehouse_to_branch_transfers || settings.allowWarehouseToBranchTransfers || false;
+    this.allowWarehouseToWarehouseTransfers = data.allow_warehouse_to_warehouse_transfers || settings.allowWarehouseToWarehouseTransfers || false;
+    this.requireApprovalForWarehouseTransfers = data.require_approval_for_warehouse_transfers !== false || settings.requireApprovalForWarehouseTransfers !== false;
+    this.maxTransferAmount = data.max_transfer_amount || settings.maxTransferAmount || 50000.00;
+    // this.transferNotificationEmail = data.transfer_notification_email; // Commented out - will be used in future when email system is implemented
+    this.autoApproveSmallTransfers = data.auto_approve_small_transfers || settings.autoApproveSmallTransfers || false;
+    this.smallTransferThreshold = data.small_transfer_threshold || settings.smallTransferThreshold || 1000.00;
+    
     this.createdBy = data.created_by;
     this.updatedBy = data.updated_by;
     this.createdAt = data.created_at;

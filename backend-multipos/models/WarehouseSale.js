@@ -77,19 +77,23 @@ class WarehouseSale {
         }
       };
 
-      // Determine payment status based on payment method
+      // Determine payment status and type based on payment method
       let paymentStatus = 'COMPLETED'
+      let paymentType = 'FULL_PAYMENT'
+      
       if (paymentMethod === 'FULLY_CREDIT') {
         paymentStatus = 'PENDING'
+        paymentType = 'FULLY_CREDIT'
       } else if (paymentMethod === 'PARTIAL_PAYMENT') {
         paymentStatus = 'PARTIAL'
+        paymentType = 'PARTIAL_PAYMENT'
       }
 
       // Create warehouse sale record using existing sales table
       const [saleResult] = await connection.execute(
-        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_status, payment_amount, credit_amount, status, customer_info, notes, created_at, updated_at)
-         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, NOW(), NOW())`,
-        [warehouseKeeperId, warehouseKeeperId, invoiceNumber, totalAmount, taxAmount, discountAmount, finalAmount, paymentMethod, paymentStatus, paymentAmount, creditAmount, JSON.stringify(customerInfo), notes]
+        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_type, payment_status, payment_amount, credit_amount, status, customer_info, notes, created_at, updated_at)
+         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, NOW(), NOW())`,
+        [warehouseKeeperId, warehouseKeeperId, invoiceNumber, totalAmount, taxAmount, discountAmount, finalAmount, paymentMethod, paymentType, paymentStatus, paymentAmount, creditAmount, JSON.stringify(customerInfo), notes]
       );
 
       const saleId = saleResult.insertId;

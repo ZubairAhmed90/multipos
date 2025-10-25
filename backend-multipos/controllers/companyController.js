@@ -169,11 +169,7 @@ const updateCompany = async (req, res, next) => {
       });
     }
 
-    const company = await Company.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
-    );
+    const company = await Company.findById(req.params.id);
     
     if (!company) {
       return res.status(404).json({
@@ -181,11 +177,34 @@ const updateCompany = async (req, res, next) => {
         message: 'Company not found'
       });
     }
+
+    // Role-based access control
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      if (company.scopeType !== 'WAREHOUSE' || company.scopeId != req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied'
+        });
+      }
+    } else if (req.user.role === 'CASHIER') {
+      if (company.scopeType !== 'BRANCH' || company.scopeId != req.user.branchId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied'
+        });
+      }
+    }
+
+    const updatedCompany = await Company.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    );
     
     res.json({
       success: true,
       message: 'Company updated successfully',
-      data: company
+      data: updatedCompany
     });
   } catch (error) {
     next(error);
@@ -204,6 +223,23 @@ const deleteCompany = async (req, res, next) => {
         success: false,
         message: 'Company not found'
       });
+    }
+
+    // Role-based access control
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      if (company.scopeType !== 'WAREHOUSE' || company.scopeId != req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied'
+        });
+      }
+    } else if (req.user.role === 'CASHIER') {
+      if (company.scopeType !== 'BRANCH' || company.scopeId != req.user.branchId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied'
+        });
+      }
     }
     
     await company.deleteOne();

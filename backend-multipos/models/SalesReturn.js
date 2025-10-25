@@ -87,9 +87,18 @@
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 return_id INT NOT NULL,
                 inventory_item_id INT NOT NULL,
+                item_name VARCHAR(255) NOT NULL DEFAULT '',
+                sku VARCHAR(100) NOT NULL DEFAULT '',
+                barcode VARCHAR(100) DEFAULT NULL,
+                category VARCHAR(100) DEFAULT NULL,
                 quantity DECIMAL(10,3) NOT NULL,
+                original_quantity DECIMAL(10,3) NOT NULL DEFAULT 0.000 COMMENT 'Original quantity purchased',
+                remaining_quantity DECIMAL(10,3) NOT NULL DEFAULT 0.000 COMMENT 'Remaining quantity that can be returned',
+                unit_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
                 refund_amount DECIMAL(10,2) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (return_id) REFERENCES sales_returns(id) ON DELETE CASCADE,
+                FOREIGN KEY (inventory_item_id) REFERENCES inventory_items(id) ON DELETE RESTRICT
               )
             `);
             } else {
@@ -112,20 +121,48 @@
                   id INT AUTO_INCREMENT PRIMARY KEY,
                   return_id INT NOT NULL,
                   inventory_item_id INT NOT NULL,
+                  item_name VARCHAR(255) NOT NULL DEFAULT '',
+                  sku VARCHAR(100) NOT NULL DEFAULT '',
+                  barcode VARCHAR(100) DEFAULT NULL,
+                  category VARCHAR(100) DEFAULT NULL,
                   quantity DECIMAL(10,3) NOT NULL,
+                  original_quantity DECIMAL(10,3) NOT NULL DEFAULT 0.000 COMMENT 'Original quantity purchased',
+                  remaining_quantity DECIMAL(10,3) NOT NULL DEFAULT 0.000 COMMENT 'Remaining quantity that can be returned',
+                  unit_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
                   refund_amount DECIMAL(10,2) NOT NULL,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY (return_id) REFERENCES sales_returns(id) ON DELETE CASCADE,
+                  FOREIGN KEY (inventory_item_id) REFERENCES inventory_items(id) ON DELETE RESTRICT
                 )
               `);
               }
               
             await pool.execute(
-              `INSERT INTO sales_return_items (return_id, inventory_item_id, quantity, refund_amount, created_at) 
-               VALUES (?, ?, ?, ?, NOW())`,
+              `INSERT INTO sales_return_items (
+                return_id, 
+                inventory_item_id, 
+                item_name, 
+                sku, 
+                barcode, 
+                category,
+                quantity, 
+                original_quantity,
+                remaining_quantity,
+                unit_price,
+                refund_amount, 
+                created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
               [
                 salesReturnId,
                 item.inventoryItemId,
+                item.itemName || item.productName || 'Unknown Item',
+                item.sku || 'N/A',
+                item.barcode || null,
+                item.category || null,
                 item.quantity,
+                item.originalQuantity || item.quantity, // Original quantity purchased
+                item.quantity, // Initially all quantity is available for restock
+                item.unitPrice || item.refundAmount,
                 item.refundAmount
               ]
             );
@@ -170,29 +207,40 @@
           sri.*,
           ii.name as inventory_item_name,
           ii.sku as inventory_sku,
-          ii.selling_price as inventory_price
+          ii.selling_price as inventory_price,
+          ii.current_stock,
+          ii.min_stock_level,
+          ii.max_stock_level,
+          ii.category as inventory_category,
+          ii.barcode as inventory_barcode
         FROM sales_return_items sri
         LEFT JOIN inventory_items ii ON sri.inventory_item_id = ii.id
-        WHERE sri.sales_return_id = ?
+        WHERE sri.return_id = ?
         ORDER BY sri.id`,
         [salesReturnId]
       );
       
       return rows.map(item => ({
         id: item.id,
-        salesReturnId: item.sales_return_id,
+        returnId: item.return_id,
         inventoryItemId: item.inventory_item_id,
-        itemName: item.item_name,
-        sku: item.sku,
+        itemName: item.item_name || item.inventory_item_name || 'Unknown Item',
+        sku: item.sku || item.inventory_sku || 'N/A',
+        barcode: item.barcode || item.inventory_barcode || null,
+        category: item.category || item.inventory_category || null,
         quantity: parseFloat(item.quantity),
+        originalQuantity: parseFloat(item.original_quantity),
+        remainingQuantity: parseFloat(item.remaining_quantity),
         unitPrice: parseFloat(item.unit_price),
         refundAmount: parseFloat(item.refund_amount),
-        reason: item.reason,
         createdAt: item.created_at,
         // Additional inventory info
         inventoryItemName: item.inventory_item_name,
         inventorySku: item.inventory_sku,
-        inventoryPrice: parseFloat(item.inventory_price) || 0
+        inventoryPrice: parseFloat(item.inventory_price) || 0,
+        currentStock: parseFloat(item.current_stock) || 0,
+        minStockLevel: parseFloat(item.min_stock_level) || 0,
+        maxStockLevel: parseFloat(item.max_stock_level) || 0
       }));
     }
 

@@ -1,7 +1,8 @@
 'use client'
 
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import api from '../../../utils/axios'
 import { Box, Typography, Chip, Button, Grid, Card, CardContent, FormControl, InputLabel, Select, MenuItem, Paper, Drawer, List, ListItem, ListItemText, Divider, IconButton, Badge, TextField, Menu, ListItemIcon, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Alert, CircularProgress, Tooltip, InputAdornment, Pagination, Dialog, DialogTitle, DialogContent } from '@mui/material'
 import { Close as CloseIcon, FilterList as FilterIcon, GetApp as ExportIcon, FileDownload as DownloadIcon, Delete as DeleteIcon, Search as SearchIcon, Clear as ClearIcon, Visibility as ViewIcon, Receipt as ReceiptIcon, Refresh as RefreshIcon } from '@mui/icons-material'
 import { DataGrid } from '@mui/x-data-grid'
@@ -21,20 +22,44 @@ import { fetchRetailers } from '../../store/slices/retailersSlice'
 import usePermissions from '../../../hooks/usePermissions'
 import pollingService from '../../../utils/pollingService'
 import EditableInvoiceForm from '../../../components/sales/EditableInvoiceForm'
-import api from '../../../utils/axios'
 
 
 // Table columns configuration
 const columns = [
   { field: 'id', headerName: 'ID', width: 70 },
-  { field: 'created_at', headerName: 'Date', width: 150, renderCell: (params) => {
+  { field: 'created_at', headerName: 'Date', width: 120, renderCell: (params) => {
     if (!params || !params.value) {
       return 'N/A';
     }
     try {
-      return new Date(params.value).toLocaleDateString();
+      const date = new Date(params.value);
+      return (
+        <Tooltip title={date.toLocaleString()}>
+          <span>{date.toLocaleDateString()}</span>
+        </Tooltip>
+      );
     } catch (e) {
       return 'Invalid Date';
+    }
+  }},
+  { field: 'created_time', headerName: 'Time', width: 100, renderCell: (params) => {
+    if (!params || !params.row || !params.row.created_at) {
+      return 'N/A';
+    }
+    try {
+      const date = new Date(params.row.created_at);
+      const timeString = date.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+      return (
+        <Tooltip title={date.toLocaleString()}>
+          <span>{timeString}</span>
+        </Tooltip>
+      );
+    } catch (e) {
+      return 'Invalid Time';
     }
   }},
   { field: 'invoice_no', headerName: 'Invoice #', width: 120 },
@@ -80,6 +105,24 @@ const columns = [
       return 'No Customer';
     }
   },
+  { field: 'subtotal', headerName: 'Subtotal', width: 120, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return `${parseFloat(params.value).toFixed(2)}`;
+  }},
+  { field: 'tax', headerName: 'Tax', width: 100, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return `${parseFloat(params.value).toFixed(2)}`;
+  }},
+  { field: 'discount', headerName: 'Discount', width: 100, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return `${parseFloat(params.value).toFixed(2)}`;
+  }},
   { field: 'total', headerName: 'Total', width: 120, type: 'number', renderCell: (params) => {
     if (!params || params.value === undefined || params.value === null) {
       return '0.00';
@@ -99,24 +142,6 @@ const columns = [
         {parseFloat(params.value).toFixed(2)}
       </Typography>
     );
-  }},
-  { field: 'subtotal', headerName: 'Subtotal', width: 120, type: 'number', renderCell: (params) => {
-    if (!params || params.value === undefined || params.value === null) {
-      return '0.00';
-    }
-    return `${parseFloat(params.value).toFixed(2)}`;
-  }},
-  { field: 'tax', headerName: 'Tax', width: 100, type: 'number', renderCell: (params) => {
-    if (!params || params.value === undefined || params.value === null) {
-      return '0.00';
-    }
-    return `${parseFloat(params.value).toFixed(2)}`;
-  }},
-  { field: 'discount', headerName: 'Discount', width: 100, type: 'number', renderCell: (params) => {
-    if (!params || params.value === undefined || params.value === null) {
-      return '0.00';
-    }
-    return `${parseFloat(params.value).toFixed(2)}`;
   }},
   { 
     field: 'paymentMethod', 
@@ -146,14 +171,8 @@ const columns = [
         return <Chip label="N/A" color="default" size="small" />;
       }
       
-      // ✅ CORRECTED LOGIC: Show payment method based on actual payment_method field
-      if (paymentMethod === 'FULLY_CREDIT') {
-        return <Chip label="FULLY CREDIT" color="error" size="small" />;
-      }
-      
-      if (paymentMethod === 'PARTIAL_PAYMENT') {
-        return <Chip label="PARTIAL PAYMENT" color="warning" size="small" />;
-      }
+      // ✅ CORRECTED LOGIC: Show actual payment method (CASH, BANK_TRANSFER, etc.)
+      // Payment type (PARTIAL_PAYMENT, FULLY_CREDIT) should be shown in Status column
       
       const methodColors = {
         'CASH': 'success',
@@ -161,15 +180,51 @@ const columns = [
         'BANK_TRANSFER': 'info',
         'MOBILE_PAYMENT': 'secondary',
         'CHEQUE': 'warning',
-        'CREDIT': 'error',
-        'FULLY_CREDIT': 'error',
-        'PARTIAL_PAYMENT': 'warning'
+        'MOBILE_MONEY': 'secondary'
       };
       
       return (
         <Chip 
           label={paymentMethod.replace('_', ' ').toUpperCase()} 
           color={methodColors[paymentMethod] || 'default'}
+          size="small"
+        />
+      );
+    }
+  },
+  { 
+    field: 'paymentType', 
+    headerName: 'Payment Type', 
+    width: 150, 
+    renderCell: (params) => {
+      // Show payment type instead of status
+      let paymentType = params.row.payment_type || params.row.paymentType;
+      
+      // If no payment type, determine from payment status
+      if (!paymentType) {
+        const paymentStatus = params.row.payment_status || params.row.paymentStatus;
+        const creditAmount = params.row.creditAmount || params.row.credit_amount || 0;
+        const paymentAmount = params.row.paymentAmount || params.row.payment_amount || 0;
+        
+        if (creditAmount > 0 && paymentAmount > 0) {
+          paymentType = 'PARTIAL_PAYMENT';
+        } else if (creditAmount > 0 && paymentAmount === 0) {
+          paymentType = 'FULLY_CREDIT';
+        } else {
+          paymentType = 'FULL_PAYMENT';
+        }
+      }
+      
+      const typeColors = {
+        'FULL_PAYMENT': 'success',
+        'PARTIAL_PAYMENT': 'warning',
+        'FULLY_CREDIT': 'error'
+      }
+      
+      return (
+        <Chip 
+          label={paymentType.replace('_', ' ').toUpperCase()} 
+          color={typeColors[paymentType] || 'default'}
           size="small"
         />
       );
@@ -256,6 +311,66 @@ const columns = [
     );
   }},
   { field: 'branch_name', headerName: 'Branch', width: 120 },
+  { 
+    field: 'return_quantity', 
+    headerName: 'Returns', 
+    width: 100,
+    renderCell: (params) => {
+      // Check if this sale has any returns
+      const saleId = params.row.id;
+      const returns = salesReturns?.filter(returnItem => returnItem.sale_id === saleId) || [];
+      
+      if (returns.length === 0) {
+        return <Chip label="0" color="default" size="small" />;
+      }
+      
+      // Calculate total returned quantity
+      const totalReturnedQty = returns.reduce((sum, returnItem) => {
+        return sum + (returnItem.items?.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0) || 0);
+      }, 0);
+      
+      return (
+        <Chip 
+          label={totalReturnedQty} 
+          color="warning" 
+          size="small"
+          title={`${returns.length} return(s) - ${totalReturnedQty} items`}
+        />
+      );
+    }
+  },
+  { 
+    field: 'notes', 
+    headerName: 'Notes', 
+    width: 200,
+    renderCell: (params) => {
+      const notes = params.row.notes || '';
+      if (!notes) {
+        return <Chip label="No Notes" color="default" size="small" />;
+      }
+      
+      // Truncate long notes for display
+      const truncatedNotes = notes.length > 50 ? notes.substring(0, 50) + '...' : notes;
+      
+      return (
+        <Tooltip title={notes} arrow>
+          <Typography 
+            variant="body2" 
+            sx={{ 
+              fontFamily: 'monospace',
+              fontSize: '0.75rem',
+              maxWidth: '180px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {truncatedNotes}
+          </Typography>
+        </Tooltip>
+      );
+    }
+  },
 ]
 
 // Sales returns columns
@@ -269,41 +384,144 @@ const returnsColumns = [
     }
     return `${parseFloat(params.value).toFixed(2)}`;
   }},
-  { field: 'status', headerName: 'Status', width: 120, renderCell: (params) => {
-    if (!params || !params.value) {
-      return <Chip label="N/A" color="default" size="small" />;
+  { field: 'status', headerName: 'Payment Type', width: 120, renderCell: (params) => {
+    // Show payment type instead of status
+    let paymentType = params.row.payment_type || params.row.paymentType;
+    
+    // If no payment type, determine from payment status
+    if (!paymentType) {
+      const paymentStatus = params.row.payment_status || params.row.paymentStatus;
+      const creditAmount = params.row.creditAmount || params.row.credit_amount || 0;
+      const paymentAmount = params.row.paymentAmount || params.row.payment_amount || 0;
+      
+      if (creditAmount > 0 && paymentAmount > 0) {
+        paymentType = 'PARTIAL_PAYMENT';
+      } else if (creditAmount > 0 && paymentAmount === 0) {
+        paymentType = 'FULLY_CREDIT';
+      } else {
+        paymentType = 'FULL_PAYMENT';
+      }
     }
+    
+    const typeColors = {
+      'FULL_PAYMENT': 'success',
+      'PARTIAL_PAYMENT': 'warning',
+      'FULLY_CREDIT': 'error'
+    }
+    
     return (
       <Chip 
-        label={params.value.replace('-', ' ').toUpperCase()} 
-        color={params.value === 'approved' ? 'success' : params.value === 'pending' ? 'warning' : 'default'}
+        label={paymentType.replace('_', ' ').toUpperCase()} 
+        color={typeColors[paymentType] || 'default'}
         size="small"
       />
     );
   }},
-  { field: 'created_at', headerName: 'Date', width: 150, renderCell: (params) => {
+  { field: 'created_at', headerName: 'Date', width: 120, renderCell: (params) => {
     if (!params || !params.value) {
       return 'N/A';
     }
     try {
-      return new Date(params.value).toLocaleDateString();
+      const date = new Date(params.value);
+      return (
+        <Tooltip title={date.toLocaleString()}>
+          <span>{date.toLocaleDateString()}</span>
+        </Tooltip>
+      );
     } catch (e) {
       return 'Invalid Date';
+    }
+  }},
+  { field: 'created_time', headerName: 'Time', width: 100, renderCell: (params) => {
+    if (!params || !params.row || !params.row.created_at) {
+      return 'N/A';
+    }
+    try {
+      const date = new Date(params.row.created_at);
+      const timeString = date.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+      return (
+        <Tooltip title={date.toLocaleString()}>
+          <span>{timeString}</span>
+        </Tooltip>
+      );
+    } catch (e) {
+      return 'Invalid Time';
     }
   }}
 ]
 
 
-const SalesPage = () => {
+  const SalesManagement = () => {
   const dispatch = useDispatch()
-  const { data: sales, loading: salesLoading, error: salesError, returns: salesReturns } = useSelector((state) => state.sales)
-  const { user } = useSelector((state) => state.auth)
+  const { user: originalUser } = useSelector((state) => state.auth)
+    
+    // URL-based role switching (same as POS terminal)
+    const [urlParams, setUrlParams] = useState({})
+    const [isAdminMode, setIsAdminMode] = useState(false)
+    
+    // Parse URL parameters for role simulation
+    useEffect(() => {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search)
+        const role = params.get('role')
+        const scope = params.get('scope')
+        const id = params.get('id')
+        
+        if (role && scope && id && originalUser?.role === 'ADMIN') {
+          setUrlParams({ role, scope, id })
+          setIsAdminMode(true)
+        } else {
+          setUrlParams({})
+          setIsAdminMode(false)
+        }
+      }
+    }, [originalUser])
+    
+    // Get effective user based on URL parameters
+    const getEffectiveUser = useCallback((originalUser) => {
+      if (!isAdminMode || !urlParams.role) {
+        return originalUser
+      }
+      
+      return {
+        ...originalUser,
+        role: urlParams.role.toUpperCase(),
+        branchId: urlParams.scope === 'branch' ? parseInt(urlParams.id) : null,
+        warehouseId: urlParams.scope === 'warehouse' ? parseInt(urlParams.id) : null,
+        branchName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : null,
+        warehouseName: urlParams.scope === 'warehouse' ? `Warehouse ${urlParams.id}` : null,
+        isAdminMode: true,
+        originalRole: originalUser.role,
+        originalUser: originalUser
+      }
+    }, [isAdminMode, urlParams])
+    
+    // Get scope info
+    const getScopeInfo = useCallback(() => {
+      if (!isAdminMode || !urlParams.role) {
+        return null
+      }
+      
+      return {
+        scopeType: urlParams.scope === 'branch' ? 'BRANCH' : 'WAREHOUSE',
+        scopeId: urlParams.id,
+        scopeName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : `Warehouse ${urlParams.id}`
+      }
+    }, [isAdminMode, urlParams])
+    
+  const user = getEffectiveUser(originalUser)
+  const scopeInfo = getScopeInfo()
   
   const { data: inventoryItems } = useSelector((state) => state.inventory)
   const { branchSettings, data: branches } = useSelector((state) => state.branches)
   const { data: warehouses, warehouseSettings } = useSelector((state) => state.warehouses)
   const { data: companies } = useSelector((state) => state.companies)
   const { data: retailers } = useSelector((state) => state.retailers)
+    const { data: sales = [], loading: salesLoading, error: salesError } = useSelector((state) => state.sales || {})
   
   // Filter state for admin and warehouse keepers
   const [filters, setFilters] = useState({
@@ -782,18 +1000,35 @@ const SalesPage = () => {
   }
 
   const generateCSV = (salesData) => {
-    const headers = ['ID', 'Date', 'Invoice #', 'Customer', 'Amount', 'Payment', 'Payment Method', 'Payment Status', 'Created By']
-    const rows = salesData.map(sale => [
-      sale.id,
-      new Date(sale.created_at).toLocaleDateString(),
-      sale.invoice_no || 'N/A',
-      sale.customerInfo?.name || sale.customer_info?.name || 'N/A',
-      parseFloat(sale.total || 0).toFixed(2),
-      parseFloat(sale.payment_amount || 0).toFixed(2),
-      sale.paymentMethod || sale.payment_method || 'N/A',
-      sale.paymentStatus || sale.payment_status || 'N/A',
-      sale.created_by || sale.username || sale.user_name || 'Unknown'
-    ])
+    const headers = ['ID', 'Date', 'Time', 'Invoice #', 'Customer', 'Subtotal', 'Tax', 'Discount', 'Total', 'Payment', 'Payment Method', 'Payment Type', 'Payment Status', 'Returns', 'Notes', 'Created By']
+    const rows = salesData.map(sale => {
+      // Calculate returns for this sale
+      const returns = salesReturns?.filter(returnItem => returnItem.sale_id === sale.id) || [];
+      const totalReturnedQty = returns.reduce((sum, returnItem) => {
+        return sum + (returnItem.items?.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0) || 0);
+      }, 0);
+      
+      const saleDate = new Date(sale.created_at);
+      
+      return [
+        sale.id,
+        saleDate.toLocaleDateString(),
+        saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+        sale.invoice_no || 'N/A',
+        sale.customerInfo?.name || sale.customer_info?.name || 'N/A',
+        parseFloat(sale.subtotal || 0).toFixed(2),
+        parseFloat(sale.tax || 0).toFixed(2),
+        parseFloat(sale.discount || 0).toFixed(2),
+        parseFloat(sale.total || 0).toFixed(2),
+        parseFloat(sale.payment_amount || 0).toFixed(2),
+        sale.paymentMethod || sale.payment_method || 'N/A',
+        sale.paymentType || sale.payment_type || 'N/A',
+        sale.paymentStatus || sale.payment_status || 'N/A',
+        totalReturnedQty,
+        sale.notes || 'No Notes',
+        sale.created_by || sale.username || sale.user_name || 'Unknown'
+      ]
+    })
     
     return [headers, ...rows].map(row => row.join(',')).join('\n')
   }
@@ -804,17 +1039,34 @@ const SalesPage = () => {
       const XLSX = await import('xlsx')
       
       // Prepare data for Excel
-      const excelData = salesData.map(sale => ({
-        'ID': sale.id,
-        'Date': new Date(sale.created_at).toLocaleDateString(),
-        'Invoice #': sale.invoice_no || 'N/A',
-        'Customer': sale.customerInfo?.name || sale.customer_info?.name || 'N/A',
-        'Amount': parseFloat(sale.total || 0).toFixed(2),
-        'Payment': parseFloat(sale.payment_amount || 0).toFixed(2),
-        'Payment Method': sale.paymentMethod || sale.payment_method || 'N/A',
-        'Payment Status': sale.paymentStatus || sale.payment_status || 'N/A',
-        'Created By': sale.created_by || sale.username || sale.user_name || 'Unknown'
-      }))
+      const excelData = salesData.map(sale => {
+        // Calculate returns for this sale
+        const returns = salesReturns?.filter(returnItem => returnItem.sale_id === sale.id) || [];
+        const totalReturnedQty = returns.reduce((sum, returnItem) => {
+          return sum + (returnItem.items?.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0) || 0);
+        }, 0);
+        
+        const saleDate = new Date(sale.created_at);
+        
+        return {
+          'ID': sale.id,
+          'Date': saleDate.toLocaleDateString(),
+          'Time': saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+          'Invoice #': sale.invoice_no || 'N/A',
+          'Customer': sale.customerInfo?.name || sale.customer_info?.name || 'N/A',
+          'Subtotal': parseFloat(sale.subtotal || 0).toFixed(2),
+          'Tax': parseFloat(sale.tax || 0).toFixed(2),
+          'Discount': parseFloat(sale.discount || 0).toFixed(2),
+          'Total': parseFloat(sale.total || 0).toFixed(2),
+          'Payment': parseFloat(sale.payment_amount || 0).toFixed(2),
+          'Payment Method': sale.paymentMethod || sale.payment_method || 'N/A',
+          'Payment Type': sale.paymentType || sale.payment_type || 'N/A',
+          'Payment Status': sale.paymentStatus || sale.payment_status || 'N/A',
+          'Returns': totalReturnedQty,
+          'Notes': sale.notes || 'No Notes',
+          'Created By': sale.created_by || sale.username || sale.user_name || 'Unknown'
+        };
+      })
       
       // Create workbook and worksheet
       const workbook = XLSX.utils.book_new()
@@ -876,28 +1128,52 @@ const SalesPage = () => {
             <thead>
               <tr>
                 <th>Date</th>
+                <th>Time</th>
                 <th>Invoice #</th>
                 <th>Customer</th>
-                <th>Amount</th>
+                <th>Subtotal</th>
+                <th>Tax</th>
+                <th>Discount</th>
+                <th>Total</th>
                 <th>Payment</th>
                 <th>Payment Method</th>
+                <th>Payment Type</th>
                 <th>Payment Status</th>
+                <th>Returns</th>
+                <th>Notes</th>
                 <th>Created By</th>
               </tr>
             </thead>
             <tbody>
-              ${salesData.map(sale => `
+              ${salesData.map(sale => {
+                // Calculate returns for this sale
+                const returns = salesReturns?.filter(returnItem => returnItem.sale_id === sale.id) || [];
+                const totalReturnedQty = returns.reduce((sum, returnItem) => {
+                  return sum + (returnItem.items?.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0) || 0);
+                }, 0);
+                
+                const saleDate = new Date(sale.created_at);
+                
+                return `
                 <tr>
-                  <td>${new Date(sale.created_at).toLocaleDateString()}</td>
+                  <td>${saleDate.toLocaleDateString()}</td>
+                  <td>${saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}</td>
                   <td>${sale.invoice_no || 'N/A'}</td>
                   <td>${sale.customerInfo?.name || sale.customer_info?.name || 'Walk-in Customer'}</td>
+                  <td>$${parseFloat(sale.subtotal || 0).toFixed(2)}</td>
+                  <td>$${parseFloat(sale.tax || 0).toFixed(2)}</td>
+                  <td>$${parseFloat(sale.discount || 0).toFixed(2)}</td>
                   <td>$${parseFloat(sale.total || 0).toFixed(2)}</td>
                   <td>$${parseFloat(sale.payment_amount || 0).toFixed(2)}</td>
                   <td>${sale.paymentMethod || sale.payment_method || 'N/A'}</td>
+                  <td>${sale.paymentType || sale.payment_type || 'N/A'}</td>
                   <td class="status-${(sale.paymentStatus || sale.payment_status)?.toLowerCase() || 'unknown'}">${sale.paymentStatus || sale.payment_status || 'N/A'}</td>
+                  <td>${totalReturnedQty}</td>
+                  <td>${sale.notes || 'No Notes'}</td>
                   <td>${sale.created_by || sale.username || sale.user_name || 'Unknown'}</td>
                 </tr>
-              `).join('')}
+              `;
+              }).join('')}
             </tbody>
           </table>
         </body>
@@ -934,7 +1210,7 @@ const SalesPage = () => {
   }
 
   // Calculate sales statistics
-  const salesStats = React.useMemo(() => {
+  const salesStats = useMemo(() => {
     if (!sales || sales.length === 0) {
       return {
         totalSales: 0,
@@ -962,6 +1238,23 @@ const SalesPage = () => {
       <RouteGuard allowedRoles={['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER']}>
         <PermissionCheck roles={['ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_KEEPER']}>
           <Box sx={{ p: 3 }}>
+            {/* Admin Mode Indicator */}
+            {isAdminMode && scopeInfo && (
+              <Box sx={{ 
+                bgcolor: 'warning.light', 
+                color: 'warning.contrastText', 
+                p: 1, 
+                textAlign: 'center',
+                borderBottom: 1,
+                borderColor: 'warning.main',
+                mb: 2
+              }}>
+                <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                  🔧 ADMIN MODE: Operating as {scopeInfo.scopeType === 'BRANCH' ? 'Cashier' : 'Warehouse Keeper'} for {scopeInfo.scopeName}
+                </Typography>
+              </Box>
+            )}
+            
             {/* Header */}
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
               <Typography variant="h4" component="h1">
@@ -1230,14 +1523,16 @@ const SalesPage = () => {
                           <TableRow>
                             <TableCell>ID</TableCell>
                             <TableCell>Date</TableCell>
+                            <TableCell>Time</TableCell>
                             <TableCell>Invoice #</TableCell>
                             <TableCell>Type</TableCell>
                             <TableCell>Customer</TableCell>
-                            <TableCell align="right">Total</TableCell>
                             <TableCell align="right">Subtotal</TableCell>
                             <TableCell align="right">Tax</TableCell>
                             <TableCell align="right">Discount</TableCell>
+                            <TableCell align="right">Total</TableCell>
                             <TableCell>Payment Method</TableCell>
+                              <TableCell>Payment Type</TableCell>
                             <TableCell>Payment Terms</TableCell>
                             <TableCell>Payment Status</TableCell>
                             <TableCell>Created By</TableCell>
@@ -1248,7 +1543,31 @@ const SalesPage = () => {
                           {paginatedSales.map((sale) => (
                             <TableRow key={sale.id}>
                               <TableCell>{sale.id}</TableCell>
-                              <TableCell>{new Date(sale.created_at).toLocaleDateString()}</TableCell>
+                              <TableCell>
+                                {(() => {
+                                  try {
+                                    const date = new Date(sale.created_at);
+                                    if (isNaN(date.getTime())) return 'N/A';
+                                    return date.toLocaleDateString();
+                                  } catch (e) {
+                                    return 'N/A';
+                                  }
+                                })()}
+                              </TableCell>
+                              <TableCell>
+                                {(() => {
+                                  try {
+                                    const date = new Date(sale.created_at);
+                                    return date.toLocaleTimeString('en-US', {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                      hour12: true
+                                    });
+                                  } catch (e) {
+                                    return 'N/A';
+                                  }
+                                })()}
+                              </TableCell>
                               <TableCell>{sale.invoice_no || 'N/A'}</TableCell>
                               <TableCell>
                         <Chip
@@ -1273,10 +1592,10 @@ const SalesPage = () => {
                                   return 'No Customer';
                                 })()}
                               </TableCell>
-                              <TableCell align="right">{parseFloat(sale.total || 0).toFixed(2)}</TableCell>
                               <TableCell align="right">{parseFloat(sale.subtotal || 0).toFixed(2)}</TableCell>
                               <TableCell align="right">{parseFloat(sale.tax || 0).toFixed(2)}</TableCell>
                               <TableCell align="right">{parseFloat(sale.discount || 0).toFixed(2)}</TableCell>
+                              <TableCell align="right">{parseFloat(sale.total || 0).toFixed(2)}</TableCell>
                               <TableCell>
                                 {(() => {
                                   // Get payment details
@@ -1325,6 +1644,51 @@ const SalesPage = () => {
                                   );
                                 })()}
                               </TableCell>
+                                <TableCell>
+                                  {(() => {
+                                    // Get payment type
+                                    let paymentType = sale.paymentType || sale.payment_type;
+                                    if (!paymentType && sale.customer_info) {
+                                      try {
+                                        const customerInfo = typeof sale.customer_info === 'string' 
+                                          ? JSON.parse(sale.customer_info) 
+                                          : sale.customer_info;
+                                        paymentType = customerInfo.paymentType;
+                                      } catch (e) {
+                                        // Silent error handling
+                                      }
+                                    }
+                                    
+                                    // Format payment type
+                                    const typeColors = {
+                                      'FULL_PAYMENT': 'success',
+                                      'PARTIAL_PAYMENT': 'warning',
+                                      'FULLY_CREDIT': 'error',
+                                      'CASH': 'success',
+                                      'CARD': 'primary',
+                                      'BANK_TRANSFER': 'info',
+                                      'CHEQUE': 'warning'
+                                    };
+                                    
+                                    const typeLabels = {
+                                      'FULL_PAYMENT': 'Full Payment',
+                                      'PARTIAL_PAYMENT': 'Partial Payment',
+                                      'FULLY_CREDIT': 'Fully Credit',
+                                      'CASH': 'Cash',
+                                      'CARD': 'Card',
+                                      'BANK_TRANSFER': 'Bank Transfer',
+                                      'CHEQUE': 'Cheque'
+                                    };
+                                    
+                                    return (
+                                      <Chip 
+                                        label={typeLabels[paymentType] || paymentType || 'N/A'} 
+                                        color={typeColors[paymentType] || 'default'}
+                                        size="small"
+                                      />
+                                    );
+                                  })()}
+                                </TableCell>
                               <TableCell>
                                 {(() => {
                                   let paymentMethod = sale.paymentMethod || sale.payment_method;
@@ -1675,4 +2039,4 @@ const SalesPage = () => {
   )
 }
 
-export default withAuth(SalesPage)
+  export default withAuth(SalesManagement)

@@ -84,17 +84,17 @@ class Company {
     if (this.id) {
       // Update existing company
       await executeQuery(
-        `UPDATE companies SET name = ?, code = ?, contact = ?, address = ?, transaction_type = ?, 
+        `UPDATE companies SET name = ?, code = ?, contact_person = ?, phone = ?, email = ?, address = ?, status = ?, transaction_type = ?, 
          created_by = ?, scope_type = ?, scope_id = ? WHERE id = ?`,
-        [this.name, this.code, this.contact, this.address, this.transactionType, 
+        [this.name, this.code, this.contactPerson, this.phone, this.email, this.address, this.status, this.transactionType, 
          this.createdBy, this.scopeType, this.scopeId, this.id]
       );
     } else {
       // Create new company
       const result = await executeQuery(
-        `INSERT INTO companies (name, code, contact, address, transaction_type, created_by, scope_type, scope_id) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [this.name, this.code, this.contact, this.address, this.transactionType, 
+        `INSERT INTO companies (name, code, contact_person, phone, email, address, status, transaction_type, created_by, scope_type, scope_id) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [this.name, this.code, this.contactPerson, this.phone, this.email, this.address, this.status, this.transactionType, 
          this.createdBy, this.scopeType, this.scopeId]
       );
       this.id = result.insertId || result.lastID;

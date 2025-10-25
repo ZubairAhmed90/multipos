@@ -95,6 +95,24 @@ const branchSchema = yup.object({
   'settings.allowReturnsByWarehouseKeeper': yup.boolean()
     .nullable()
     .transform((value) => value === '' ? null : value),
+  
+  // Transfer settings
+  'settings.allowBranchTransfers': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.allowBranchToWarehouseTransfers': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.allowBranchToBranchTransfers': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.requireApprovalForBranchTransfers': yup.boolean()
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  'settings.maxTransferAmount': yup.number()
+    .nullable()
+    .transform((value) => value === '' ? null : value)
+    .min(0, 'Maximum transfer amount must be positive'),
 })
 
 // Table columns configuration
@@ -131,6 +149,49 @@ const fields = [
       { value: 'inactive', label: 'Inactive' },
       { value: 'maintenance', label: 'Maintenance' }
     ]
+  },
+  
+  // Transfer Settings Section
+  { 
+    name: 'transfer-settings-section', 
+    label: 'Transfer Settings', 
+    type: 'section',
+    sectionTitle: 'Transfer Permissions'
+  },
+  { 
+    name: 'settings.allowBranchTransfers', 
+    label: 'Allow Branch Transfers', 
+    type: 'switch',
+    description: 'Allow transfers from this branch',
+    defaultValue: false
+  },
+  { 
+    name: 'settings.allowBranchToWarehouseTransfers', 
+    label: 'Allow Branch to Warehouse Transfers', 
+    type: 'switch',
+    description: 'Allow transfers from branch to warehouse',
+    defaultValue: false
+  },
+  { 
+    name: 'settings.allowBranchToBranchTransfers', 
+    label: 'Allow Branch to Branch Transfers', 
+    type: 'switch',
+    description: 'Allow transfers from branch to other branches',
+    defaultValue: false
+  },
+  { 
+    name: 'settings.requireApprovalForBranchTransfers', 
+    label: 'Require Approval for Branch Transfers', 
+    type: 'switch',
+    description: 'Require admin approval for branch transfers',
+    defaultValue: true
+  },
+  { 
+    name: 'settings.maxTransferAmount', 
+    label: 'Maximum Transfer Amount', 
+    type: 'number',
+    description: 'Maximum transfer amount allowed',
+    defaultValue: 10000
   },
 ]
 

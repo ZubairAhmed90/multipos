@@ -36,7 +36,8 @@ const reportsRoutes = require('./routes/reports');
 const stockReportRoutes = require('./routes/stockReportRoutes');
 const financialVoucherRoutes = require('./routes/financialVoucherRoutes');
 const salespeopleRoutes = require('./routes/salespeople');
-
+const returnsRoutes = require('./routes/returns');
+const purchaseOrdersRoutes = require('./routes/purchaseOrders');
 const app = express();
 
 // Connect to MySQL (only if not in test mode)
@@ -133,6 +134,8 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/stock-reports', stockReportRoutes);
 app.use('/api/financial-vouchers', financialVoucherRoutes);
 app.use('/api/salespeople', salespeopleRoutes);
+app.use('/api/returns', returnsRoutes);
+app.use('/api/purchase-orders', purchaseOrdersRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

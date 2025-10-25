@@ -3,13 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
-import EntityTable from '../../../components/crud/EntityTable'
-import EntityFormDialog from '../../../components/crud/EntityFormDialog'
-import ConfirmationDialog from '../../../components/crud/ConfirmationDialog'
-import useEntityCRUD from '../../../hooks/useEntityCRUD'
 import { fetchRetailers, createRetailer, updateRetailer, deleteRetailer } from '../../store/slices/retailersSlice'
 import { fetchWarehouseSettings } from '../../store/slices/warehousesSlice'
-import { fetchInvoiceDetails, updateInvoice, clearInvoiceDetails } from '../../store/slices/invoiceDetailsSlice'
 import api from '../../../utils/axios'
 import {
   Box,
@@ -37,6 +32,9 @@ import {
   TableRow,
   Paper,
   CircularProgress,
+  IconButton,
+  Tooltip,
+  Alert,
 } from '@mui/material'
 import {
   Add,
@@ -46,19 +44,23 @@ import {
   LocationOn,
   Phone,
   Email,
-  AccountBalance,
+  Edit,
+  Delete,
+  Visibility,
 } from '@mui/icons-material'
 import * as yup from 'yup'
 
 const RetailersPage = () => {
   const dispatch = useDispatch()
   const { user } = useSelector((state) => state.auth)
-  const { data: invoiceDetails, loading: invoiceLoading, updating: invoiceUpdating, error: invoiceError } = useSelector((state) => state.invoiceDetails)
   const { warehouseSettings } = useSelector((state) => state.warehouses || { warehouseSettings: null })
   
   // Check permissions for warehouse keepers (like retailers management)
   const canManageRetailers = user?.role === 'ADMIN' || 
     (user?.role === 'WAREHOUSE_KEEPER' && warehouseSettings?.allowWarehouseRetailerCRUD)
+  
+  // Only admins can delete retailers
+  const canDeleteRetailers = user?.role === 'ADMIN'
   
   const [filters, setFilters] = useState({
     status: 'all',
@@ -66,186 +68,17 @@ const RetailersPage = () => {
     search: ''
   })
 
-  // Ledger dialog state
-  const [ledgerDialogOpen, setLedgerDialogOpen] = useState(false)
-  const [selectedCompany, setSelectedCompany] = useState(null)
-  const [ledgerEntries, setLedgerEntries] = useState([])
-  const [ledgerBalance, setLedgerBalance] = useState({ totalDebits: 0, totalCredits: 0, balance: 0 })
-  const [ledgerLoading, setLedgerLoading] = useState(false)
-
-  // Invoice details dialog state
-  const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false)
-  const [editingInvoice, setEditingInvoice] = useState(false)
-  const [editFormData, setEditFormData] = useState({})
-
-  const columns = [
-    { 
-      field: 'name', 
-      headerName: 'Retailer Name', 
-      width: 200,
-      renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main' }}>
-            <Store />
-          </Avatar>
-          <Box>
-            <Typography variant="body2" fontWeight="bold">
-              {params.value}
-            </Typography>
-            <Typography variant="caption" color="textSecondary">
-              {params.row.business_type || 'No business type'}
-            </Typography>
-          </Box>
-        </Box>
-      )
-    },
-    { field: 'email', headerName: 'Email', width: 200 },
-    { field: 'phone', headerName: 'Phone', width: 150 },
-    { 
-      field: 'address', 
-      headerName: 'Address', 
-      width: 200,
-      renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          <LocationOn fontSize="small" color="action" />
-          <Typography variant="body2" sx={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {params.value || 'No address'}
-          </Typography>
-        </Box>
-      )
-    },
-    { 
-      field: 'status', 
-      headerName: 'Status', 
-      width: 120,
-      renderCell: (params) => (
-        <Chip 
-          label={params.value || 'unknown'} 
-          color={params.value === 'active' ? 'success' : 'default'}
-          size="small"
-        />
-      )
-    },
-    { 
-      field: 'business_type', 
-      headerName: 'Business Type', 
-      width: 150,
-      renderCell: (params) => (
-        <Chip 
-          label={params.value || 'Unknown'} 
-          color="info"
-          size="small"
-        />
-      )
-    },
-    { 
-      field: 'payment_terms', 
-      headerName: 'Payment Terms', 
-      width: 140,
-      renderCell: (params) => (
-        <Chip 
-          label={params.value || 'CASH'} 
-          color={params.value === 'CASH' ? 'success' : 'warning'}
-          size="small"
-        />
-      )
-    },
-    { 
-      field: 'credit_limit', 
-      headerName: 'Credit Limit', 
-      width: 120,
-      renderCell: (params) => (
-        <Typography variant="body2">
-          {parseFloat(params.value || 0).toFixed(2)}
-        </Typography>
-      )
-    },
-    { 
-      field: 'createdAt', 
-      headerName: 'Created', 
-      width: 120,
-      renderCell: (params) => {
-        if (!params.value) return 'Unknown';
-        try {
-          return new Date(params.value).toLocaleDateString();
-        } catch (error) {
-          return 'Invalid date';
-        }
-      }
-    },
-  ]
-
-  const validationSchema = yup.object({
-    name: yup.string().required('Retailer name is required'),
-    email: yup.string().email('Invalid email').optional(),
-    phone: yup.string().optional(),
-    address: yup.string().optional(),
-    city: yup.string().optional(),
-    state: yup.string().optional(),
-    zipCode: yup.string().optional(),
-    businessType: yup.string().optional(),
-    taxId: yup.string().optional(),
-    creditLimit: yup.number().min(0).optional(),
-    paymentTerms: yup.string().optional(),
-    status: yup.string().required('Status is required'),
-    notes: yup.string().optional(),
-  })
-
-  // Form fields configuration based on user role
-  const getFormFields = (user) => {
-    const baseFields = [
-      { name: 'name', label: 'Retailer Name', type: 'text', required: true },
-      { name: 'email', label: 'Email', type: 'email', required: false },
-      { name: 'phone', label: 'Phone', type: 'text', required: false },
-      { name: 'address', label: 'Address', type: 'text', required: false },
-      { name: 'city', label: 'City', type: 'text', required: false },
-      { name: 'state', label: 'State', type: 'text', required: false },
-      { name: 'zipCode', label: 'Zip Code', type: 'text', required: false },
-      { name: 'businessType', label: 'Business Type', type: 'text', required: false },
-      { name: 'taxId', label: 'Tax ID', type: 'text', required: false },
-      { name: 'creditLimit', label: 'Credit Limit', type: 'number', required: false },
-      { name: 'paymentTerms', label: 'Payment Terms', type: 'select', required: false, options: [
-        { value: 'CASH', label: 'Cash' },
-        { value: 'NET_15', label: 'Net 15' },
-        { value: 'NET_30', label: 'Net 30' },
-        { value: 'NET_45', label: 'Net 45' },
-        { value: 'NET_60', label: 'Net 60' }
-      ]},
-      { name: 'notes', label: 'Notes', type: 'textarea', required: false },
-      { 
-        name: 'status', 
-        label: 'Status', 
-        type: 'select', 
-        required: true,
-        options: [
-          { value: 'ACTIVE', label: 'Active' },
-          { value: 'INACTIVE', label: 'Inactive' },
-          { value: 'SUSPENDED', label: 'Suspended' }
-        ]
-      },
-    ]
-
-    // Retailers are now warehouse-scoped, no additional scope fields needed
-
-    return baseFields
-  }
-
-  const formFields = getFormFields(user)
+  // Dialog states
+  const [formDialogOpen, setFormDialogOpen] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [editingRetailer, setEditingRetailer] = useState(null)
+  const [retailerToDelete, setRetailerToDelete] = useState(null)
+  const [formData, setFormData] = useState({})
+  const [formErrors, setFormErrors] = useState({})
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Get retailers data from Redux store
   const { data: retailers, loading, error } = useSelector((state) => state.retailers || { data: [], loading: false, error: null })
-  
-  const {
-    formDialogOpen: openDialog,
-    confirmationDialogOpen: openDeleteDialog,
-    selectedEntity: editingEntity,
-    selectedEntity: entityToDelete,
-    handleAdd: handleCreate,
-    handleEdit: handleUpdate,
-    handleDeleteClick: handleDelete,
-    handleFormClose,
-    handleFormSubmit
-  } = useEntityCRUD('retailers', 'retailer')
 
   // Load warehouse settings for permission checking
   useEffect(() => {
@@ -254,108 +87,14 @@ const RetailersPage = () => {
     }
   }, [dispatch, user])
 
-  const handleFilterChange = (field, value) => {
-    setFilters(prev => ({ ...prev, [field]: value }))
-  }
-
-  // Ledger functions
-  const handleViewLedger = async (company) => {
-    setSelectedCompany(company)
-    setLedgerDialogOpen(true)
-    setLedgerLoading(true)
-    
-    try {
-      // Get the API base URL
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000/api'
-      
-      // Fetch ledger entries and balance
-      const [entriesResponse, balanceResponse] = await Promise.all([
-        fetch(`${apiBaseUrl}/company-ledger/entries/${company.id}`, {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
-            'Content-Type': 'application/json'
-          }
-        }),
-        fetch(`${apiBaseUrl}/company-ledger/balance/${company.id}`, {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
-            'Content-Type': 'application/json'
-          }
-        })
-      ])
-      
-      if (entriesResponse.ok && balanceResponse.ok) {
-        const entriesData = await entriesResponse.json()
-        const balanceData = await balanceResponse.json()
-        
-        setLedgerEntries(entriesData.data || [])
-        setLedgerBalance(balanceData.data || { totalDebits: 0, totalCredits: 0, balance: 0 })
-      } else {
-        setLedgerEntries([])
-        setLedgerBalance({ totalDebits: 0, totalCredits: 0, balance: 0 })
-      }
-    } catch (error) {
-      setLedgerEntries([])
-      setLedgerBalance({ totalDebits: 0, totalCredits: 0, balance: 0 })
-    } finally {
-      setLedgerLoading(false)
-    }
-  }
-
-  const handleCloseLedgerDialog = () => {
-    setLedgerDialogOpen(false)
-    setSelectedCompany(null)
-    setLedgerEntries([])
-    setLedgerBalance({ totalDebits: 0, totalCredits: 0, balance: 0 })
-  }
-
-  // Invoice details functions
-  const handleViewInvoice = async (invoiceId) => {
-    dispatch(fetchInvoiceDetails(invoiceId))
-    setInvoiceDialogOpen(true)
-  }
-
-  const handleEditInvoice = () => {
-    setEditingInvoice(true)
-    setEditFormData({
-      paymentMethod: invoiceDetails?.paymentMethod || '',
-      paymentStatus: invoiceDetails?.paymentStatus || '',
-      notes: invoiceDetails?.notes || ''
-    })
-  }
-
-  const handleSaveInvoice = async () => {
-    if (!invoiceDetails?.id) return
-    
-    try {
-      await dispatch(updateInvoice({
-        invoiceId: invoiceDetails.id,
-        updateData: editFormData
-      })).unwrap()
-      
-      setEditingInvoice(false)
-      // Refresh invoice details
-      dispatch(fetchInvoiceDetails(invoiceDetails.id))
-    } catch (error) {
-    }
-  }
-
-  const handleCloseInvoiceDialog = () => {
-    setInvoiceDialogOpen(false)
-    setEditingInvoice(false)
-    setEditFormData({})
-    dispatch(clearInvoiceDetails())
-  }
-
   // Load retailers data on component mount
   useEffect(() => {
     dispatch(fetchRetailers())
-    
-    // Load warehouse settings for warehouse keepers
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
-      dispatch(fetchWarehouseSettings(user.warehouseId))
-    }
-  }, [dispatch, user?.role, user?.warehouseId])
+  }, [dispatch])
+
+  const handleFilterChange = (field, value) => {
+    setFilters(prev => ({ ...prev, [field]: value }))
+  }
 
   // Handle refresh - fetch retailers data again
   const handleRefresh = () => {
@@ -382,6 +121,164 @@ const RetailersPage = () => {
   }
 
   const stats = getRetailerStats()
+
+  // Filter retailers based on current filters
+  const filteredRetailers = retailers?.filter(retailer => {
+    const matchesSearch = !filters.search || 
+      retailer.name?.toLowerCase().includes(filters.search.toLowerCase()) ||
+      retailer.email?.toLowerCase().includes(filters.search.toLowerCase()) ||
+      retailer.phone?.toLowerCase().includes(filters.search.toLowerCase())
+    
+    const matchesStatus = filters.status === 'all' || 
+      retailer.status?.toLowerCase() === filters.status.toLowerCase()
+    
+    const matchesLocation = filters.location === 'all' ||
+      (filters.location === 'WAREHOUSE' && retailer.warehouse_id) ||
+      (filters.location === 'BRANCH' && !retailer.warehouse_id)
+    
+    return matchesSearch && matchesStatus && matchesLocation
+  }) || []
+
+  // Form validation schema
+  const validationSchema = yup.object({
+    name: yup.string().required('Retailer name is required'),
+    email: yup.string().email('Invalid email').optional(),
+    phone: yup.string().optional(),
+    address: yup.string().optional(),
+    city: yup.string().optional(),
+    state: yup.string().optional(),
+    zipCode: yup.string().optional(),
+    businessType: yup.string().optional(),
+    taxId: yup.string().optional(),
+    creditLimit: yup.number().min(0).optional(),
+    paymentTerms: yup.string().optional(),
+    status: yup.string().required('Status is required'),
+    notes: yup.string().optional(),
+  })
+
+  // Handle form operations
+  const handleCreate = () => {
+    setEditingRetailer(null)
+    setFormData({
+      name: '',
+      email: '',
+      phone: '',
+      address: '',
+      city: '',
+      state: '',
+      zipCode: '',
+      businessType: '',
+      taxId: '',
+      creditLimit: 0,
+      paymentTerms: 'CASH',
+      status: 'ACTIVE',
+      notes: ''
+    })
+    setFormErrors({})
+    setFormDialogOpen(true)
+  }
+
+  const handleEdit = (retailer) => {
+    setEditingRetailer(retailer)
+    setFormData({
+      name: retailer.name || '',
+      email: retailer.email || '',
+      phone: retailer.phone || '',
+      address: retailer.address || '',
+      city: retailer.city || '',
+      state: retailer.state || '',
+      zipCode: retailer.zipCode || '',
+      businessType: retailer.businessType || '',
+      taxId: retailer.taxId || '',
+      creditLimit: retailer.creditLimit || 0,
+      paymentTerms: retailer.paymentTerms || 'CASH',
+      status: retailer.status || 'ACTIVE',
+      notes: retailer.notes || ''
+    })
+    setFormErrors({})
+    setFormDialogOpen(true)
+  }
+
+  const handleDelete = (retailer) => {
+    setRetailerToDelete(retailer)
+    setDeleteDialogOpen(true)
+  }
+
+  const handleFormSubmit = async () => {
+    // Prevent multiple submissions
+    if (isSubmitting) return
+    
+    try {
+      setIsSubmitting(true)
+      
+      // Validate form data
+      await validationSchema.validate(formData, { abortEarly: false })
+      setFormErrors({})
+
+      // Prepare retailer data
+      const retailerData = {
+        ...formData,
+        // Add warehouse_id for warehouse keepers
+        ...(user?.role === 'WAREHOUSE_KEEPER' && { warehouseId: user.warehouseId })
+      }
+
+      if (editingRetailer) {
+        // Update existing retailer
+        const result = await dispatch(updateRetailer({ id: editingRetailer.id, data: retailerData }))
+        if (updateRetailer.fulfilled.match(result)) {
+          setFormDialogOpen(false)
+          dispatch(fetchRetailers())
+        }
+      } else {
+        // Create new retailer
+        const result = await dispatch(createRetailer(retailerData))
+        if (createRetailer.fulfilled.match(result)) {
+          setFormDialogOpen(false)
+          dispatch(fetchRetailers())
+        }
+      }
+    } catch (error) {
+      if (error.inner) {
+        // Validation errors
+        const errors = {}
+        error.inner.forEach(err => {
+          errors[err.path] = err.message
+        })
+        setFormErrors(errors)
+      } else {
+        console.error('Error saving retailer:', error)
+      }
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleDeleteConfirm = async () => {
+    if (retailerToDelete?.id) {
+      try {
+        const result = await dispatch(deleteRetailer(retailerToDelete.id))
+        if (deleteRetailer.fulfilled.match(result)) {
+          setDeleteDialogOpen(false)
+          dispatch(fetchRetailers())
+        }
+    } catch (error) {
+        console.error('Error deleting retailer:', error)
+      }
+    }
+  }
+
+  const handleFormClose = () => {
+    setFormDialogOpen(false)
+    setEditingRetailer(null)
+    setFormData({})
+    setFormErrors({})
+    setIsSubmitting(false)
+  }
+
+  const handleDeleteClose = () => {
+    setDeleteDialogOpen(false)
+    setRetailerToDelete(null)
+  }
 
   return (
     <DashboardLayout>
@@ -537,456 +434,341 @@ const RetailersPage = () => {
               <MenuItem value="all">All Types</MenuItem>
               <MenuItem value="WAREHOUSE">Warehouse</MenuItem>
               <MenuItem value="BRANCH">Branch</MenuItem>
-              <MenuItem value="COMPANY">Company</MenuItem>
             </Select>
           </FormControl>
         </Box>
 
+        {/* Error Alert */}
+        {error && (
+          <Alert severity="error" sx={{ mb: 3 }}>
+            {error}
+          </Alert>
+        )}
+
         {/* Retailers Table */}
-        <EntityTable
-          data={retailers || []}
-          columns={columns}
-          loading={loading}
-          error={error}
-          onEdit={canManageRetailers ? handleUpdate : undefined}
-          onDelete={canManageRetailers ? handleDelete : undefined}
-          onAdd={canManageRetailers ? handleCreate : undefined}
-          onRefresh={canManageRetailers ? handleRefresh : undefined}
-          entityName="Retailer"
-          title="Retailers"
-          showAddButton={canManageRetailers}
-          showActions={canManageRetailers}
-          showToolbar={canManageRetailers}
-          customActions={[
-            {
-              icon: <AccountBalance />,
-              label: "View Ledger",
-              onClick: handleViewLedger,
-              color: "info"
-            }
-          ]}
-        />
-
-        {/* Form Dialog */}
-        <EntityFormDialog
-          open={openDialog}
-          onClose={handleFormClose}
-          entity={editingEntity}
-          onSubmit={async (formData) => {
-            // Retailers are now warehouse-scoped, add warehouse_id for warehouse keepers
-            const retailerData = {
-              ...formData,
-              status: 'ACTIVE',
-              // Add warehouse_id for warehouse keepers
-              ...(user?.role === 'WAREHOUSE_KEEPER' && { warehouseId: user.warehouseId })
-            }
-            
-            try {
-              const result = await dispatch(createRetailer(retailerData))
-              
-              if (createRetailer.fulfilled.match(result)) {
-                handleFormClose()
-                // Refresh the retailers list
-                dispatch(fetchRetailers())
-              } else if (createRetailer.rejected.match(result)) {
-                console.error('Failed to create retailer:', result.error)
-              }
-            } catch (error) {
-              console.error('Error creating retailer:', error)
-            }
-          }}
-          loading={loading}
-          title={editingEntity ? 'Edit Retailer' : 'Add New Retailer'}
-          fields={formFields}
-          validationSchema={validationSchema}
-        />
-
-        {/* Delete Confirmation Dialog */}
-        <ConfirmationDialog
-          open={openDeleteDialog}
-          onClose={handleFormClose}
-          onConfirm={async () => {
-            if (entityToDelete?.id) {
-              try {
-                const result = await dispatch(deleteRetailer(entityToDelete.id))
-                if (deleteRetailer.fulfilled.match(result)) {
-                  handleFormClose()
-                  dispatch(fetchRetailers())
-                }
-              } catch (error) {
-                console.error('Error deleting retailer:', error)
-              }
-            }
-          }}
-          title="Delete Retailer"
-          message={`Are you sure you want to delete retailer ${entityToDelete?.name}?`}
-          loading={loading}
-        />
-
-        {/* Company Ledger Dialog */}
-        <Dialog 
-          open={ledgerDialogOpen} 
-          onClose={handleCloseLedgerDialog}
-          maxWidth="lg"
-          fullWidth
-        >
-          <DialogTitle>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <AccountBalance />
-              <Typography variant="h6">
-                Ledger - {selectedCompany?.name}
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Retailers List
               </Typography>
-            </Box>
-          </DialogTitle>
-          <DialogContent>
-            {ledgerLoading ? (
+            
+            {loading ? (
               <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
                 <CircularProgress />
               </Box>
             ) : (
-              <Box>
-                {/* Balance Summary */}
-                <Grid container spacing={2} sx={{ mb: 3 }}>
-                  <Grid item xs={4}>
-                    <Card>
-                      <CardContent>
-                        <Typography color="textSecondary" gutterBottom>
-                          Total Credits
-                        </Typography>
-                        <Typography variant="h6" color="success.main">
-                          {ledgerBalance.totalCredits?.toLocaleString() || '0'}
-                        </Typography>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                  <Grid item xs={4}>
-                    <Card>
-                      <CardContent>
-                        <Typography color="textSecondary" gutterBottom>
-                          Total Debits
-                        </Typography>
-                        <Typography variant="h6" color="error.main">
-                          {ledgerBalance.totalDebits?.toLocaleString() || '0'}
-                        </Typography>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                  <Grid item xs={4}>
-                    <Card>
-                      <CardContent>
-                        <Typography color="textSecondary" gutterBottom>
-                          Current Balance
-                        </Typography>
-                        <Typography 
-                          variant="h6" 
-                          color={ledgerBalance.balance >= 0 ? 'success.main' : 'error.main'}
-                        >
-                          {ledgerBalance.balance?.toLocaleString() || '0'}
-                        </Typography>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                </Grid>
-
-                {/* Ledger Entries Table */}
-                <Typography variant="h6" gutterBottom>
-                  Transaction History
-                </Typography>
-                <TableContainer component={Paper}>
+              <TableContainer component={Paper} variant="outlined">
                   <Table>
                     <TableHead>
                       <TableRow>
-                        <TableCell>Date</TableCell>
-                        <TableCell>Type</TableCell>
-                        <TableCell>Description</TableCell>
-                        <TableCell>Reference</TableCell>
-                        <TableCell align="right">Amount</TableCell>
+                      <TableCell>Company</TableCell>
+                      <TableCell>Contact</TableCell>
+                      <TableCell>Location</TableCell>
+                      <TableCell>Status</TableCell>
+                      <TableCell>Business Type</TableCell>
+                      <TableCell>Payment Terms</TableCell>
+                      <TableCell>Credit Limit</TableCell>
+                      <TableCell>Created</TableCell>
+                      {canManageRetailers && <TableCell align="center">Actions</TableCell>}
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {ledgerEntries.length === 0 ? (
+                    {filteredRetailers.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={5} align="center">
-                            <Typography color="textSecondary">
-                              No ledger entries found
+                        <TableCell colSpan={canManageRetailers ? 9 : 8} align="center" sx={{ py: 4 }}>
+                          <Typography variant="body2" color="textSecondary">
+                            {retailers?.length === 0 ? 'No retailers found. Click "Add Company" to create your first retailer.' : 'No retailers match your current filters.'}
                             </Typography>
                           </TableCell>
                         </TableRow>
                       ) : (
-                        ledgerEntries.map((entry) => (
-                          <TableRow key={entry.id}>
+                      filteredRetailers.map((retailer) => (
+                        <TableRow key={retailer.id} hover>
                             <TableCell>
-                              {new Date(entry.createdAt).toLocaleDateString()}
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main' }}>
+                                <Store />
+                              </Avatar>
+                              <Box>
+                                <Typography variant="body2" fontWeight="bold">
+                                  {retailer.name || 'Unnamed Company'}
+                                </Typography>
+                                <Typography variant="caption" color="textSecondary">
+                                  {retailer.businessType || 'No business type'}
+                                </Typography>
+                              </Box>
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            <Box>
+                              {retailer.email && (
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+                                  <Email fontSize="small" color="action" />
+                                  <Typography variant="caption">
+                                    {retailer.email}
+                                  </Typography>
+                                </Box>
+                              )}
+                              {retailer.phone && (
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                  <Phone fontSize="small" color="action" />
+                                  <Typography variant="caption">
+                                    {retailer.phone}
+                                  </Typography>
+                                </Box>
+                              )}
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                              <LocationOn fontSize="small" color="action" />
+                              <Typography variant="body2" sx={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {retailer.address || 'No address'}
+                              </Typography>
+                            </Box>
                             </TableCell>
                             <TableCell>
                               <Chip 
-                                label={entry.type} 
-                                color={entry.type === 'CREDIT' ? 'success' : 'error'}
+                              label={retailer.status || 'unknown'} 
+                              color={retailer.status === 'ACTIVE' || retailer.status === 'active' ? 'success' : 'default'}
                                 size="small"
                               />
                             </TableCell>
                             <TableCell>
-                              {(() => {
-                                const description = entry.description || ''
-                                // Extract invoice number from description (e.g., "Invoice #7")
-                                const invoiceMatch = description.match(/Invoice #(\d+)/)
-                                if (invoiceMatch) {
-                                  const invoiceId = invoiceMatch[1]
-                                  return (
-                                    <Box>
-                                      <Typography variant="body2" component="span">
-                                        {description.replace(/Invoice #\d+/, '')}
+                            <Chip 
+                              label={retailer.businessType || 'Unknown'} 
+                              color="info"
+                              size="small"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Chip 
+                              label={retailer.paymentTerms || 'CASH'} 
+                              color={retailer.paymentTerms === 'CASH' ? 'success' : 'warning'}
+                              size="small"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2">
+                              {parseFloat(retailer.creditLimit || 0).toFixed(2)}
                                       </Typography>
-                                      <Button
-                                        variant="outlined"
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2">
+                              {retailer.createdAt ? new Date(retailer.createdAt).toLocaleDateString() : 'Unknown'}
+                            </Typography>
+                          </TableCell>
+                          {canManageRetailers && (
+                            <TableCell align="center">
+                              <Box sx={{ display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                                <Tooltip title="Edit">
+                                  <IconButton
                                         size="small"
-                                        onClick={() => handleViewInvoice(invoiceId)}
-                                        sx={{ ml: 1, minWidth: 'auto', px: 1 }}
-                                      >
-                                        Invoice #{invoiceId}
-                                      </Button>
+                                    onClick={() => handleEdit(retailer)}
+                                    color="primary"
+                                  >
+                                    <Edit />
+                                  </IconButton>
+                                </Tooltip>
+                                {canDeleteRetailers && (
+                                  <Tooltip title="Delete">
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => handleDelete(retailer)}
+                                      color="error"
+                                    >
+                                      <Delete />
+                                    </IconButton>
+                                  </Tooltip>
+                                )}
                                     </Box>
-                                  )
-                                }
-                                return description
-                              })()}
                             </TableCell>
-                            <TableCell>{entry.reference}</TableCell>
-                            <TableCell align="right">
-                              <Typography 
-                                color={entry.type === 'CREDIT' ? 'success.main' : 'error.main'}
-                                fontWeight="bold"
-                              >
-                                {entry.amount?.toLocaleString() || '0'}
-                              </Typography>
-                            </TableCell>
+                          )}
                           </TableRow>
                         ))
                       )}
                     </TableBody>
                   </Table>
                 </TableContainer>
-              </Box>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Form Dialog */}
+        <Dialog open={formDialogOpen} onClose={handleFormClose} maxWidth="md" fullWidth>
+          <DialogTitle>
+            {editingRetailer ? 'Edit Retailer' : 'Add New Retailer'}
+          </DialogTitle>
+          <DialogContent>
+            <Grid container spacing={2} sx={{ mt: 1 }}>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Retailer Name"
+                  value={formData.name || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                  error={!!formErrors.name}
+                  helperText={formErrors.name}
+                  required
+                />
+                  </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Email"
+                  type="email"
+                  value={formData.email || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+                  error={!!formErrors.email}
+                  helperText={formErrors.email}
+                />
+                  </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Phone"
+                  value={formData.phone || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                  error={!!formErrors.phone}
+                  helperText={formErrors.phone}
+                />
+                </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Business Type"
+                  value={formData.businessType || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, businessType: e.target.value }))}
+                  error={!!formErrors.businessType}
+                  helperText={formErrors.businessType}
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  label="Address"
+                  value={formData.address || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, address: e.target.value }))}
+                  error={!!formErrors.address}
+                  helperText={formErrors.address}
+                />
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <TextField
+                  fullWidth
+                  label="City"
+                  value={formData.city || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, city: e.target.value }))}
+                  error={!!formErrors.city}
+                  helperText={formErrors.city}
+                />
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <TextField
+                  fullWidth
+                  label="State"
+                  value={formData.state || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, state: e.target.value }))}
+                  error={!!formErrors.state}
+                  helperText={formErrors.state}
+                />
+              </Grid>
+              <Grid item xs={12} sm={4}>
+                <TextField
+                  fullWidth
+                  label="Zip Code"
+                  value={formData.zipCode || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, zipCode: e.target.value }))}
+                  error={!!formErrors.zipCode}
+                  helperText={formErrors.zipCode}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Tax ID"
+                  value={formData.taxId || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, taxId: e.target.value }))}
+                  error={!!formErrors.taxId}
+                  helperText={formErrors.taxId}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  label="Credit Limit"
+                  type="number"
+                  value={formData.creditLimit || 0}
+                  onChange={(e) => setFormData(prev => ({ ...prev, creditLimit: parseFloat(e.target.value) || 0 }))}
+                  error={!!formErrors.creditLimit}
+                  helperText={formErrors.creditLimit}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <FormControl fullWidth>
+                  <InputLabel>Payment Terms</InputLabel>
+                            <Select
+                    value={formData.paymentTerms || 'CASH'}
+                    onChange={(e) => setFormData(prev => ({ ...prev, paymentTerms: e.target.value }))}
+                    label="Payment Terms"
+                            >
+                              <MenuItem value="CASH">Cash</MenuItem>
+                    <MenuItem value="NET_15">Net 15</MenuItem>
+                    <MenuItem value="NET_30">Net 30</MenuItem>
+                    <MenuItem value="NET_45">Net 45</MenuItem>
+                    <MenuItem value="NET_60">Net 60</MenuItem>
+                            </Select>
+                          </FormControl>
+                      </Grid>
+              <Grid item xs={12} sm={6}>
+                <FormControl fullWidth>
+                  <InputLabel>Status</InputLabel>
+                            <Select
+                    value={formData.status || 'ACTIVE'}
+                    onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value }))}
+                    label="Status"
+                  >
+                    <MenuItem value="ACTIVE">Active</MenuItem>
+                    <MenuItem value="INACTIVE">Inactive</MenuItem>
+                    <MenuItem value="SUSPENDED">Suspended</MenuItem>
+                            </Select>
+                          </FormControl>
+                      </Grid>
+              <Grid item xs={12}>
+                        <TextField
+                          fullWidth
+                  label="Notes"
+                          multiline
+                          rows={3}
+                  value={formData.notes || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
+                  error={!!formErrors.notes}
+                  helperText={formErrors.notes}
+                />
+              </Grid>
+            </Grid>
           </DialogContent>
           <DialogActions>
-            <Button onClick={handleCloseLedgerDialog}>
-              Close
+            <Button onClick={handleFormClose}>Cancel</Button>
+            <Button onClick={handleFormSubmit} variant="contained" disabled={loading || isSubmitting}>
+              {isSubmitting ? <CircularProgress size={20} /> : (editingRetailer ? 'Update' : 'Create')}
             </Button>
           </DialogActions>
         </Dialog>
 
-        {/* Invoice Details Dialog */}
-        <Dialog 
-          open={invoiceDialogOpen} 
-          onClose={handleCloseInvoiceDialog}
-          maxWidth="md"
-          fullWidth
-        >
-          <DialogTitle>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography variant="h6">
-                Invoice Details
-              </Typography>
-              {!editingInvoice && (
-                <Button
-                  variant="outlined"
-                  onClick={handleEditInvoice}
-                  disabled={invoiceLoading}
-                >
-                  Edit
-                </Button>
-              )}
-            </Box>
-          </DialogTitle>
+        {/* Delete Confirmation Dialog */}
+        <Dialog open={deleteDialogOpen} onClose={handleDeleteClose}>
+          <DialogTitle>Delete Retailer</DialogTitle>
           <DialogContent>
-            {invoiceLoading ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
-                <CircularProgress />
-              </Box>
-            ) : invoiceDetails ? (
-              <Box>
-                {/* Invoice Header */}
-                <Grid container spacing={2} sx={{ mb: 3 }}>
-                  <Grid item xs={6}>
-                    <Typography variant="h6" gutterBottom>
-                      {invoiceDetails.invoiceNo}
-                    </Typography>
-                    <Typography color="textSecondary">
-                      Date: {new Date(invoiceDetails.createdAt).toLocaleDateString()}
-                    </Typography>
-                    <Typography color="textSecondary">
-                      Created by: {invoiceDetails.createdBy?.username}
-                    </Typography>
-                  </Grid>
-                  <Grid item xs={6}>
-                    <Box sx={{ textAlign: 'right' }}>
-                      <Typography variant="h6" color="primary">
-                        {invoiceDetails.total?.toLocaleString()}
-                      </Typography>
-                      <Chip 
-                        label={invoiceDetails.paymentStatus} 
-                        color={invoiceDetails.paymentStatus === 'COMPLETED' ? 'success' : 'warning'}
-                        size="small"
-                      />
-                    </Box>
-                  </Grid>
-                </Grid>
-
-                {/* Payment Information */}
-                <Card sx={{ mb: 3 }}>
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom>
-                      Payment Information
-                    </Typography>
-                    <Grid container spacing={2}>
-                      <Grid item xs={6}>
-                        <Typography variant="body2" color="textSecondary">
-                          Payment Method
-                        </Typography>
-                        {editingInvoice ? (
-                          <FormControl fullWidth size="small">
-                            <Select
-                              value={editFormData.paymentMethod}
-                              onChange={(e) => setEditFormData(prev => ({ ...prev, paymentMethod: e.target.value }))}
-                            >
-                              <MenuItem value="CASH">Cash</MenuItem>
-                              <MenuItem value="CARD">Card</MenuItem>
-                              <MenuItem value="CREDIT">Credit</MenuItem>
-                              <MenuItem value="BANK_TRANSFER">Bank Transfer</MenuItem>
-                              <MenuItem value="CHEQUE">Cheque</MenuItem>
-                              <MenuItem value="MOBILE_MONEY">Mobile Money</MenuItem>
-                            </Select>
-                          </FormControl>
-                        ) : (
-                          <Typography variant="body1">
-                            {invoiceDetails.paymentMethod}
-                          </Typography>
-                        )}
-                      </Grid>
-                      <Grid item xs={6}>
-                        <Typography variant="body2" color="textSecondary">
-                          Payment Status
-                        </Typography>
-                        {editingInvoice ? (
-                          <FormControl fullWidth size="small">
-                            <Select
-                              value={editFormData.paymentStatus}
-                              onChange={(e) => setEditFormData(prev => ({ ...prev, paymentStatus: e.target.value }))}
-                            >
-                              <MenuItem value="PENDING">Pending</MenuItem>
-                              <MenuItem value="COMPLETED">Completed</MenuItem>
-                              <MenuItem value="FAILED">Failed</MenuItem>
-                            </Select>
-                          </FormControl>
-                        ) : (
-                          <Chip 
-                            label={invoiceDetails.paymentStatus} 
-                            color={invoiceDetails.paymentStatus === 'COMPLETED' ? 'success' : 'warning'}
-                            size="small"
-                          />
-                        )}
-                      </Grid>
-                    </Grid>
-                    {editingInvoice && (
-                      <Box sx={{ mt: 2 }}>
-                        <Typography variant="body2" color="textSecondary" gutterBottom>
-                          Notes
-                        </Typography>
-                        <TextField
-                          fullWidth
-                          multiline
-                          rows={3}
-                          value={editFormData.notes}
-                          onChange={(e) => setEditFormData(prev => ({ ...prev, notes: e.target.value }))}
-                          size="small"
-                        />
-                      </Box>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {/* Items */}
-                <Typography variant="h6" gutterBottom>
-                  Items Sold
+            <Typography>
+              Are you sure you want to delete retailer &quot;{retailerToDelete?.name}&quot;? This action cannot be undone.
                 </Typography>
-                <TableContainer component={Paper}>
-                  <Table>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Item</TableCell>
-                        <TableCell>SKU</TableCell>
-                        <TableCell align="right">Qty</TableCell>
-                        <TableCell align="right">Unit Price</TableCell>
-                        <TableCell align="right">Total</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {invoiceDetails.items?.map((item) => (
-                        <TableRow key={item.id}>
-                          <TableCell>
-                            <Typography variant="body2" fontWeight="bold">
-                              {item.itemName}
-                            </Typography>
-                            <Typography variant="caption" color="textSecondary">
-                              {item.category}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>{item.sku}</TableCell>
-                          <TableCell align="right">{item.quantity}</TableCell>
-                          <TableCell align="right">{item.unitPrice?.toFixed(2)}</TableCell>
-                          <TableCell align="right">
-                            <Typography fontWeight="bold">
-                              {item.total?.toFixed(2)}
-                            </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-
-                {/* Totals */}
-                <Box sx={{ mt: 2, textAlign: 'right' }}>
-                  <Typography variant="body2" color="textSecondary">
-                    Subtotal: {invoiceDetails.subtotal?.toFixed(2)}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    Tax: {invoiceDetails.tax?.toFixed(2)}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    Discount: {invoiceDetails.discount?.toFixed(2)}
-                  </Typography>
-                  <Typography variant="h6" color="primary">
-                    Total: {invoiceDetails.total?.toFixed(2)}
-                  </Typography>
-                </Box>
-              </Box>
-            ) : (
-              <Typography color="textSecondary">
-                No invoice details available
-              </Typography>
-            )}
           </DialogContent>
           <DialogActions>
-            {editingInvoice ? (
-              <>
-                <Button onClick={() => setEditingInvoice(false)}>
-                  Cancel
+            <Button onClick={handleDeleteClose}>Cancel</Button>
+            <Button onClick={handleDeleteConfirm} color="error" variant="contained" disabled={loading}>
+              Delete
                 </Button>
-                <Button 
-                  onClick={handleSaveInvoice}
-                  variant="contained"
-                  disabled={invoiceUpdating}
-                >
-                  {invoiceUpdating ? <CircularProgress size={20} /> : 'Save'}
-                </Button>
-              </>
-            ) : (
-              <Button onClick={handleCloseInvoiceDialog}>
-                Close
-              </Button>
-            )}
           </DialogActions>
         </Dialog>
       </Box>

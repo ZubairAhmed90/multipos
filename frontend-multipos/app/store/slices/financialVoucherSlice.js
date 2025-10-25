@@ -2,27 +2,29 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit'
 import api from '../../../utils/axios'
 
 // Helper function to transform backend data to frontend format
-const transformVoucherData = (voucher) => ({
-  id: voucher.id,
-  voucherNo: voucher.voucher_no,
-  type: voucher.type,
-  category: voucher.category,
-  paymentMethod: voucher.payment_method,
-  amount: voucher.amount,
-  description: voucher.description,
-  reference: voucher.reference,
-  scopeType: voucher.scope_type,
-  scopeId: voucher.scope_id,
-  userId: voucher.user_id,
-  userName: voucher.user_name,
-  userRole: voucher.user_role,
-  status: voucher.status,
-  approvedBy: voucher.approved_by,
-  approvedAt: voucher.approved_at,
-  notes: voucher.notes,
-  createdAt: voucher.created_at,
-  updatedAt: voucher.updated_at
-})
+const transformVoucherData = (voucher) => {
+  return {
+    id: voucher.id,
+    voucherNo: voucher.voucherNo, // ✅ Backend already returns camelCase
+    type: voucher.type,
+    category: voucher.category,
+    paymentMethod: voucher.paymentMethod, // ✅ Backend already returns camelCase
+    amount: voucher.amount,
+    description: voucher.description,
+    reference: voucher.reference,
+    scopeType: voucher.scopeType, // ✅ Backend already returns camelCase
+    scopeId: voucher.scopeId, // ✅ Backend already returns camelCase
+    userId: voucher.userId, // ✅ Backend already returns camelCase
+    userName: voucher.userName, // ✅ Backend already returns camelCase
+    userRole: voucher.userRole, // ✅ Backend already returns camelCase
+    status: voucher.status,
+    approvedBy: voucher.approvedBy, // ✅ Backend already returns camelCase
+    approvedAt: voucher.approvedAt, // ✅ Backend already returns camelCase
+    notes: voucher.notes,
+    createdAt: voucher.createdAt, // ✅ Backend already returns camelCase
+    updatedAt: voucher.updatedAt // ✅ Backend already returns camelCase
+  };
+}
 
 // Helper function to serialize filters for API
 const serializeFilters = (filters) => {

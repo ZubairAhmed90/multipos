@@ -6,6 +6,7 @@ class FinancialVoucher {
     this.voucherNo = data.voucher_no;
     this.type = data.type; // 'INCOME', 'EXPENSE', 'TRANSFER'
     this.category = data.category; // 'SALES', 'EXPENSE', 'TRANSFER', 'ADJUSTMENT'
+    this.expenseCategory = data.expense_category; // 'DAILY_EXPENSE', 'SALARY', 'UTILITY', 'RENT', etc.
     this.paymentMethod = data.payment_method; // 'CASH', 'BANK', 'MOBILE', 'CARD'
     this.amount = data.amount;
     this.description = data.description;
@@ -18,6 +19,11 @@ class FinancialVoucher {
     this.status = data.status; // 'PENDING', 'APPROVED', 'REJECTED'
     this.approvedBy = data.approved_by;
     this.approvedAt = data.approved_at;
+    this.approvalNotes = data.approval_notes;
+    this.rejectionReason = data.rejection_reason;
+    this.priority = data.priority; // 'LOW', 'MEDIUM', 'HIGH', 'URGENT'
+    this.dueDate = data.due_date;
+    this.attachmentUrl = data.attachment_url;
     this.notes = data.notes;
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
@@ -26,21 +32,21 @@ class FinancialVoucher {
   // Static method to create a new financial voucher
   static async create(voucherData) {
     const {
-      voucherNo, type, category, paymentMethod, amount, description, reference,
+      voucherNo, type, category, expenseCategory, paymentMethod, amount, description, reference,
       scopeType, scopeId, userId, userName, userRole, status = 'PENDING',
-      approvedBy, notes
+      approvedBy, approvalNotes, rejectionReason, priority = 'MEDIUM', dueDate, attachmentUrl, notes
     } = voucherData;
 
     const result = await pool.execute(
       `INSERT INTO financial_vouchers (
-        voucher_no, type, category, payment_method, amount, description, reference,
+        voucher_no, type, category, expense_category, payment_method, amount, description, reference,
         scope_type, scope_id, user_id, user_name, user_role, status,
-        approved_by, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        approved_by, approval_notes, rejection_reason, priority, due_date, attachment_url, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
-        voucherNo, type, category, paymentMethod, amount, description, reference,
+        voucherNo, type, category, expenseCategory, paymentMethod, amount, description, reference,
         scopeType, scopeId, userId, userName, userRole, status,
-        approvedBy, notes
+        approvedBy, approvalNotes, rejectionReason, priority, dueDate, attachmentUrl, notes
       ]
     );
 
@@ -316,27 +322,119 @@ class FinancialVoucher {
   }
 
   // Instance method to approve voucher
-  async approve(approvedBy) {
-    return await this.update({
-      status: 'APPROVED',
-      approved_by: approvedBy,
-      approved_at: new Date()
-    });
+  async approve(approvedBy, approvalNotes = '') {
+    // Update voucher status
+    await pool.execute(
+      `UPDATE financial_vouchers SET 
+        status = 'APPROVED', 
+        approved_by = ?, 
+        approved_at = NOW(), 
+        approval_notes = ?,
+        updated_at = NOW()
+      WHERE id = ?`,
+      [approvedBy, approvalNotes, this.id]
+    );
+
+    // Create approval history record
+    await pool.execute(
+      `INSERT INTO financial_voucher_approvals (
+        voucher_id, action, performed_by, performed_by_name, performed_by_role, comments, created_at
+      ) VALUES (?, 'APPROVED', ?, ?, ?, ?, NOW())`,
+      [this.id, approvedBy, 'Admin', 'ADMIN', approvalNotes]
+    );
+
+    return await FinancialVoucher.findById(this.id);
   }
 
   // Instance method to reject voucher
-  async reject(approvedBy, notes = '') {
-    return await this.update({
-      status: 'REJECTED',
-      approved_by: approvedBy,
-      notes: notes
-    });
+  async reject(approvedBy, rejectionReason = '', notes = '') {
+    // Update voucher status
+    await pool.execute(
+      `UPDATE financial_vouchers SET 
+        status = 'REJECTED', 
+        approved_by = ?, 
+        approved_at = NOW(), 
+        rejection_reason = ?,
+        notes = ?,
+        updated_at = NOW()
+      WHERE id = ?`,
+      [approvedBy, rejectionReason, notes, this.id]
+    );
+
+    // Create approval history record
+    await pool.execute(
+      `INSERT INTO financial_voucher_approvals (
+        voucher_id, action, performed_by, performed_by_name, performed_by_role, comments, created_at
+      ) VALUES (?, 'REJECTED', ?, ?, ?, ?, NOW())`,
+      [this.id, approvedBy, 'Admin', 'ADMIN', `${rejectionReason}${notes ? ' | ' + notes : ''}`]
+    );
+
+    return await FinancialVoucher.findById(this.id);
   }
 
   // Static method to delete voucher
   static async delete(id) {
     await pool.execute('DELETE FROM financial_vouchers WHERE id = ?', [id]);
     return { deletedCount: 1 };
+  }
+
+  // Static method to get approval history for a voucher
+  static async getApprovalHistory(voucherId) {
+    try {
+      const [rows] = await pool.execute(
+        `SELECT * FROM financial_voucher_approvals 
+         WHERE voucher_id = ? 
+         ORDER BY created_at ASC`,
+        [voucherId]
+      );
+      return rows;
+    } catch (error) {
+      console.error('Error getting approval history:', error);
+      throw error;
+    }
+  }
+
+  // Static method to get voucher items
+  static async getVoucherItems(voucherId) {
+    try {
+      const [rows] = await pool.execute(
+        `SELECT * FROM financial_voucher_items 
+         WHERE voucher_id = ? 
+         ORDER BY id ASC`,
+        [voucherId]
+      );
+      return rows;
+    } catch (error) {
+      console.error('Error getting voucher items:', error);
+      throw error;
+    }
+  }
+
+  // Static method to create voucher items
+  static async createVoucherItems(voucherId, items) {
+    try {
+      const insertPromises = items.map(item => {
+        return pool.execute(
+          `INSERT INTO financial_voucher_items (
+            voucher_id, item_name, description, quantity, unit_price, total_amount, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+          [
+            voucherId,
+            item.itemName,
+            item.description || '',
+            item.quantity || 1,
+            item.unitPrice,
+            item.totalAmount
+          ]
+        );
+      });
+
+      await Promise.all(insertPromises);
+      return await FinancialVoucher.getVoucherItems(voucherId);
+    } catch (error) {
+      console.error('Error creating voucher items:', error);
+      throw error;
+    }
   }
 
   // Static method to generate voucher number

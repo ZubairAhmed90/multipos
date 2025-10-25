@@ -18,9 +18,14 @@ const getWarehouses = async (req, res, next) => {
 
     // Add role-based filtering
     if (req.user.role === 'WAREHOUSE_KEEPER') {
-      // Warehouse keepers can only see their assigned warehouse
-      whereConditions.push('id = ?');
-      params.push(req.user.warehouseId);
+      // Check if this is for transfer purposes (allow seeing all warehouses)
+      const { forTransfer } = req.query;
+      if (!forTransfer) {
+        // Warehouse keepers can only see their assigned warehouse for normal operations
+        whereConditions.push('id = ?');
+        params.push(req.user.warehouseId);
+      }
+      // If forTransfer=true, don't add any restrictions (show all warehouses)
     }
 
     // Add search conditions

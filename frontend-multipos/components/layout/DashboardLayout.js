@@ -72,7 +72,7 @@ const DashboardLayout = ({ children }) => {
 
   return (
     <Box sx={{ display: 'flex' }}>
-      <CssBaseline />
+        <CssBaseline />
       
       {/* App Bar */}
       <AppBar

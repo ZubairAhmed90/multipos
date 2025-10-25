@@ -1,8 +1,9 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import * as yup from 'yup'
+import api from '../../../utils/axios'
 import {
   Box,
   Typography,
@@ -73,7 +74,6 @@ import { createSale, createWarehouseSale, fetchSales } from '../../store/slices/
 import { createWarehouseLedgerEntry } from '../../store/slices/warehouseLedgerSlice'
 import { fetchCompanySalesHistory, clearCompanySalesHistory } from '../../store/slices/companySalesHistorySlice'
 import { fetchRetailers } from '../../store/slices/retailersSlice'
-import api from '../../../utils/axios'
 
 // Validation schema for warehouse billing
 const warehouseBillingSchema = yup.object({
@@ -95,14 +95,81 @@ const warehouseBillingSchema = yup.object({
 const WarehouseBillingPage = () => {
   const dispatch = useDispatch()
   const theme = useTheme()
-  const { user } = useSelector((state) => state.auth)
-  const { inventoryItems, loading: inventoryLoading } = useSelector((state) => state.inventory)
-  const { retailers, loading: retailersLoading } = useSelector((state) => state.retailers)
+  const { user: originalUser } = useSelector((state) => state.auth)
+  
+  // URL-based role switching (same as POS terminal)
+  const [urlParams, setUrlParams] = useState({})
+  const [isAdminMode, setIsAdminMode] = useState(false)
+  
+  // Parse URL parameters for role simulation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const role = params.get('role')
+      const scope = params.get('scope')
+      const id = params.get('id')
+      
+      if (role && scope && id && originalUser?.role === 'ADMIN') {
+        setUrlParams({ role, scope, id })
+        setIsAdminMode(true)
+      } else {
+        setUrlParams({})
+        setIsAdminMode(false)
+      }
+    }
+  }, [originalUser])
+  
+  // Get effective user based on URL parameters
+  const getEffectiveUser = useCallback((originalUser) => {
+    if (!isAdminMode || !urlParams.role) {
+      return originalUser
+    }
+    
+    return {
+      ...originalUser,
+      role: urlParams.role.toUpperCase(),
+      branchId: urlParams.scope === 'branch' ? parseInt(urlParams.id) : null,
+      warehouseId: urlParams.scope === 'warehouse' ? parseInt(urlParams.id) : null,
+      branchName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : null,
+      warehouseName: urlParams.scope === 'warehouse' ? `Warehouse ${urlParams.id}` : null,
+      isAdminMode: true,
+      originalRole: originalUser.role,
+      originalUser: originalUser
+    }
+  }, [isAdminMode, urlParams])
+  
+  // Get scope info
+  const getScopeInfo = useCallback(() => {
+    if (!isAdminMode || !urlParams.role) {
+      return null
+    }
+    
+    return {
+      scopeType: urlParams.scope === 'branch' ? 'BRANCH' : 'WAREHOUSE',
+      scopeId: urlParams.id,
+      scopeName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : `Warehouse ${urlParams.id}`
+    }
+  }, [isAdminMode, urlParams])
+  
+  const user = useMemo(() => getEffectiveUser(originalUser), [getEffectiveUser, originalUser])
+  const scopeInfo = useMemo(() => getScopeInfo(), [getScopeInfo])
+  const { data: inventoryItems, loading: inventoryLoading } = useSelector((state) => state.inventory)
+  const retailersState = useSelector((state) => state.retailers)
+  const { data: retailers, loading: retailersLoading } = retailersState
+  
+  // Debug retailers loading
+  useEffect(() => {
+    console.log('[Warehouse Billing] Retailers loaded:', retailers)
+    console.log('[Warehouse Billing] Retailers loading:', retailersLoading)
+    console.log('[Warehouse Billing] Full retailers state:', retailersState)
+  }, [retailers, retailersLoading, retailersState])
   const { loading: salesLoading } = useSelector((state) => state.sales)
 
   // State variables
   const [selectedRetailer, setSelectedRetailer] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [showSearchResults, setShowSearchResults] = useState(false)
   const [cart, setCart] = useState([])
   const [paymentMethod, setPaymentMethod] = useState('CASH')
   const [paymentAmount, setPaymentAmount] = useState(0)
@@ -140,50 +207,8 @@ const WarehouseBillingPage = () => {
     email: ''
   })
 
-  // Load data on component mount
-  useEffect(() => {
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
-      // Load warehouse inventory
-      dispatch(fetchInventory({
-        scopeType: 'WAREHOUSE',
-        scopeId: user.warehouseId
-      }))
-      
-      // Load retailers (customers) for this warehouse
-      dispatch(fetchRetailers({ warehouseId: user.warehouseId }))
-      
-      // Load salespeople for this warehouse
-      loadSalespeople()
-      // Load company/warehouse info
-      loadCompanyInfo()
-    } else if (user?.role === 'ADMIN') {
-      // Admin can see all salespeople
-      loadSalespeople()
-      // Load company info
-      loadCompanyInfo()
-    }
-  }, [dispatch, user, loadSalespeople, loadCompanyInfo])
-
-  // Auto-search outstanding payments when retailer is selected
-  useEffect(() => {
-    if (selectedRetailer) {
-      const selectedRetailerData = retailers.find(r => r.id.toString() === selectedRetailer)
-      if (selectedRetailerData) {
-        // Set the retailer name in the outstanding search query
-        setOutstandingSearchQuery(selectedRetailerData.name)
-        // Auto-search outstanding payments for this retailer
-        searchOutstandingPaymentsForRetailer(selectedRetailerData.name, selectedRetailerData.phone)
-      }
-    } else {
-      // Clear outstanding payments when no retailer is selected
-      setOutstandingPayments([])
-      setSelectedOutstandingPayments([])
-      setOutstandingSearchQuery('')
-    }
-  }, [selectedRetailer, retailers])
-
   // Load salespeople for the warehouse
-  const loadSalespeople = async () => {
+  const loadSalespeople = useCallback(async () => {
     try {
       setSalespeopleLoading(true)
       const response = await api.get('/salespeople')
@@ -194,9 +219,9 @@ const WarehouseBillingPage = () => {
             sp => sp.warehouse_id === user.warehouseId
           )
           setSalespeople(filteredSalespeople)
-    } else {
+        } else {
           // Admin can see all salespeople
-          setSalespeople(response.data.data)
+        setSalespeople(response.data.data)
         }
       }
     } catch (error) {
@@ -205,10 +230,10 @@ const WarehouseBillingPage = () => {
     } finally {
       setSalespeopleLoading(false)
     }
-  }
+  }, [user])
 
   // Load company/warehouse information
-  const loadCompanyInfo = async () => {
+  const loadCompanyInfo = useCallback(async () => {
     console.log('[Warehouse Billing] Loading company info for user:', user?.role, user?.warehouseId)
     try {
       if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
@@ -246,23 +271,219 @@ const WarehouseBillingPage = () => {
         email: 'company@email.com'
       })
     }
+  }, [user])
+
+  // Load data on component mount
+  useEffect(() => {
+    if (isAdminMode && scopeInfo) {
+      // Admin acting as warehouse keeper/cashier - load inventory for specific scope
+      dispatch(fetchInventory({
+        scopeType: scopeInfo.scopeType,
+        scopeId: scopeInfo.scopeId
+      }))
+      
+      if (scopeInfo.scopeType === 'WAREHOUSE') {
+        // Load retailers (customers) for this warehouse
+        console.log('[Warehouse Billing] Loading retailers for warehouse (admin mode):', scopeInfo.scopeId)
+        dispatch(fetchRetailers({ warehouseId: scopeInfo.scopeId }))
+        // Load salespeople for this warehouse
+        loadSalespeople()
+      }
+      
+      // Load company/warehouse info
+      loadCompanyInfo()
+    } else if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+      // Regular warehouse keeper - load warehouse inventory
+      dispatch(fetchInventory({
+        scopeType: 'WAREHOUSE',
+        scopeId: user.warehouseId
+      }))
+      
+      // Load retailers (customers) for this warehouse
+      console.log('[Warehouse Billing] Loading retailers for warehouse:', user.warehouseId)
+      dispatch(fetchRetailers({ warehouseId: user.warehouseId }))
+      
+      // Load salespeople for this warehouse
+      loadSalespeople()
+      // Load company/warehouse info
+      loadCompanyInfo()
+    } else if (user?.role === 'CASHIER' && user?.branchId) {
+      // Regular cashier - load branch inventory
+      dispatch(fetchInventory({
+        scopeType: 'BRANCH',
+        scopeId: user.branchId
+      }))
+      
+      // Load company info
+      loadCompanyInfo()
+    } else if (user?.role === 'ADMIN') {
+      // Admin can see all inventory
+      dispatch(fetchInventory())
+      // Admin can see all salespeople
+      loadSalespeople()
+      // Load company info
+      loadCompanyInfo()
+    } else if (originalUser?.role === 'WAREHOUSE_KEEPER' && originalUser?.warehouseId) {
+      // Fallback for when admin context is not properly set
+      dispatch(fetchInventory({
+        scopeType: 'WAREHOUSE',
+        scopeId: originalUser.warehouseId
+      }))
+      
+      // Load retailers (customers) for this warehouse
+      console.log('[Warehouse Billing] Loading retailers for warehouse (fallback):', originalUser.warehouseId)
+      dispatch(fetchRetailers({ warehouseId: originalUser.warehouseId }))
+      
+      // Load salespeople for this warehouse
+      loadSalespeople()
+      // Load company/warehouse info
+      loadCompanyInfo()
+    }
+  }, [dispatch, user, originalUser, loadSalespeople, loadCompanyInfo, isAdminMode, scopeInfo])
+
+  // Auto-search outstanding payments when retailer is selected
+  useEffect(() => {
+    if (selectedRetailer) {
+      const selectedRetailerData = retailers.find(r => r.id.toString() === selectedRetailer)
+      if (selectedRetailerData) {
+        // Set the retailer name in the outstanding search query
+        setOutstandingSearchQuery(selectedRetailerData.name)
+        // Auto-search outstanding payments for this retailer
+        searchOutstandingPaymentsForRetailer(selectedRetailerData.name, selectedRetailerData.phone)
+      }
+    } else {
+      // Clear outstanding payments when no retailer is selected
+      setOutstandingPayments([])
+      setSelectedOutstandingPayments([])
+      setOutstandingSearchQuery('')
+    }
+  }, [selectedRetailer, retailers])
+
+  // Handle search functionality
+  useEffect(() => {
+    if (searchTerm.trim()) {
+      const searchLower = searchTerm.toLowerCase()
+      const results = (inventoryItems || []).filter(item => {
+        // Apply scope filtering based on user role and admin simulation
+        let scopeMatch = true
+        
+        if (isAdminMode && scopeInfo) {
+          // Admin acting as warehouse keeper/cashier - filter by specific scope
+          scopeMatch = item.scopeType === scopeInfo.scopeType && 
+                      item.scopeId === scopeInfo.scopeId
+        } else if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+          // Regular warehouse keeper - filter by their warehouse
+          scopeMatch = item.scopeType === 'WAREHOUSE' && 
+                      item.scopeId === String(user.warehouseId)
+        } else if (user?.role === 'CASHIER' && user?.branchId) {
+          // Regular cashier - filter by their branch
+          scopeMatch = item.scopeType === 'BRANCH' && 
+                      item.scopeId === String(user.branchId)
+        } else if (user?.role === 'ADMIN') {
+          // Admin can see all items
+          scopeMatch = true
+        }
+        
+        if (!scopeMatch) return false
+        
+        // Apply search term filtering
+        return item.name.toLowerCase().includes(searchLower) ||
+               item.sku.toLowerCase().includes(searchLower) ||
+               item.barcode?.toLowerCase().includes(searchLower) ||
+               item.category?.toLowerCase().includes(searchLower)
+      }).slice(0, 10) // Limit to 10 results for dropdown
+      
+      setSearchResults(results)
+      setShowSearchResults(true)
+    } else {
+      setSearchResults([])
+      setShowSearchResults(false)
+    }
+  }, [searchTerm, inventoryItems, user, isAdminMode, scopeInfo])
+
+  // Handle selecting an item from search results
+  const handleSelectItem = (item) => {
+    addToCart(item)
+    setSearchTerm('')
+    setShowSearchResults(false)
   }
 
-  // Filter inventory based on search term
-  const filteredInventory = searchTerm.trim() 
-    ? (inventoryItems || []).filter(item =>
-        item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.sku.toLowerCase().includes(searchTerm.toLowerCase())
+  // Filter inventory based on search term and scope
+  const filteredInventory = useMemo(() => {
+    let filtered = inventoryItems || []
+    
+    // Apply scope filtering based on user role and admin simulation
+    if (isAdminMode && scopeInfo) {
+      // Admin acting as warehouse keeper/cashier - filter by specific scope
+      filtered = filtered.filter(item => 
+        item.scopeType === scopeInfo.scopeType && 
+        item.scopeId === scopeInfo.scopeId
       )
-    : (inventoryItems || [])
+    } else if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+      // Regular warehouse keeper - filter by their warehouse
+      filtered = filtered.filter(item => 
+        item.scopeType === 'WAREHOUSE' && 
+        item.scopeId === String(user.warehouseId)
+      )
+    } else if (user?.role === 'CASHIER' && user?.branchId) {
+      // Regular cashier - filter by their branch
+      filtered = filtered.filter(item => 
+        item.scopeType === 'BRANCH' && 
+        item.scopeId === String(user.branchId)
+      )
+    } else if (user?.role === 'ADMIN') {
+      // Admin can see all items
+      filtered = filtered
+    }
+    
+    // Apply search term filtering
+    if (searchTerm.trim()) {
+      const searchLower = searchTerm.toLowerCase()
+      filtered = filtered.filter(item =>
+        item.name.toLowerCase().includes(searchLower) ||
+        item.sku.toLowerCase().includes(searchLower) ||
+        item.barcode?.toLowerCase().includes(searchLower) ||
+        item.category?.toLowerCase().includes(searchLower)
+      ) 
+    }
+    
+    return filtered
+  }, [inventoryItems, searchTerm, user, isAdminMode, scopeInfo])
 
-  // Add item to cart
+  // Add item to cart with stock validation
   const addToCart = (item) => {
+    const currentStock = item.currentStock || item.current_stock || 0
+    const unit = item.unit || 'units'
+    
+    // Check stock status and show warning if needed
+    if (currentStock < 0) {
+      const confirmSale = window.confirm(
+        `⚠️ WARNING: This product has negative stock (${currentStock} ${unit}).\n\n` +
+        `Do you want to continue with the sale? This will make the stock even more negative.`
+      )
+      if (!confirmSale) return
+    } else if (currentStock === 0) {
+      const confirmSale = window.confirm(
+        `⚠️ WARNING: This product is out of stock.\n\n` +
+        `Do you want to continue with the sale? This will create negative stock.`
+      )
+      if (!confirmSale) return
+    }
+
     const existingItem = cart.find(cartItem => cartItem.id === item.id)
     if (existingItem) {
       updateQuantity(item.id, existingItem.quantity + 1)
     } else {
-      setCart([...cart, { ...item, quantity: 1 }])
+      // Map the item fields correctly for the cart
+      const cartItem = {
+        ...item,
+        quantity: 1,
+        discount: 0,
+        customPrice: item.sellingPrice || item.selling_price || 0,
+        current_stock: currentStock, // Ensure cart has the correct field name
+        selling_price: item.sellingPrice || item.selling_price || 0
+      }
+      setCart([...cart, cartItem])
     }
   }
 
@@ -725,13 +946,14 @@ const WarehouseBillingPage = () => {
         taxRate,
         taxAmount,
         total: finalTotal, // Use finalTotal
-        paymentMethod,
+        paymentMethod: paymentMethod === 'PARTIAL_PAYMENT' || paymentMethod === 'FULLY_CREDIT' ? 'CASH' : paymentMethod, // Use actual payment method
+        paymentType: paymentMethod === 'PARTIAL_PAYMENT' ? 'PARTIAL_PAYMENT' : paymentMethod === 'FULLY_CREDIT' ? 'FULLY_CREDIT' : 'FULL_PAYMENT', // Add payment type
         paymentAmount: finalPaymentAmount, // New
         creditAmount: creditAmount, // New
         paymentTerms: paymentMethod === 'FULLY_CREDIT' ? paymentTerms : '',
         salespersonId: selectedSalesperson ? parseInt(selectedSalesperson) : null,
         outstandingPayments: selectedOutstandingPayments, // New
-        notes: `Warehouse Billing - ${paymentMethod === 'FULLY_CREDIT' ? `Credit Terms: ${paymentTerms}` : paymentMethod === 'PARTIAL_PAYMENT' ? `Partial Payment: $${finalPaymentAmount.toFixed(2)}` : 'Cash Sale'}${selectedSalesperson ? ` | Salesperson: ${(salespeople || []).find(s => s.id === parseInt(selectedSalesperson))?.name}` : ''}${notes ? ` | ${notes}` : ''}`
+        notes: `Warehouse Billing - ${paymentMethod === 'FULLY_CREDIT' ? `Credit Terms: ${paymentTerms}` : paymentMethod === 'PARTIAL_PAYMENT' ? `Partial Payment: ${finalPaymentAmount.toFixed(2)}` : 'Cash Sale'}${selectedSalesperson ? ` | Salesperson: ${(salespeople || []).find(s => s.id === parseInt(selectedSalesperson))?.name}` : ''}${notes ? ` | ${notes}` : ''}`
       }
 
       const response = await dispatch(createWarehouseSale(warehouseSaleData))
@@ -782,6 +1004,22 @@ const WarehouseBillingPage = () => {
   return (
       <DashboardLayout>
       <RouteGuard allowedRoles={['WAREHOUSE_KEEPER', 'ADMIN']}>
+        {/* Admin Mode Indicator */}
+        {isAdminMode && scopeInfo && (
+          <Box sx={{ 
+            bgcolor: 'warning.light', 
+            color: 'warning.contrastText', 
+            p: 1, 
+            textAlign: 'center',
+            borderBottom: 1,
+            borderColor: 'warning.main'
+          }}>
+            <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+              🔧 ADMIN MODE: Operating as Warehouse Keeper for {scopeInfo.scopeName}
+            </Typography>
+          </Box>
+        )}
+        
         {/* Full Width Header */}
         <Paper sx={{ p: 2, backgroundColor: theme.palette.primary.main, color: 'white', mb: 2 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -844,27 +1082,98 @@ const WarehouseBillingPage = () => {
               </Box>
 
               {/* Product Search */}
-              <Box sx={{ mb: 0.5 }}>
+              <Box sx={{ mb: 0.5, position: 'relative' }}>
                 <Typography variant="caption" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontWeight: 'bold' }}>
                   <InventoryIcon color="primary" fontSize="small" />
                   Products
                 </Typography>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    placeholder="Search by name or SKU..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    InputProps={{
-                      startAdornment: <SearchIcon sx={{ mr: 0.5, fontSize: 14 }} />
+                <TextField
+                  fullWidth
+                  size="small"
+                  placeholder="Search by name or SKU..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onFocus={() => searchTerm.trim() && setShowSearchResults(true)}
+                  onBlur={() => setTimeout(() => setShowSearchResults(false), 200)}
+                  InputProps={{
+                    startAdornment: <SearchIcon sx={{ mr: 0.5, fontSize: 14 }} />
+                  }}
+                  sx={{ fontSize: '0.7rem', height: '32px' }}
+                />
+                
+                {/* Search Results Dropdown */}
+                {console.log('[Warehouse] Dropdown render check:', { showSearchResults, searchResultsLength: searchResults.length })}
+                {showSearchResults && searchResults.length > 0 && (
+                  <Paper
+                    sx={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      right: 0,
+                      zIndex: 1000,
+                      maxHeight: '200px',
+                      overflow: 'auto',
+                      boxShadow: 3,
+                      border: 1,
+                      borderColor: 'divider'
                     }}
-                    sx={{ fontSize: '0.7rem', height: '32px' }}
-                  />
+                  >
+                    {searchResults.map((item) => (
+                      <Box
+                        key={item.id}
+                        sx={{
+                          p: 1,
+                          cursor: 'pointer',
+                          borderBottom: 1,
+                          borderColor: 'divider',
+                          '&:hover': {
+                            backgroundColor: 'action.hover'
+                          },
+                          '&:last-child': {
+                            borderBottom: 0
+                          }
+                        }}
+                        onClick={() => handleSelectItem(item)}
+                      >
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Box>
+                            <Typography variant="caption" fontWeight="bold" fontSize="0.7rem">
+                              {item.name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" fontSize="0.6rem" sx={{ display: 'block' }}>
+                              SKU: {item.sku}
+                            </Typography>
+                          </Box>
+                          <Box sx={{ textAlign: 'right' }}>
+                            <Typography variant="caption" fontWeight="bold" fontSize="0.7rem" color="primary">
+                              {Number(item.sellingPrice || item.selling_price || 0).toFixed(2)}
+                            </Typography>
+                            <Typography 
+                              variant="caption" 
+                              fontSize="0.6rem"
+                              sx={{
+                                color: (item.currentStock || item.current_stock || 0) < 0 ? 'error.main' : 
+                                       (item.currentStock || item.current_stock || 0) === 0 ? 'error.main' : 
+                                       (item.currentStock || item.current_stock || 0) <= (item.minStockLevel || item.min_stock_level || 0) ? 'warning.main' : 'success.main',
+                                fontWeight: (item.currentStock || item.current_stock || 0) <= 0 ? 'bold' : 'normal',
+                                display: 'block'
+                              }}
+                            >
+                              Stock: {item.currentStock || item.current_stock || 0}
+                              {(item.currentStock || item.current_stock || 0) < 0 && ' ⚠️'}
+                              {(item.currentStock || item.current_stock || 0) === 0 && ' ⚠️'}
+                            </Typography>
+                          </Box>
+                        </Box>
+                      </Box>
+                    ))}
+                  </Paper>
+                )}
               </Box>
               
-              {/* Product Grid */}
+              {/* Product Grid - Only show when searching */}
               <Box sx={{ maxHeight: '200px', overflow: 'auto' }}>
-                {filteredInventory.length > 0 && (
+                {searchTerm.trim() && filteredInventory.length > 0 && (
                   <Grid container spacing={0.5}>
                     {filteredInventory.map((item) => (
                       <Grid item xs={6} sm={4} md={3} key={item.id}>
@@ -887,17 +1196,42 @@ const WarehouseBillingPage = () => {
                               SKU: {item.sku}
                             </Typography>
                           <Typography variant="caption" color="primary" fontWeight="bold" fontSize="0.7rem">
-                            {Number(item.selling_price).toFixed(2)}
+                            {Number(item.sellingPrice || item.selling_price || 0).toFixed(2)}
                           </Typography>
-                            <Typography variant="caption" color="text.secondary" fontSize="0.6rem">
-                              Stock: {item.current_stock}
+                            <Typography 
+                              variant="caption" 
+                              fontSize="0.6rem"
+                              sx={{
+                                color: (item.currentStock || item.current_stock || 0) < 0 ? 'error.main' : 
+                                       (item.currentStock || item.current_stock || 0) === 0 ? 'error.main' : 
+                                       (item.currentStock || item.current_stock || 0) <= (item.minStockLevel || item.min_stock_level || 0) ? 'warning.main' : 'success.main',
+                                fontWeight: (item.currentStock || item.current_stock || 0) <= 0 ? 'bold' : 'normal'
+                              }}
+                            >
+                              Stock: {item.currentStock || item.current_stock || 0}
+                              {(item.currentStock || item.current_stock || 0) < 0 && ' ⚠️'}
+                              {(item.currentStock || item.current_stock || 0) === 0 && ' ⚠️'}
                             </Typography>
                           </CardContent>
                         </Card>
                       </Grid>
                     ))}
                   </Grid>
-                  )}
+                )}
+                {searchTerm.trim() && filteredInventory.length === 0 && (
+                  <Box sx={{ p: 2, textAlign: 'center' }}>
+                    <Typography variant="body2" color="text.secondary">
+                      No products found matching &quot;{searchTerm}&quot;
+                    </Typography>
+                  </Box>
+                )}
+                {!searchTerm.trim() && (
+                  <Box sx={{ p: 2, textAlign: 'center' }}>
+                    <Typography variant="body2" color="text.secondary">
+                      Start typing to search for products...
+                    </Typography>
+                  </Box>
+                )}
                 </Box>
               </Paper>
 
@@ -918,6 +1252,7 @@ const WarehouseBillingPage = () => {
                         <TableCell sx={{ fontWeight: 'bold' }}>Item</TableCell>
                         <TableCell align="center" sx={{ fontWeight: 'bold' }}>Price</TableCell>
                         <TableCell align="center" sx={{ fontWeight: 'bold' }}>Qty</TableCell>
+                        <TableCell align="center" sx={{ fontWeight: 'bold' }}>Stock</TableCell>
                         <TableCell align="center" sx={{ fontWeight: 'bold' }}>Discount</TableCell>
                         <TableCell align="right" sx={{ fontWeight: 'bold' }}>Total</TableCell>
                         <TableCell align="center" sx={{ fontWeight: 'bold' }}>Actions</TableCell>
@@ -926,7 +1261,7 @@ const WarehouseBillingPage = () => {
                       <TableBody>
                       {cart.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={6} sx={{ textAlign: 'center', py: 3 }}>
+                          <TableCell colSpan={7} sx={{ textAlign: 'center', py: 3 }}>
                             <Typography variant="body2" color="text.secondary">
                               No items in cart
                             </Typography>
@@ -949,7 +1284,7 @@ const WarehouseBillingPage = () => {
                                 <TextField
                                   size="small"
                                 type="number"
-                                value={item.customPrice !== null && item.customPrice !== undefined ? item.customPrice : item.selling_price}
+                                value={item.customPrice !== null && item.customPrice !== undefined ? item.customPrice : (item.sellingPrice || item.selling_price || 0)}
                                 onChange={(e) => updateItemPrice(item.id, parseFloat(e.target.value) || 0)}
                                 inputProps={{
                                   min: 0,
@@ -991,6 +1326,18 @@ const WarehouseBillingPage = () => {
                               </Box>
                             </TableCell>
                             <TableCell align="center">
+                              <Chip
+                                size="small"
+                                label={item.currentStock || item.current_stock || 0}
+                                color={
+                                  (item.currentStock || item.current_stock || 0) < 0 ? 'error' : 
+                                  (item.currentStock || item.current_stock || 0) === 0 ? 'error' : 
+                                  (item.currentStock || item.current_stock || 0) <= (item.minStockLevel || item.min_stock_level || 0) ? 'warning' : 'success'
+                                }
+                                variant="outlined"
+                              />
+                            </TableCell>
+                            <TableCell align="center">
                               <TextField
                                 size="small"
                                 type="number"
@@ -1023,7 +1370,7 @@ const WarehouseBillingPage = () => {
                               />
                             </TableCell>
                             <TableCell align="right" fontWeight="bold">
-                              {((item.quantity * (item.customPrice !== null && item.customPrice !== undefined ? item.customPrice : item.selling_price)) - (item.discount || 0)).toFixed(2)}
+                              {((item.quantity * (item.customPrice !== null && item.customPrice !== undefined ? item.customPrice : (item.sellingPrice || item.selling_price || 0))) - (item.discount || 0)).toFixed(2)}
                             </TableCell>
                             <TableCell align="center">
                               <IconButton size="small" color="error" onClick={() => removeFromCart(item.id)}>
@@ -1244,6 +1591,44 @@ const WarehouseBillingPage = () => {
                   }}
                 />
               )}
+
+              {/* Salesperson Selection */}
+              <Box sx={{ mb: 1 }}>
+                <Typography variant="subtitle2" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <PersonIcon color="primary" fontSize="small" />
+                  Salesperson
+                </Typography>
+                <FormControl fullWidth size="small">
+                  <InputLabel sx={{ fontSize: '0.8rem' }}>Select Salesperson</InputLabel>
+                  <Select
+                    value={selectedSalesperson}
+                    onChange={(e) => setSelectedSalesperson(e.target.value)}
+                    label="Select Salesperson"
+                    sx={{ fontSize: '0.8rem' }}
+                  >
+                    <MenuItem value="">
+                      <em>No salesperson</em>
+                    </MenuItem>
+                    {salespeople.map((salesperson) => (
+                      <MenuItem key={salesperson.id} value={salesperson.id}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          <Avatar sx={{ bgcolor: theme.palette.secondary.main, width: 20, height: 20 }}>
+                            <PersonIcon sx={{ fontSize: 12 }} />
+                          </Avatar>
+                          <Box>
+                            <Typography variant="caption" fontWeight="bold">
+                              {salesperson.name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6rem' }}>
+                              {salesperson.phone}
+                            </Typography>
+                          </Box>
+                        </Box>
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Box>
 
               {/* Credit Amount Display */}
               {(paymentMethod === 'PARTIAL_PAYMENT' || paymentMethod === 'FULLY_CREDIT') && (

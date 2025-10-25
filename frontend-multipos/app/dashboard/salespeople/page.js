@@ -90,6 +90,11 @@ const SalespeoplePage = () => {
         }
       } else if (user?.role === 'WAREHOUSE_KEEPER') {
         // For warehouse keepers, set their warehouse
+        console.log('🔧 Setting warehouses for warehouse keeper:', {
+          id: user.warehouseId,
+          name: user.warehouseName,
+          code: user.warehouseCode
+        })
         setWarehouses([{
           id: user.warehouseId,
           name: user.warehouseName,
@@ -108,6 +113,11 @@ const SalespeoplePage = () => {
   useEffect(() => {
     loadData()
   }, [loadData])
+
+  // Debug warehouses state changes
+  useEffect(() => {
+    console.log('🔧 Warehouses state changed:', warehouses)
+  }, [warehouses])
 
   const handleAddSalesperson = () => {
     setSelectedSalesperson(null)

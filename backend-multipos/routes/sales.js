@@ -13,6 +13,7 @@ const {
   deleteSale,
   createSalesReturn,
   getSalesReturns,
+  getSalesReturn,
   updateSalesReturn,
   getCompanySalesHistory,
   getInvoiceDetails,
@@ -37,6 +38,7 @@ router.route('/returns')
 
 // Individual return routes
 router.route('/returns/:id')
+  .get(auth, rbac('ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER'), getSalesReturn)
   .put(auth, rbac('ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER'), updateSalesReturn);
 
 // Company sales history route (must be before /:id route)

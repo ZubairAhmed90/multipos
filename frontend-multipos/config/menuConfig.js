@@ -26,6 +26,7 @@ import {
   LocalShipping,
   ShoppingBag,
   PersonAdd,
+  ShoppingCartCheckout,
 } from '@mui/icons-material'
 
 // Centralized menu configuration organized by sections
@@ -69,7 +70,7 @@ export const menuConfig = [
         label: 'Companies',
         icon: <BusinessCenter />,
         path: '/dashboard/companies',
-        roles: ['ADMIN', 'WAREHOUSE_KEEPER'],
+        roles: ['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'],
         order: 2,
       },
       {
@@ -121,7 +122,7 @@ export const menuConfig = [
         label: 'Salesperson Management',
         icon: <PersonAdd />,
         path: '/dashboard/salespeople',
-        roles: ['ADMIN', 'WAREHOUSE_KEEPER'],
+        roles: ['ADMIN'],
         order: 4,
       },
     ],
@@ -231,13 +232,40 @@ export const menuConfig = [
     order: 10,
     section: 'warehouse',
   },
+  {
+    id: 'warehouse-salespeople',
+    label: 'Salespeople Management',
+    icon: <PersonAdd />,
+    path: '/dashboard/salespeople',
+    roles: ['WAREHOUSE_KEEPER'],
+    order: 11,
+    section: 'warehouse',
+  },
+
+  // FINANCIAL SECTION
+  {
+    id: 'financial-section',
+    label: 'FINANCIAL',
+    isSection: true,
+    order: 8,
+    roles: ['ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER'],
+  },
+  {
+    id: 'financial-vouchers',
+    label: 'Financial Vouchers',
+    icon: <AccountBalance />,
+    path: '/dashboard/financial-vouchers',
+    roles: ['ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER'],
+    order: 8.1,
+    section: 'financial',
+  },
 
   // INVENTORY SECTION
   {
     id: 'inventory-section',
     label: 'INVENTORY',
     isSection: true,
-    order: 9,
+    order: 10,
   },
   {
     id: 'inventory',
@@ -245,7 +273,7 @@ export const menuConfig = [
     icon: <Inventory />,
     path: null,
     roles: ['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'],
-    order: 10,
+    order: 11,
     section: 'inventory',
     isGroup: true,
     children: [
@@ -286,8 +314,16 @@ export const menuConfig = [
         label: 'Transfers',
         icon: <SwapHoriz />,
         path: '/dashboard/transfers',
-        roles: ['ADMIN', 'WAREHOUSE_KEEPER'],
+        roles: ['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'],
         order: 5,
+      },
+      {
+        id: 'purchase-orders',
+        label: 'Purchase Orders',
+        icon: <ShoppingCartCheckout />,
+        path: '/dashboard/purchase-orders',
+        roles: ['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'],
+        order: 6,
       },
     ],
   },
@@ -297,7 +333,7 @@ export const menuConfig = [
     id: 'reports-section',
     label: 'REPORTS',
     isSection: true,
-    order: 11,
+    order: 12,
   },
   {
     id: 'analytics',
@@ -305,7 +341,7 @@ export const menuConfig = [
     icon: <BarChart />,
     path: '/dashboard/reports',
     roles: ['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'],
-    order: 10,
+    order: 13,
     section: 'reports',
   },
   {
@@ -314,7 +350,7 @@ export const menuConfig = [
     icon: <Assessment />,
     path: null,
     roles: ['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'],
-    order: 11,
+    order: 14,
     section: 'reports',
     isGroup: true,
     children: [
@@ -343,20 +379,20 @@ export const menuConfig = [
         order: 3,
       },
       {
+        id: 'reports-return-restock',
+        label: 'Return Restock',
+        icon: <Assignment />,
+        path: '/dashboard/reports/return-restock',
+        roles: ['ADMIN'],
+        order: 3.5,
+      },
+      {
         id: 'reports-stock',
         label: 'Stock Reports',
         icon: <Assessment />,
         path: '/dashboard/stock-reports',
         roles: ['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'],
         order: 4,
-      },
-      {
-        id: 'reports-financial',
-        label: 'Financial Vouchers',
-        icon: <AccountBalance />,
-        path: '/dashboard/financial-vouchers',
-        roles: ['ADMIN'],
-        order: 5,
       },
       {
         id: 'reports-ledger',
@@ -375,7 +411,7 @@ export const menuConfig = [
         order: 6,
       },
       {
-        id: 'reports-financial',
+        id: 'reports-financial-reports',
         label: 'Financial Reports',
         icon: <PieChart />,
         path: '/dashboard/reports/financial',
@@ -390,8 +426,17 @@ export const menuConfig = [
     id: 'system-section',
     label: 'SYSTEM',
     isSection: true,
-    order: 14,
+    order: 15,
     roles: ['ADMIN'], // Exclude CASHIER and WAREHOUSE_KEEPER
+  },
+  {
+    id: 'admin-dashboard',
+    label: 'Admin Dashboard',
+    icon: <AdminPanelSettings />,
+    path: '/dashboard/admin-dashboard',
+    roles: ['ADMIN'],
+    order: 16,
+    section: 'system',
   },
   {
     id: 'ledger',
@@ -399,7 +444,7 @@ export const menuConfig = [
     icon: <AccountBalance />,
     path: '/dashboard/ledger',
     roles: ['ADMIN'],
-    order: 15,
+    order: 17,
     section: 'system',
   },
   {
@@ -408,7 +453,7 @@ export const menuConfig = [
     icon: <AccountBalance />,
     path: '/dashboard/admin/warehouse-ledgers',
     roles: ['ADMIN'],
-    order: 17,
+    order: 18,
     section: 'system',
   },
   {
@@ -417,7 +462,7 @@ export const menuConfig = [
     icon: <Devices />,
     path: '/dashboard/hardware',
     roles: ['ADMIN'],
-    order: 17,
+    order: 19,
     section: 'system',
   },
 ]

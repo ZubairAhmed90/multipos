@@ -16,31 +16,51 @@ const getInventoryItems = async (req, res, next) => {
       warehouseId: req.user.warehouseId
     });
     
-    const { scopeType, scopeId, category, includeCrossBranch = false } = req.query;
+    const { scopeType, scopeId, category, includeCrossBranch = false, supplierId } = req.query;
     let whereConditions = [];
     let params = [];
     
     // Admin can see everything
     if (req.user.role === 'ADMIN') {
       if (scopeType && scopeId) {
-        whereConditions.push('scope_type = ? AND scope_id = ?');
+        whereConditions.push('i.scope_type = ? AND i.scope_id = ?');
         params.push(scopeType, scopeId);
       }
     } else {
-      // Non-admin users have scope restrictions
-      if (req.user.role === 'WAREHOUSE_KEEPER') {
-        // Warehouse keepers can ONLY see their assigned warehouse inventory
-        whereConditions.push('scope_type = ? AND scope_id = ?');
-        params.push('WAREHOUSE', req.user.warehouseId);
+    // Non-admin users have scope restrictions
+    // Handle both branch_id and branchId for backward compatibility
+    const userBranchId = req.user.branch_id || req.user.branchId;
+    const userWarehouseId = req.user.warehouse_id || req.user.warehouseId;
+    
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      // Warehouse keepers can ONLY see their assigned warehouse inventory
+      if (userWarehouseId) {
+        whereConditions.push('i.scope_type = ? AND i.scope_id = ?');
+        params.push('WAREHOUSE', userWarehouseId);
+        console.log('[InventoryController] Warehouse keeper filtering:', {
+          warehouseId: userWarehouseId,
+          role: req.user.role
+        });
+      } else {
+        // If no warehouse ID, show no products
+        whereConditions.push('1 = 0');
+        console.log('[InventoryController] No warehouse ID for warehouse keeper');
+      }
     } else if (req.user.role === 'CASHIER') {
       // Cashiers can see their assigned branch inventory
       // Use branch ID directly for filtering (inventory items store numeric IDs)
-      console.log('[InventoryController] Cashier branch filtering:', {
-        branchId: req.user.branchId,
-        role: req.user.role
-      });
-      whereConditions.push('scope_type = ? AND scope_id = ?');
-      params.push('BRANCH', req.user.branchId);
+      if (userBranchId) {
+        whereConditions.push('i.scope_type = ? AND i.scope_id = ?');
+        params.push('BRANCH', userBranchId);
+        console.log('[InventoryController] Cashier branch filtering:', {
+          branchId: userBranchId,
+          role: req.user.role
+        });
+      } else {
+        // If no branch ID, show no products
+        whereConditions.push('1 = 0');
+        console.log('[InventoryController] No branch ID for cashier');
+      }
       
       // If specific branch requested, filter to that branch
       if (scopeType === 'BRANCH' && scopeId) {
@@ -56,6 +76,12 @@ const getInventoryItems = async (req, res, next) => {
       params.push(category);
     }
     
+    // Filter by supplier if provided
+    if (supplierId) {
+      whereConditions.push('i.supplier_id = ?');
+      params.push(supplierId);
+    }
+    
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
     
     console.log('[InventoryController] Final query conditions:', {
@@ -69,6 +95,10 @@ const getInventoryItems = async (req, res, next) => {
         i.*,
         b.name as branch_name,
         w.name as warehouse_name,
+        c.name as supplier_name,
+        c.contact_person as supplier_contact,
+        c.phone as supplier_phone,
+        c.email as supplier_email,
         COALESCE(sr.total_purchased, 0) as total_purchased,
         COALESCE(sr.total_sold, 0) as total_sold,
         COALESCE(sr.total_returned, 0) as total_returned,
@@ -76,14 +106,15 @@ const getInventoryItems = async (req, res, next) => {
       FROM inventory_items i
       LEFT JOIN branches b ON i.scope_type = 'BRANCH' AND i.scope_id = b.id
       LEFT JOIN warehouses w ON i.scope_type = 'WAREHOUSE' AND i.scope_id = w.id
+      LEFT JOIN companies c ON i.supplier_id = c.id
       LEFT JOIN (
         SELECT 
           inventory_item_id,
-          SUM(CASE WHEN transaction_type = 'PURCHASE' THEN quantity_change ELSE 0 END) as total_purchased,
-          SUM(CASE WHEN transaction_type = 'SALE' THEN ABS(quantity_change) ELSE 0 END) as total_sold,
-          SUM(CASE WHEN transaction_type = 'RETURN' THEN quantity_change ELSE 0 END) as total_returned,
-          SUM(CASE WHEN transaction_type = 'ADJUSTMENT' THEN quantity_change ELSE 0 END) as total_adjusted
-        FROM stock_reports 
+          SUM(CASE WHEN movement_type = 'PURCHASE' THEN quantity ELSE 0 END) as total_purchased,
+          SUM(CASE WHEN movement_type = 'SALE' THEN ABS(quantity) ELSE 0 END) as total_sold,
+          SUM(CASE WHEN movement_type = 'RETURN' THEN quantity ELSE 0 END) as total_returned,
+          SUM(CASE WHEN movement_type = 'ADJUSTMENT' THEN quantity ELSE 0 END) as total_adjusted
+        FROM stock_movements 
         GROUP BY inventory_item_id
       ) sr ON i.id = sr.inventory_item_id
       ${whereClause}
@@ -114,7 +145,14 @@ const getInventoryItems = async (req, res, next) => {
       totalPurchased: parseFloat(item.total_purchased) || 0,
       totalSold: parseFloat(item.total_sold) || 0,
       totalReturned: parseFloat(item.total_returned) || 0,
-      totalAdjusted: parseFloat(item.total_adjusted) || 0
+      totalAdjusted: parseFloat(item.total_adjusted) || 0,
+      supplierId: item.supplier_id,
+      supplierName: item.supplier_name,
+      supplierContact: item.supplier_contact,
+      supplierPhone: item.supplier_phone,
+      supplierEmail: item.supplier_email,
+      purchaseDate: item.purchase_date,
+      purchasePrice: parseFloat(item.purchase_price) || null
     }));
     
     res.json({
@@ -203,7 +241,11 @@ const createInventoryItem = async (req, res, next) => {
       maxStockLevel,
       currentStock,
       scopeType,
-      scopeId
+      scopeId,
+      supplierId,
+      supplierName,
+      purchaseDate,
+      purchasePrice
     } = req.body;
 
     // Check permissions - cashiers are now allowed to create inventory items
@@ -264,7 +306,11 @@ const createInventoryItem = async (req, res, next) => {
       currentStock,
       scopeType,
       scopeId: scopeId, // Store branch/warehouse ID instead of name
-      createdBy: req.user.id
+      createdBy: req.user.id,
+      supplierId: supplierId || null,
+      supplierName: supplierName || null,
+      purchaseDate: purchaseDate || null,
+      purchasePrice: purchasePrice || null
     });
 
     // Create stock report entry for initial inventory creation
@@ -458,12 +504,8 @@ const updateStock = async (req, res, next) => {
       newStock += quantity;
     } else if (operation === 'SUBTRACT') {
       newStock -= quantity;
-      if (newStock < 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Insufficient stock'
-        });
-      }
+      // Allow negative quantities for sales operations
+      // Only prevent negative for manual adjustments
     } else if (operation === 'SET') {
       newStock = currentStock;
     }
@@ -611,12 +653,8 @@ const updateQuantity = async (req, res, next) => {
       newQuantity += quantity;
     } else if (operation === 'SUBTRACT') {
       newQuantity -= quantity;
-      if (newQuantity < 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Insufficient stock'
-        });
-      }
+      // Allow negative quantities for sales operations
+      // Only prevent negative for manual adjustments
     } else if (operation === 'SET') {
       newQuantity = quantity;
     }
@@ -886,7 +924,7 @@ const getLatestInventoryChanges = async (req, res, next) => {
 const getCrossBranchInventory = async (req, res, next) => {
   try {
     const { category } = req.query;
-    let whereConditions = ['scope_type = ?'];
+    let whereConditions = ['i.scope_type = ?'];
     let params = ['BRANCH'];
 
     // Only show branches with open account setting

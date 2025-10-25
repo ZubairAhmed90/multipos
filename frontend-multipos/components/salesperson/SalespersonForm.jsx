@@ -33,6 +33,9 @@ const SalespersonForm = ({
   warehouses = [],
   userRole = 'ADMIN'
 }) => {
+  console.log('🔧 SalespersonForm props:', { open, salesperson: !!salesperson, warehousesLength: warehouses.length, userRole })
+  console.log('🔧 warehouses prop:', warehouses)
+  
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
@@ -70,13 +73,46 @@ const SalespersonForm = ({
 
   // Set warehouse ID for warehouse keepers
   useEffect(() => {
-    if (userRole === 'WAREHOUSE_KEEPER' && warehouses.length > 0) {
-      setFormData(prev => ({
-        ...prev,
-        warehouseId: warehouses[0].id
-      }))
+    console.log('🔧 useEffect triggered:', { userRole, warehousesLength: warehouses.length, salesperson: !!salesperson })
+    console.log('🔧 warehouses data:', warehouses)
+    
+    if (userRole === 'WAREHOUSE_KEEPER' && warehouses.length > 0 && !salesperson) {
+      // Only set warehouse ID for new salespeople, not when editing
+      console.log('🔧 Setting warehouse ID for warehouse keeper:', warehouses[0])
+      setFormData(prev => {
+        const newState = {
+          ...prev,
+          warehouseId: warehouses[0].id
+        }
+        console.log('🔧 formData after setting warehouseId:', newState)
+        return newState
+      })
+    } else {
+      console.log('🔧 useEffect conditions not met:', {
+        isWarehouseKeeper: userRole === 'WAREHOUSE_KEEPER',
+        hasWarehouses: warehouses.length > 0,
+        isNewSalesperson: !salesperson
+      })
     }
-  }, [userRole, warehouses])
+  }, [userRole, warehouses, salesperson])
+
+  // Additional useEffect to handle form initialization when dialog opens
+  useEffect(() => {
+    if (open && userRole === 'WAREHOUSE_KEEPER' && warehouses.length > 0 && !salesperson) {
+      console.log('🔧 Dialog opened - setting warehouse ID:', warehouses[0])
+      setFormData(prev => {
+        if (!prev.warehouseId || prev.warehouseId === '') {
+          const newState = {
+            ...prev,
+            warehouseId: warehouses[0].id
+          }
+          console.log('🔧 formData updated on dialog open:', newState)
+          return newState
+        }
+        return prev
+      })
+    }
+  }, [open, userRole, warehouses, salesperson])
 
   const handleFieldChange = (field, value) => {
     setFormData(prev => ({
@@ -86,6 +122,7 @@ const SalespersonForm = ({
   }
 
   const validateForm = () => {
+    console.log('🔍 Validating form data:', formData)
     if (!formData.name.trim()) {
       setError('Name is required')
       return false
@@ -94,14 +131,26 @@ const SalespersonForm = ({
       setError('Phone is required')
       return false
     }
-    if (!formData.warehouseId) {
+    // Check if warehouseId is valid (not empty, null, undefined, or empty string)
+    if (!formData.warehouseId || formData.warehouseId === '' || formData.warehouseId === null || formData.warehouseId === undefined) {
+      console.log('❌ Warehouse validation failed. warehouseId:', formData.warehouseId)
       setError('Warehouse is required')
       return false
     }
+    console.log('✅ Form validation passed')
     return true
   }
 
   const handleSave = async () => {
+    console.log('🔍 handleSave called. Current formData:', formData)
+    
+    // Additional check for warehouse keepers
+    if (userRole === 'WAREHOUSE_KEEPER' && (!formData.warehouseId || formData.warehouseId === '')) {
+      console.log('❌ Warehouse keeper form submitted without warehouse ID')
+      setError('Warehouse is required. Please wait for the form to load completely.')
+      return
+    }
+    
     if (!validateForm()) return
 
     setLoading(true)
@@ -116,6 +165,9 @@ const SalespersonForm = ({
         warehouseId: parseInt(formData.warehouseId),
         status: formData.status
       }
+      
+      console.log('🔧 API payload being sent:', payload)
+      console.log('🔧 warehouseId type:', typeof payload.warehouseId, 'value:', payload.warehouseId)
 
       let response
       if (salesperson) {
@@ -150,6 +202,9 @@ const SalespersonForm = ({
 
   const isEditMode = !!salesperson
   const canSelectWarehouse = userRole === 'ADMIN'
+  
+  // Check if form is ready for warehouse keepers
+  const isFormReady = userRole !== 'WAREHOUSE_KEEPER' || (formData.warehouseId && formData.warehouseId !== '')
 
   return (
     <Dialog 
@@ -224,25 +279,46 @@ const SalespersonForm = ({
           </Grid>
 
           <Grid item xs={12} sm={6}>
-            <FormControl fullWidth required disabled={loading || !canSelectWarehouse}>
-              <InputLabel>Warehouse</InputLabel>
-              <Select
-                value={formData.warehouseId}
-                onChange={(e) => handleFieldChange('warehouseId', e.target.value)}
-                label="Warehouse"
-                disabled={!canSelectWarehouse}
-              >
-                {warehouses.map((warehouse) => (
-                  <MenuItem key={warehouse.id} value={warehouse.id}>
-                    {warehouse.name} ({warehouse.code})
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            {!canSelectWarehouse && (
-              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
-                Warehouse is automatically assigned to your scope
-              </Typography>
+            {canSelectWarehouse ? (
+              <FormControl fullWidth required disabled={loading}>
+                <InputLabel>Warehouse</InputLabel>
+                <Select
+                  value={formData.warehouseId}
+                  onChange={(e) => handleFieldChange('warehouseId', e.target.value)}
+                  label="Warehouse"
+                >
+                  {warehouses.map((warehouse) => (
+                    <MenuItem key={warehouse.id} value={warehouse.id}>
+                      {warehouse.name}{warehouse.code ? ` (${warehouse.code})` : ''}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            ) : (
+              <Box>
+                <Typography variant="body2" color="text.secondary" gutterBottom>
+                  Warehouse
+                </Typography>
+                {warehouses.length > 0 ? (
+                  <>
+                    <Typography variant="body1" fontWeight="medium">
+                      {`${warehouses[0].name}${warehouses[0].code ? ` (${warehouses[0].code})` : ''}`}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                      Warehouse is automatically assigned to your scope
+                    </Typography>
+                  </>
+                ) : (
+                  <>
+                    <Typography variant="body1" fontWeight="medium" color="text.secondary">
+                      Loading warehouse...
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                      Please wait while we load your warehouse information
+                    </Typography>
+                  </>
+                )}
+              </Box>
             )}
           </Grid>
 
@@ -271,7 +347,7 @@ const SalespersonForm = ({
           variant="contained"
           startIcon={loading ? <CircularProgress size={20} /> : <SaveIcon />}
           onClick={handleSave}
-          disabled={loading}
+          disabled={loading || !isFormReady}
         >
           {loading ? 'Saving...' : (isEditMode ? 'Update' : 'Create')}
         </Button>

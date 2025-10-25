@@ -25,13 +25,11 @@ const createSale = async (req, res, next) => {
       });
     }
 
-    const { items, scopeType, scopeId, paymentMethod, customerInfo, notes, subtotal, tax, discount, total, paymentStatus, status, paymentAmount, creditAmount, creditStatus } = req.body;
+    const { items, scopeType, scopeId, paymentMethod, paymentType, customerInfo, notes, subtotal, tax, discount, total, paymentStatus, status, paymentAmount, creditAmount, creditStatus } = req.body;
 
     // Debug: Log the received payment method
     console.log('[SalesController] Received paymentMethod:', paymentMethod, 'Type:', typeof paymentMethod);
-    console.log('[SalesController] Received creditAmount:', creditAmount, 'Type:', typeof creditAmount);
-    console.log('[SalesController] Received paymentAmount:', paymentAmount, 'Type:', typeof paymentAmount);
-    console.log('[SalesController] Full request body:', JSON.stringify(req.body, null, 2));
+    console.log('[SalesController] Received paymentType:', paymentType, 'Type:', typeof paymentType);
 
 
     // Validate items
@@ -142,7 +140,22 @@ const createSale = async (req, res, next) => {
     // Generate invoice number using branch/warehouse code
     let invoiceNo;
     try {
-      invoiceNo = await InvoiceNumberService.generateInvoiceNumber(scopeType, scopeId);
+      // Convert scopeId to number for InvoiceNumberService if it's a string
+      const numericScopeId = typeof scopeId === 'string' ? parseInt(scopeId) : scopeId;
+      console.log('[SalesController] Generating invoice with scopeType:', scopeType, 'scopeId:', scopeId, 'numericScopeId:', numericScopeId);
+      
+      // Debug: Check if branch exists and has code
+      if (scopeType === 'BRANCH') {
+        const [branches] = await pool.execute('SELECT id, name, code FROM branches WHERE id = ?', [numericScopeId]);
+        console.log('[SalesController] Branch lookup result:', branches);
+        if (branches.length === 0) {
+          throw new Error(`Branch not found with ID: ${numericScopeId}`);
+        }
+        const branch = branches[0];
+        console.log('[SalesController] Branch details:', { id: branch.id, name: branch.name, code: branch.code });
+      }
+      
+      invoiceNo = await InvoiceNumberService.generateInvoiceNumber(scopeType, numericScopeId);
       console.log('[SalesController] Generated invoice number:', invoiceNo);
     } catch (invoiceError) {
       console.error('[SalesController] Error generating invoice number:', invoiceError);
@@ -158,10 +171,12 @@ const createSale = async (req, res, next) => {
     // Get branch/warehouse name for scope_id
     let scopeName = '';
     if (scopeType === 'BRANCH' && scopeId) {
-      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [scopeId]);
+      const numericScopeId = typeof scopeId === 'string' ? parseInt(scopeId) : scopeId;
+      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [numericScopeId]);
       scopeName = branches[0]?.name || scopeId;
     } else if (scopeType === 'WAREHOUSE' && scopeId) {
-      const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [scopeId]);
+      const numericScopeId = typeof scopeId === 'string' ? parseInt(scopeId) : scopeId;
+      const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [numericScopeId]);
       scopeName = warehouses[0]?.name || scopeId;
     } else {
       scopeName = scopeId || '';
@@ -393,7 +408,7 @@ const createSale = async (req, res, next) => {
     const saleData = {
       invoiceNo: invoiceNo || null,
       scopeType: scopeType || null,
-      scopeId: scopeId || null, // Store branch/warehouse ID instead of name
+      scopeId: scopeName || scopeId || null, // Store branch/warehouse name instead of ID
       userId: req.user.id || null,
       shiftId: req.body.shiftId || req.currentShift?.id || null,
       subtotal: finalSubtotal || 0,
@@ -401,6 +416,7 @@ const createSale = async (req, res, next) => {
       discount: finalDiscount || 0,
       total: finalTotal || 0,
       paymentMethod: paymentMethod || null,
+      paymentType: paymentType || null, // Add payment type (PARTIAL_PAYMENT, FULLY_CREDIT, FULL_PAYMENT)
       paymentStatus: finalPaymentStatus || null,
       customerInfo: customerInfo ? JSON.stringify(customerInfo) : null,
       customerName: customerName || null,
@@ -569,7 +585,10 @@ const createSale = async (req, res, next) => {
         userId: req.user.id,
         userName: req.user.name,
         userRole: req.user.role,
-        status: 'APPROVED' // Auto-approve sales from POS
+        status: 'APPROVED', // Auto-approve sales from POS
+        approvedBy: req.user.id,
+        approvalNotes: null,
+        rejectionReason: null
       };
 
       await FinancialVoucher.create(voucherData);
@@ -711,8 +730,8 @@ const getSales = async (req, res, next) => {
         w.name as warehouse_name
       FROM sales s
       LEFT JOIN users u ON s.user_id = u.id
-      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.id
-      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.id
+      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
+      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
       ${whereClause}
       ORDER BY s.created_at DESC
     `, params);
@@ -1421,7 +1440,10 @@ const createSalesReturn = async (req, res, next) => {
           inventoryItemId: null, // Manual items don't have inventory ID
           itemName: item.name || item.itemName,
           sku: item.sku || `MANUAL-${Date.now()}`,
+          barcode: item.barcode || null,
+          category: item.category || null,
           quantity: item.quantity,
+          originalQuantity: item.quantity, // For manual items, assume original equals returned
           unitPrice: parseFloat(item.unitPrice) || 0,
           refundAmount: item.refundAmount
         });
@@ -1441,7 +1463,10 @@ const createSalesReturn = async (req, res, next) => {
             inventoryItemId: inventoryItem.id,
             itemName: inventoryItem.name,
             sku: inventoryItem.sku,
+            barcode: inventoryItem.barcode || null,
+            category: inventoryItem.category || null,
             quantity: item.quantity,
+            originalQuantity: item.quantity, // Will be updated with actual original quantity
             unitPrice: parseFloat(inventoryItem.selling_price) || 0,
             refundAmount: item.refundAmount
           });
@@ -1452,7 +1477,10 @@ const createSalesReturn = async (req, res, next) => {
             inventoryItemId: null,
             itemName: item.productName,
             sku: `MANUAL-${Date.now()}`,
+            barcode: item.barcode || null,
+            category: item.category || null,
             quantity: item.quantity,
+            originalQuantity: item.quantity, // For manual items, assume original equals returned
             unitPrice: parseFloat(item.unitPrice) || 0,
             refundAmount: item.refundAmount
           });
@@ -1470,7 +1498,10 @@ const createSalesReturn = async (req, res, next) => {
             inventoryItemId: inventoryItem.id,
             itemName: inventoryItem.name,
             sku: inventoryItem.sku,
+            barcode: inventoryItem.barcode || null,
+            category: inventoryItem.category || null,
             quantity: item.quantity,
+            originalQuantity: item.quantity, // Will be updated with actual original quantity
             unitPrice: parseFloat(inventoryItem.selling_price) || 0,
             refundAmount: item.refundAmount
           });
@@ -1669,8 +1700,8 @@ const getSalesReturns = async (req, res, next) => {
       JOIN sales s ON sr.original_sale_id = s.id
       LEFT JOIN users u ON sr.user_id = u.id
       LEFT JOIN users p ON sr.processed_by = p.id
-      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.id
-      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.id
+      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
+      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
       ${whereClause}
       ORDER BY sr.created_at DESC
     `, params);
@@ -1684,6 +1715,103 @@ const getSalesReturns = async (req, res, next) => {
     res.status(500).json({
       success: false,
       message: 'Error retrieving sales returns',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get single sales return with items
+// @route   GET /api/sales/returns/:id
+// @access  Private (Admin, Cashier, Warehouse Keeper)
+const getSalesReturn = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Get return details
+    const [returns] = await pool.execute(`
+      SELECT 
+        sr.*,
+        s.invoice_no,
+        s.scope_type,
+        s.scope_id,
+        u.username as user_name,
+        p.username as processed_by_username,
+        p.username as processed_by_name,
+        b.name as branch_name,
+        w.name as warehouse_name
+      FROM sales_returns sr
+      LEFT JOIN sales s ON sr.original_sale_id = s.id
+      LEFT JOIN users u ON sr.user_id = u.id
+      LEFT JOIN users p ON sr.processed_by = p.id
+      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
+      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
+      WHERE sr.id = ?
+    `, [id]);
+
+    if (returns.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Return not found'
+      });
+    }
+
+    const returnData = returns[0];
+
+    // Get return items
+    const [items] = await pool.execute(`
+      SELECT 
+        sri.*,
+        ii.name as inventory_item_name,
+        ii.sku as inventory_sku,
+        ii.selling_price as inventory_price,
+        ii.category as inventory_category,
+        ii.barcode as inventory_barcode
+      FROM sales_return_items sri
+      LEFT JOIN inventory_items ii ON sri.inventory_item_id = ii.id
+      WHERE sri.return_id = ?
+      ORDER BY sri.id
+    `, [id]);
+
+    // Transform items data
+    const transformedItems = items.map(item => ({
+      id: item.id,
+      returnId: item.return_id,
+      inventoryItemId: item.inventory_item_id,
+      itemName: item.item_name || item.inventory_item_name || 'Unknown Item',
+      sku: item.sku || item.inventory_sku || 'N/A',
+      barcode: item.barcode || item.inventory_barcode || null,
+      category: item.category || item.inventory_category || null,
+      quantity: parseFloat(item.quantity),
+      originalQuantity: parseFloat(item.original_quantity),
+      remainingQuantity: parseFloat(item.remaining_quantity),
+      unitPrice: parseFloat(item.unit_price),
+      refundAmount: parseFloat(item.refund_amount),
+      createdAt: item.created_at,
+      // Additional inventory info
+      inventoryItemName: item.inventory_item_name,
+      inventorySku: item.inventory_sku,
+      inventoryPrice: parseFloat(item.inventory_price) || 0,
+      currentStock: parseFloat(item.current_stock) || 0,
+      minStockLevel: parseFloat(item.min_stock_level) || 0,
+      maxStockLevel: parseFloat(item.max_stock_level) || 0
+    }));
+
+    // Combine return data with items
+    const returnWithItems = {
+      ...returnData,
+      items: transformedItems
+    };
+
+    res.json({
+      success: true,
+      data: returnWithItems
+    });
+
+  } catch (error) {
+    console.error('[DEBUG] Error fetching sales return:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error retrieving sales return',
       error: error.message
     });
   }
@@ -1776,8 +1904,8 @@ const updateSalesReturn = async (req, res, next) => {
       JOIN sales s ON sr.original_sale_id = s.id
       LEFT JOIN users u ON sr.user_id = u.id
       LEFT JOIN users p ON sr.processed_by = p.id
-      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.id
-      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.id
+      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
+      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
       WHERE sr.id = ?
     `, [id]);
 
@@ -1875,8 +2003,8 @@ const getCompanySalesHistory = async (req, res, next) => {
         w.name as warehouse_name
       FROM sales s
       LEFT JOIN users u ON s.user_id = u.id
-      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.id
-      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.id
+      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
+      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
       ${whereClause}
       ORDER BY s.created_at DESC
       LIMIT ?
@@ -1965,8 +2093,8 @@ const getInvoiceDetails = async (req, res, next) => {
         w.name as warehouse_name
       FROM sales s
       LEFT JOIN users u ON s.user_id = u.id
-      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.id
-      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.id
+      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
+      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
       WHERE s.id = ?
     `, [invoiceId]);
     
@@ -2071,6 +2199,36 @@ const searchProducts = async (req, res, next) => {
       });
     }
     
+    // Build WHERE conditions for role-based access
+    let whereConditions = ['(name LIKE ? OR sku LIKE ?)'];
+    let params = [`%${q}%`, `%${q}%`];
+    
+    // Apply role-based filtering
+    if (req.user.role === 'CASHIER') {
+      // Cashiers can only see products from their branch
+      const userBranchId = req.user.branch_id || req.user.branchId;
+      if (userBranchId) {
+        whereConditions.push('scope_type = ? AND scope_id = ?');
+        params.push('BRANCH', userBranchId);
+      } else {
+        // If no branch ID, show no products
+        whereConditions.push('1 = 0');
+      }
+    } else if (req.user.role === 'WAREHOUSE_KEEPER') {
+      // Warehouse keepers can only see products from their warehouse
+      const userWarehouseId = req.user.warehouse_id || req.user.warehouseId;
+      if (userWarehouseId) {
+        whereConditions.push('scope_type = ? AND scope_id = ?');
+        params.push('WAREHOUSE', userWarehouseId);
+      } else {
+        // If no warehouse ID, show no products
+        whereConditions.push('1 = 0');
+      }
+    }
+    // Admin can see all products (no additional scope filtering)
+    
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+    
     const [products] = await pool.execute(`
       SELECT 
         id,
@@ -2079,9 +2237,11 @@ const searchProducts = async (req, res, next) => {
         selling_price,
         cost_price,
         current_stock,
-        category
+        category,
+        scope_type,
+        scope_id
       FROM inventory_items 
-      WHERE name LIKE ? OR sku LIKE ?
+      ${whereClause}
       ORDER BY 
         CASE 
           WHEN name = ? THEN 1
@@ -2093,7 +2253,7 @@ const searchProducts = async (req, res, next) => {
         name ASC
       LIMIT ?
     `, [
-      `%${q}%`, `%${q}%`, 
+      ...params,
       q, q, 
       `${q}%`, `${q}%`, 
       parseInt(limit)
@@ -2108,11 +2268,14 @@ const searchProducts = async (req, res, next) => {
         sellingPrice: parseFloat(product.selling_price) || 0,
         costPrice: parseFloat(product.cost_price) || 0,
         currentStock: parseFloat(product.current_stock) || 0,
-        category: product.category
+        category: product.category,
+        scopeType: product.scope_type,
+        scopeId: product.scope_id
       }))
     });
     
   } catch (error) {
+    console.error('[SalesController] Error searching products:', error);
     res.status(500).json({
       success: false,
       message: 'Error searching products',
@@ -2449,11 +2612,47 @@ const getNextInvoiceNumber = async (req, res, next) => {
 const searchOutstandingPayments = async (req, res) => {
   try {
     const { customerName, phone } = req.query;
+    
+    console.log('🔍 searchOutstandingPayments - req.user:', req.user);
 
     if (!customerName && !phone) {
       return res.status(400).json({
         success: false,
         message: 'Customer name or phone is required'
+      });
+    }
+
+    // Get user's scope information based on role
+    let scopeType, scope;
+    
+    if (req.user.role === 'CASHIER' && req.user.branchId) {
+      // For cashiers, get branch name from branch ID
+      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [req.user.branchId]);
+      if (branches.length > 0) {
+        scopeType = 'BRANCH';
+        scope = branches[0].name;
+      }
+    } else if (req.user.role === 'WAREHOUSE_KEEPER' && req.user.warehouseId) {
+      // For warehouse keepers, get warehouse name from warehouse ID
+      const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [req.user.warehouseId]);
+      if (warehouses.length > 0) {
+        scopeType = 'WAREHOUSE';
+        scope = warehouses[0].name;
+      }
+    } else if (req.user.role === 'ADMIN') {
+      // Admin can see all transactions (no scope restrictions)
+      scopeType = null;
+      scope = null;
+    }
+
+    console.log('🔍 searchOutstandingPayments - scope:', scope, 'scopeType:', scopeType);
+
+    // Validate scope information for non-admin users
+    if (req.user.role !== 'ADMIN' && (!scope || !scopeType)) {
+      console.error('❌ Missing scope information:', { scope, scopeType, role: req.user.role });
+      return res.status(400).json({
+        success: false,
+        message: 'User scope information is missing'
       });
     }
 
@@ -2470,6 +2669,12 @@ const searchOutstandingPayments = async (req, res) => {
     
     const params = [];
     
+    // Add scope filtering for non-admin users
+    if (req.user.role !== 'ADMIN' && scope && scopeType) {
+      query += ' AND scope_type = ? AND scope_id = ?';
+      params.push(scopeType, scope);
+    }
+    
     if (customerName) {
       query += ' AND customer_name LIKE ?';
       params.push(`%${customerName}%`);
@@ -2481,6 +2686,9 @@ const searchOutstandingPayments = async (req, res) => {
     }
     
     query += ' GROUP BY customer_name, customer_phone HAVING total_outstanding > 0';
+
+    console.log('🔍 searchOutstandingPayments - Final query:', query);
+    console.log('🔍 searchOutstandingPayments - Final params:', params);
 
     const [results] = await pool.execute(query, params);
 
@@ -2518,21 +2726,68 @@ const clearOutstandingPayment = async (req, res) => {
       });
     }
 
+    // Get user's scope information based on role (outside transaction)
+    let scopeType, scope;
+    
+    if (req.user.role === 'CASHIER' && req.user.branchId) {
+      // For cashiers, get branch name from branch ID
+      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [req.user.branchId]);
+      if (branches.length > 0) {
+        scopeType = 'BRANCH';
+        scope = branches[0].name;
+      }
+    } else if (req.user.role === 'WAREHOUSE_KEEPER' && req.user.warehouseId) {
+      // For warehouse keepers, get warehouse name from warehouse ID
+      const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [req.user.warehouseId]);
+      if (warehouses.length > 0) {
+        scopeType = 'WAREHOUSE';
+        scope = warehouses[0].name;
+      }
+    } else if (req.user.role === 'ADMIN') {
+      // Admin can see all transactions (no scope restrictions)
+      scopeType = null;
+      scope = null;
+    }
+
+    console.log('🔍 clearOutstandingPayment - scope:', scope, 'scopeType:', scopeType);
+
+    // Validate scope information for non-admin users
+    if (req.user.role !== 'ADMIN' && (!scope || !scopeType)) {
+      console.error('❌ Missing scope information:', { scope, scopeType, role: req.user.role });
+      return res.status(400).json({
+        success: false,
+        message: 'User scope information is missing'
+      });
+    }
+
     const connection = await pool.getConnection();
     
     try {
       await connection.beginTransaction();
 
-      // Get all outstanding sales for the customer
-      const [outstandingSales] = await connection.execute(
-        `SELECT id, invoice_no, credit_amount, payment_amount, total, payment_status
-         FROM sales 
-         WHERE customer_name = ? AND customer_phone = ? 
-           AND (payment_status = 'PENDING' OR payment_status = 'PARTIAL') 
-           AND credit_amount > 0
-         ORDER BY created_at ASC`,
-        [customerName, phone]
-      );
+      // Build query with conditional scope filtering
+      let query = `
+        SELECT id, invoice_no, credit_amount, payment_amount, total, payment_status
+        FROM sales 
+        WHERE customer_name = ? AND customer_phone = ? 
+          AND (payment_status = 'PENDING' OR payment_status = 'PARTIAL') 
+          AND credit_amount > 0
+      `;
+      
+      const queryParams = [customerName, phone];
+      
+      // Add scope filtering for non-admin users
+      if (req.user.role !== 'ADMIN' && scope && scopeType) {
+        query += ' AND scope_type = ? AND scope_id = ?';
+        queryParams.push(scopeType, scope);
+      }
+      
+      query += ' ORDER BY created_at ASC';
+
+      console.log('🔍 clearOutstandingPayment - Final query:', query);
+      console.log('🔍 clearOutstandingPayment - Final params:', queryParams);
+
+      const [outstandingSales] = await connection.execute(query, queryParams);
 
       if (outstandingSales.length === 0) {
         return res.status(404).json({
@@ -2579,14 +2834,27 @@ const clearOutstandingPayment = async (req, res) => {
 
       await connection.commit();
 
-      // Get updated outstanding amount
-      const [outstanding] = await connection.execute(
-        `SELECT SUM(credit_amount) as remaining_outstanding
-         FROM sales 
-         WHERE customer_name = ? AND customer_phone = ? 
-           AND (payment_status = 'PENDING' OR payment_status = 'PARTIAL') AND credit_amount > 0`,
-        [customerName, phone]
-      );
+      // Get updated outstanding amount within the user's scope
+      let remainingQuery = `
+        SELECT SUM(credit_amount) as remaining_outstanding
+        FROM sales 
+        WHERE customer_name = ? AND customer_phone = ? 
+          AND (payment_status = 'PENDING' OR payment_status = 'PARTIAL') 
+          AND credit_amount > 0
+      `;
+      
+      const remainingParams = [customerName, phone];
+      
+      // Add scope filtering for non-admin users
+      if (req.user.role !== 'ADMIN' && scope && scopeType) {
+        remainingQuery += ' AND scope_type = ? AND scope_id = ?';
+        remainingParams.push(scopeType, scope);
+      }
+
+      console.log('🔍 clearOutstandingPayment - Remaining query:', remainingQuery);
+      console.log('🔍 clearOutstandingPayment - Remaining params:', remainingParams);
+
+      const [outstanding] = await connection.execute(remainingQuery, remainingParams);
 
       const remainingOutstanding = parseFloat(outstanding[0].remaining_outstanding) || 0;
 
@@ -2630,6 +2898,7 @@ module.exports = {
   deleteSale,
   createSalesReturn,
   getSalesReturns,
+  getSalesReturn,
   updateSalesReturn,
   getCompanySalesHistory,
   getInvoiceDetails,

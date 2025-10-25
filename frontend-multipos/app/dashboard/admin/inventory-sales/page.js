@@ -276,9 +276,9 @@ function AdminInventorySalesPage() {
                         variant="outlined"
                       />
                     </TableCell>
-                    <TableCell align="right">${Number(item.selling_price || 0).toFixed(2)}</TableCell>
+                    <TableCell align="right">{Number(item.selling_price || 0).toFixed(2)}</TableCell>
                     <TableCell align="right">
-                      ${(Number(item.current_stock || 0) * Number(item.selling_price || 0)).toFixed(2)}
+                      {(Number(item.current_stock || 0) * Number(item.selling_price || 0)).toFixed(2)}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -313,7 +313,7 @@ function AdminInventorySalesPage() {
                 Total Value
               </Typography>
               <Typography variant="h4">
-                ${totalSalesValue.toLocaleString()}
+                {totalSalesValue.toLocaleString()}
               </Typography>
             </CardContent>
           </Card>
@@ -337,7 +337,7 @@ function AdminInventorySalesPage() {
                 Avg Sale Value
               </Typography>
               <Typography variant="h4">
-                ${filteredSales.length > 0 ? (totalSalesValue / filteredSales.length).toFixed(0) : '0'}
+                {filteredSales.length > 0 ? (totalSalesValue / filteredSales.length).toFixed(0) : '0'}
               </Typography>
             </CardContent>
           </Card>
@@ -395,7 +395,7 @@ function AdminInventorySalesPage() {
                         color={sale.status === 'COMPLETED' ? 'success' : 'default'}
                       />
                     </TableCell>
-                    <TableCell align="right">${Number(sale.total || 0).toFixed(2)}</TableCell>
+                    <TableCell align="right">{Number(sale.total || 0).toFixed(2)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
