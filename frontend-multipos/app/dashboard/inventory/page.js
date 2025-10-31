@@ -488,6 +488,7 @@ function InventoryPage() {
   const [excelUploadOpen, setExcelUploadOpen] = useState(false)
   const [selectedEntity, setSelectedEntity] = useState(null)
   const [isEdit, setIsEdit] = useState(false)
+  const [formSubmitting, setFormSubmitting] = useState(false)
   
   // Tab state for warehouse keepers - removed, only show current warehouse
   const [selectedWarehouseId, setSelectedWarehouseId] = useState(null)
@@ -737,6 +738,7 @@ function InventoryPage() {
 
   // Handle CRUD operations
   const handleCreate = async (data) => {
+    setFormSubmitting(true)
     try {
       const result = await dispatch(createInventoryItem(data))
       if (createInventoryItem.fulfilled.match(result)) {
@@ -747,10 +749,13 @@ function InventoryPage() {
       }
     } catch (error) {
       alert('Error creating inventory item: ' + error.message)
+    } finally {
+      setFormSubmitting(false)
     }
   }
 
   const handleUpdate = async (data) => {
+    setFormSubmitting(true)
     try {
       const result = await dispatch(updateInventoryItem({ id: selectedEntity.id, data }))
       if (updateInventoryItem.fulfilled.match(result)) {
@@ -761,6 +766,8 @@ function InventoryPage() {
       }
     } catch (error) {
       alert('Error updating inventory item: ' + error.message)
+    } finally {
+      setFormSubmitting(false)
     }
   }
 
@@ -1289,7 +1296,7 @@ function InventoryPage() {
           initialData={selectedEntity}
           isEdit={isEdit}
           onSubmit={handleFormSubmit}
-          loading={loading}
+          loading={formSubmitting}
           error={error}
         />
 

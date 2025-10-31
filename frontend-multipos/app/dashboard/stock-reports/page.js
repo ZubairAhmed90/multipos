@@ -32,7 +32,10 @@ import {
   Tab,
   Divider,
   Avatar,
-  LinearProgress
+  LinearProgress,
+  Menu,
+  ButtonGroup,
+  Popover
 } from '@mui/material'
 import {
   Search as SearchIcon,
@@ -48,7 +51,10 @@ import {
   Assessment as AssessmentIcon,
   Visibility as ViewIcon,
   Download as DownloadIcon,
-  Refresh as RefreshIcon
+  Refresh as RefreshIcon,
+  ArrowDropDown as ArrowDropDownIcon,
+  PictureAsPdf as PDFIcon,
+  TableChart as ExcelIcon
 } from '@mui/icons-material'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../components/auth/RouteGuard'
@@ -61,6 +67,7 @@ function StockReportsPage() {
   
   // State management
   const [activeTab, setActiveTab] = useState(0)
+  const [exportMenuAnchor, setExportMenuAnchor] = useState(null)
   
   // Filter states
   const [filters, setFilters] = useState({
@@ -196,7 +203,12 @@ function StockReportsPage() {
       itemCategory: 'all',
       startDate: '',
       endDate: '',
-      userRole: 'all'
+      userRole: 'all',
+      specificProduct: '',
+      priceRange: { min: '', max: '' },
+      stockStatus: 'all',
+      showPriceChanges: false,
+      showRestockOnly: false
     })
     setPagination(prev => ({
       ...prev,
@@ -218,6 +230,277 @@ function StockReportsPage() {
       limit: parseInt(event.target.value),
       currentPage: 1
     }))
+  }
+
+  // Handle export menu
+  const handleExportMenuOpen = (event) => {
+    console.log('Export button clicked', event.currentTarget)
+    setExportMenuAnchor(event.currentTarget)
+  }
+
+  const handleExportMenuClose = () => {
+    setExportMenuAnchor(null)
+  }
+
+  const generatePDFContent = (data, headers, fieldMapping, title) => {
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>${title}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #333; padding-bottom: 20px; }
+            .summary { background: #f5f5f5; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 10px; }
+            th, td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+            th { background-color: #f2f2f2; font-weight: bold; }
+            .positive { color: #28a745; }
+            .negative { color: #dc3545; }
+            .footer { margin-top: 30px; text-align: center; border-top: 1px solid #ddd; padding-top: 20px; color: #666; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>${title}</h1>
+            <p>Generated on: ${new Date().toLocaleString()}</p>
+          </div>
+          
+          <table>
+            <thead>
+              <tr>
+                ${headers.map(h => `<th>${h}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${data.map((row, index) => {
+                const values = headers.map(header => {
+                  const fieldKey = fieldMapping[header] || header.toLowerCase().replace(/\s+/g, '')
+                  let value = row[fieldKey] || ''
+                  
+                  if (value === null || value === undefined) value = ''
+                  
+                  // Format dates
+                  if (header.includes('Date') && value) {
+                    value = new Date(value).toLocaleString()
+                  }
+                  
+                  // Format numbers
+                  if (typeof value === 'number') {
+                    value = value.toFixed(2)
+                  }
+                  
+                  return value || ''
+                })
+                return `<tr>${values.map(v => `<td>${v}</td>`).join('')}</tr>`
+              }).join('')}
+            </tbody>
+          </table>
+          
+          <div class="footer">
+            <p>Total Records: ${data.length}</p>
+            <p>MultiPOS Dashboard - Stock Reports</p>
+          </div>
+        </body>
+      </html>
+    `
+    return htmlContent
+  }
+
+  const downloadFile = (content, filename, mimeType) => {
+    if (mimeType === 'application/pdf') {
+      const printWindow = window.open('', '_blank')
+      printWindow.document.write(content)
+      printWindow.document.close()
+      printWindow.print()
+      return
+    }
+
+    const blob = new Blob([content], { type: mimeType })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+  }
+
+  const handleExportPDF = () => {
+    handleExportMenuClose()
+    
+    // Get current data based on active tab
+    let exportData = []
+    let headers = []
+    let fieldMapping = {}
+    let title = 'Stock Reports'
+    
+    if (activeTab === 0) {
+      // Stock Reports data
+      exportData = inventoryReports?.data || []
+      headers = ['Date & Time', 'Product', 'Transaction Type', 'Quantity Change', 'Previous Stock', 'Available Stock', 'Unit Price', 'Total Value', 'User', 'Scope']
+      fieldMapping = {
+        'Date & Time': 'createdAt',
+        'Product': 'itemName',
+        'Transaction Type': 'transactionType',
+        'Quantity Change': 'quantityChange',
+        'Previous Stock': 'previousQuantity',
+        'Available Stock': 'newQuantity',
+        'Unit Price': 'unitPrice',
+        'Total Value': 'totalValue',
+        'User': 'userName',
+        'Scope': 'scopeName'
+      }
+      title = 'Stock Transaction Reports'
+    } else if (activeTab === 1) {
+      // Stock Summary data
+      exportData = stockSummary?.data || []
+      headers = ['Item', 'Current Stock', 'Min Level', 'Max Level', 'Cost Price', 'Selling Price', 'Stock Value', 'Total Purchased', 'Total Sold', 'Total Returned', 'Total Adjusted', 'Net Change']
+      fieldMapping = {
+        'Item': 'itemName',
+        'Current Stock': 'currentStock',
+        'Min Level': 'minStockLevel',
+        'Max Level': 'maxStockLevel',
+        'Cost Price': 'costPrice',
+        'Selling Price': 'sellingPrice',
+        'Stock Value': 'currentStockValue',
+        'Total Purchased': 'totalPurchased',
+        'Total Sold': 'totalSold',
+        'Total Returned': 'totalReturned',
+        'Total Adjusted': 'totalAdjusted',
+        'Net Change': 'netChange'
+      }
+      title = 'Stock Summary Report'
+    } else {
+      // Statistics data - properly format the nested data
+      const formattedStats = []
+      
+      if (stockStatistics) {
+        // Overall statistics
+        if (stockStatistics.overall) {
+          formattedStats.push({
+            category: 'Total Transactions',
+            value: stockStatistics.overall.total_transactions || 0
+          })
+          formattedStats.push({
+            category: 'Total Purchased',
+            value: stockStatistics.overall.total_purchased || 0
+          })
+          formattedStats.push({
+            category: 'Total Sold',
+            value: stockStatistics.overall.total_sold || 0
+          })
+          formattedStats.push({
+            category: 'Total Returned',
+            value: stockStatistics.overall.total_returned || 0
+          })
+          formattedStats.push({
+            category: 'Total Adjusted',
+            value: stockStatistics.overall.total_adjusted || 0
+          })
+          formattedStats.push({
+            category: 'Total Transferred In',
+            value: stockStatistics.overall.total_transferred_in || 0
+          })
+          formattedStats.push({
+            category: 'Total Transferred Out',
+            value: stockStatistics.overall.total_transferred_out || 0
+          })
+        }
+        
+        // Transaction types
+        if (stockStatistics.transactionTypes && Array.isArray(stockStatistics.transactionTypes)) {
+          stockStatistics.transactionTypes.forEach(type => {
+            formattedStats.push({
+              category: `${type.transactionType || type.transaction_type}`,
+              value: `${type.count || 0} transactions, Total Qty: ${type.totalQuantity || 0}`
+            })
+          })
+        }
+        
+        // Top items
+        if (stockStatistics.topItems && Array.isArray(stockStatistics.topItems)) {
+          stockStatistics.topItems.forEach((item, index) => {
+            formattedStats.push({
+              category: `Top Item ${index + 1}: ${item.itemName || item.item_name}`,
+              value: `${item.transactionCount || 0} transactions, Total Qty: ${item.totalQuantity || 0}`
+            })
+          })
+        }
+        
+        // Daily activity
+        if (stockStatistics.dailyActivity && Array.isArray(stockStatistics.dailyActivity)) {
+          stockStatistics.dailyActivity.forEach(day => {
+            formattedStats.push({
+              category: `Daily Activity: ${day.date}`,
+              value: `Purchased: ${day.purchased || 0}, Sold: ${day.sold || 0}, Returned: ${day.returned || 0}`
+            })
+          })
+        }
+      }
+      
+      exportData = formattedStats
+      headers = ['Category', 'Value']
+      fieldMapping = { 'Category': 'category', 'Value': 'value' }
+      title = 'Stock Statistics Report'
+    }
+    
+    const pdfContent = generatePDFContent(exportData, headers, fieldMapping, title)
+    downloadFile(pdfContent, `${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().split('T')[0]}.html`, 'application/pdf')
+  }
+
+  const handleExportExcel = () => {
+    handleExportMenuClose()
+    
+    // Get current data based on active tab
+    let exportData = []
+    let headers = []
+    let filename = 'stock-reports.xlsx'
+    
+    if (activeTab === 0) {
+      // Stock Reports data
+      exportData = inventoryReports?.data || []
+      headers = ['Date & Time', 'Product', 'Transaction Type', 'Quantity Change', 'Previous Stock', 'Available Stock', 'Unit Price', 'Total Value', 'Price Change', 'User', 'Scope']
+      filename = 'stock-reports.xlsx'
+    } else if (activeTab === 1) {
+      // Stock Summary data
+      exportData = stockSummary?.data || []
+      headers = ['Item', 'Current Stock', 'Min Level', 'Max Level', 'Cost Price', 'Selling Price', 'Stock Value', 'Total Purchased', 'Total Sold', 'Total Returned', 'Total Adjusted', 'Net Change']
+      filename = 'stock-summary.xlsx'
+    } else {
+      // Statistics data - flatten for export
+      exportData = stockStatistics ? Object.entries(stockStatistics).flatMap(([key, value]) => 
+        Array.isArray(value) ? value.map(item => ({ category: key, ...item })) : [{ category: key, value }]
+      ) : []
+      headers = ['Category', 'Value']
+      filename = 'stock-statistics.xlsx'
+    }
+    
+    // Convert to CSV and download
+    const csvContent = [
+      headers.join(','),
+      ...exportData.map(row => {
+        const values = headers.map(header => {
+          // Convert header to field name (camelCase or snake_case)
+          const fieldName = header.toLowerCase().replace(/\s+/g, '')
+          const value = row[fieldName] || ''
+          return typeof value === 'string' ? `"${value.replace(/"/g, '""')}"` : value || ''
+        })
+        return values.join(',')
+      })
+    ].join('\n')
+    
+    // Download CSV file
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    const url = URL.createObjectURL(blob)
+    link.setAttribute('href', url)
+    link.setAttribute('download', filename.replace('.xlsx', '.csv'))
+    link.style.visibility = 'hidden'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 
   // Get transaction type color
@@ -625,10 +908,27 @@ function StockReportsPage() {
               <Button
                 variant="outlined"
                 startIcon={<DownloadIcon />}
+                endIcon={<ArrowDropDownIcon />}
+                onClick={handleExportMenuOpen}
                 disabled={isLoading}
+                sx={{ textTransform: 'none' }}
               >
                 Export
               </Button>
+              <Menu
+                anchorEl={exportMenuAnchor}
+                open={Boolean(exportMenuAnchor)}
+                onClose={handleExportMenuClose}
+              >
+                <MenuItem onClick={handleExportPDF}>
+                  <PDFIcon sx={{ mr: 1 }} />
+                  Export to PDF
+                </MenuItem>
+                <MenuItem onClick={handleExportExcel}>
+                  <ExcelIcon sx={{ mr: 1 }} />
+                  Export to Excel
+                </MenuItem>
+              </Menu>
             </Box>
           </Box>
 
@@ -769,8 +1069,8 @@ function StockReportsPage() {
                     size="small"
                     type="number"
                     label="Min Price"
-                    value={filters.priceRange.min}
-                    onChange={(e) => handleFilterChange('priceRange', { ...filters.priceRange, min: e.target.value })}
+                    value={filters.priceRange?.min || ''}
+                    onChange={(e) => handleFilterChange('priceRange', { ...(filters.priceRange || {}), min: e.target.value })}
                     InputProps={{
                       startAdornment: <InputAdornment position="start"></InputAdornment>
                     }}
@@ -782,8 +1082,8 @@ function StockReportsPage() {
                     size="small"
                     type="number"
                     label="Max Price"
-                    value={filters.priceRange.max}
-                    onChange={(e) => handleFilterChange('priceRange', { ...filters.priceRange, max: e.target.value })}
+                    value={filters.priceRange?.max || ''}
+                    onChange={(e) => handleFilterChange('priceRange', { ...(filters.priceRange || {}), max: e.target.value })}
                     InputProps={{
                       startAdornment: <InputAdornment position="start"></InputAdornment>
                     }}

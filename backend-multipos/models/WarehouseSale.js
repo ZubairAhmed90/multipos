@@ -1,6 +1,7 @@
 const { pool } = require('../config/database');
 const InvoiceNumberService = require('../services/invoiceNumberService');
 const LedgerService = require('../services/ledgerService');
+const { createSaleTransaction } = require('../middleware/stockTracking');
 
 class WarehouseSale {
   constructor(data) {
@@ -42,63 +43,173 @@ class WarehouseSale {
         paymentAmount = 0, // New field for partial payment amount
         creditAmount = 0, // New field for credit amount
         outstandingPayments = [], // New field for outstanding payments
-        notes
+        notes,
+        customerInfo: incomingCustomerInfo // Customer info from controller
       } = saleData;
 
-      // Generate invoice number using warehouse code and salesperson identification
+      // Get warehouse information from warehouse keeper
+      // First, get the warehouse_id from the user, then get warehouse details
+      let warehouseId = null;
+      let warehouseName = null;
+      let warehouseCode = null;
+      
+      try {
+        const [users] = await connection.execute(
+          'SELECT warehouse_id FROM users WHERE id = ?',
+          [warehouseKeeperId]
+        );
+        
+        if (users.length > 0 && users[0].warehouse_id) {
+          warehouseId = users[0].warehouse_id;
+          
+          // Now get warehouse details
+          const [warehouses] = await connection.execute(
+            'SELECT id, name, code FROM warehouses WHERE id = ?',
+            [warehouseId]
+          );
+          
+          if (warehouses.length > 0) {
+            warehouseName = warehouses[0].name;
+            warehouseCode = warehouses[0].code;
+          }
+        }
+      } catch (error) {
+        console.error('[WarehouseSale] Error fetching warehouse info:', error);
+      }
+
+      // Generate invoice number using warehouse code
       let invoiceNumber;
       try {
-        invoiceNumber = await InvoiceNumberService.generateInvoiceNumberWithSalesperson('WAREHOUSE', warehouseKeeperId, warehouseKeeperId);
-        console.log('[WarehouseSale] Generated salesperson-specific invoice number:', invoiceNumber);
+        if (warehouseCode) {
+          
+          // Get the highest existing invoice number for this warehouse
+          const [maxRows] = await connection.execute(
+            'SELECT invoice_no FROM sales WHERE invoice_no LIKE ? ORDER BY invoice_no DESC LIMIT 1',
+            [`${warehouseCode}-%`]
+          );
+          
+          let nextNumber = 1;
+          if (maxRows.length > 0) {
+            const lastInvoice = maxRows[0].invoice_no;
+            // Extract the number part after the code and hyphen
+            const match = lastInvoice.match(new RegExp(`^${warehouseCode}-(\\d+)$`));
+            if (match) {
+              nextNumber = parseInt(match[1]) + 1;
+            }
+          }
+          
+          invoiceNumber = `${warehouseCode}-${nextNumber.toString().padStart(6, '0')}`;
+          console.log('[WarehouseSale] Generated sequential warehouse invoice number:', invoiceNumber);
+        } else {
+          throw new Error('Warehouse code not found');
+        }
       } catch (invoiceError) {
-        console.error('[WarehouseSale] Error generating salesperson-specific invoice number:', invoiceError);
-        // Fallback to regular warehouse invoice numbering
+        console.error('[WarehouseSale] Error generating invoice number:', invoiceError);
+        // Use regular warehouse invoice numbering as fallback
         try {
-          invoiceNumber = await InvoiceNumberService.generateInvoiceNumber('WAREHOUSE', warehouseKeeperId);
+          invoiceNumber = await InvoiceNumberService.generateInvoiceNumber('WAREHOUSE', warehouseId || warehouseKeeperId);
           console.log('[WarehouseSale] Using fallback warehouse invoice number:', invoiceNumber);
         } catch (fallbackError) {
           console.error('[WarehouseSale] Error with fallback invoice number:', fallbackError);
-          // Final fallback to old method
-          invoiceNumber = `WS${Date.now()}`;
-          console.log('[WarehouseSale] Using final fallback invoice number:', invoiceNumber);
+          // Last resort: sequential based on warehouse
+          const timestamp = Date.now().toString().slice(-6);
+          invoiceNumber = `WH${warehouseId || warehouseKeeperId}-${timestamp}`;
+          console.log('[WarehouseSale] Using emergency invoice number:', invoiceNumber);
         }
       }
+      
+      // Use warehouse name as scope_id (consistent with branch sales which use branch name)
+      // If warehouse name not found, fall back to warehouse keeper ID for backward compatibility
+      const scopeIdForSale = warehouseName || String(warehouseKeeperId);
+      
+      console.log('[WarehouseSale] Using scope_id:', scopeIdForSale, 'for warehouse:', warehouseName, 'ID:', warehouseId);
 
       // Prepare customer info with salesperson data
+      // Merge incoming customerInfo with our local data, preserving phone and other fields
       const customerInfo = {
-        id: retailerId,
-        name: customerName,
+        id: incomingCustomerInfo?.id || retailerId,
+        name: incomingCustomerInfo?.name || customerName,
+        phone: incomingCustomerInfo?.phone || '', // Preserve phone from frontend
         paymentTerms: paymentMethod === 'CREDIT' ? paymentTerms : null,
         paymentMethod: paymentMethod,
         salesperson: {
           id: salespersonId || null,
           name: salespersonName || null,
           phone: salespersonPhone || null
-        }
+        },
+        // Include any other fields from incoming customerInfo
+        ...(incomingCustomerInfo || {})
       };
+      // Make sure name and id are set correctly
+      customerInfo.name = customerInfo.name || customerName;
+      customerInfo.id = customerInfo.id || retailerId;
 
-      // Determine payment status and type based on payment method
-      let paymentStatus = 'COMPLETED'
-      let paymentType = 'FULL_PAYMENT'
-      
-      if (paymentMethod === 'FULLY_CREDIT') {
-        paymentStatus = 'PENDING'
-        paymentType = 'FULLY_CREDIT'
-      } else if (paymentMethod === 'PARTIAL_PAYMENT') {
-        paymentStatus = 'PARTIAL'
-        paymentType = 'PARTIAL_PAYMENT'
+      // Get retailer's previous running balance
+      let previousRunningBalance = 0;
+      try {
+        // Only fetch running balance if retailerId is provided
+        if (retailerId) {
+          // Use warehouse name for scope_id matching (consistent with how we store it)
+          const [latestSale] = await connection.execute(`
+            SELECT running_balance 
+            FROM sales 
+            WHERE JSON_EXTRACT(customer_info, "$.id") = ?
+              AND scope_type = 'WAREHOUSE'
+              AND (scope_id = ? OR scope_id = ?)
+            ORDER BY created_at DESC 
+            LIMIT 1
+          `, [retailerId, scopeIdForSale, String(warehouseKeeperId)]);
+          
+          if (latestSale.length > 0) {
+            previousRunningBalance = parseFloat(latestSale[0].running_balance) || 0;
+          }
+        }
+      } catch (error) {
+        console.error('[WarehouseSale] Error fetching previous running balance:', error);
+        previousRunningBalance = 0;
       }
 
+      // Calculate running balance: running_balance = previous_balance + (bill_amount - payment_amount)
+      const newCreditAmount = finalAmount - paymentAmount;
+      const runningBalance = previousRunningBalance + newCreditAmount;
+
+      console.log('[WarehouseSale] Running balance calculation:', {
+        previousRunningBalance,
+        finalAmount,
+        paymentAmount,
+        newCreditAmount,
+        runningBalance
+      });
+
+      // Determine payment status and type based on payment method
+      // Note: paymentStatus should come from controller if provided
+      let paymentStatusForInsert = 'COMPLETED';
+      let paymentType = 'FULL_PAYMENT';
+      
+      if (paymentMethod === 'FULLY_CREDIT') {
+        paymentStatusForInsert = 'PENDING';
+        paymentType = 'FULLY_CREDIT';
+      } else if (creditAmount > 0) {
+        paymentStatusForInsert = 'PENDING';
+        paymentType = 'PARTIAL_PAYMENT';
+      }
+
+      // Extract customer name and phone from customerInfo for database storage
+      // Use customerInfo name if provided, otherwise fall back to the customerName parameter, then default
+      const finalCustomerName = customerInfo?.name || customerName || 'Walk-in Customer';
+      const customerPhone = customerInfo?.phone || '';
+      
       // Create warehouse sale record using existing sales table
+      // Use warehouse name as scope_id (consistent with branch sales which use branch name)
       const [saleResult] = await connection.execute(
-        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_type, payment_status, payment_amount, credit_amount, status, customer_info, notes, created_at, updated_at)
-         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, NOW(), NOW())`,
-        [warehouseKeeperId, warehouseKeeperId, invoiceNumber, totalAmount, taxAmount, discountAmount, finalAmount, paymentMethod, paymentType, paymentStatus, paymentAmount, creditAmount, JSON.stringify(customerInfo), notes]
+        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_type, payment_status, payment_amount, credit_amount, running_balance, status, customer_info, customer_name, customer_phone, notes, created_at, updated_at)
+         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, NOW(), NOW())`,
+        [warehouseKeeperId, scopeIdForSale, invoiceNumber, totalAmount, taxAmount, discountAmount, finalAmount, paymentMethod, paymentType, paymentStatusForInsert, paymentAmount, creditAmount, runningBalance, JSON.stringify(customerInfo), finalCustomerName, customerPhone, notes]
       );
 
       const saleId = saleResult.insertId;
 
-      // Create sale items using existing sales_items table
+      // Create sale items using existing sales_items table and track stock
       for (const item of items) {
         await connection.execute(
           `INSERT INTO sale_items (sale_id, inventory_item_id, sku, name, quantity, unit_price, discount, total)
@@ -111,6 +222,34 @@ class WarehouseSale {
           'UPDATE inventory_items SET current_stock = current_stock - ? WHERE id = ?',
           [item.quantity, item.itemId]
         );
+
+        // Create stock transaction record for inventory tracking (sold items count)
+        try {
+          // Get warehouse keeper info for the transaction record
+          const [warehouseKeeperInfo] = await connection.execute(
+            'SELECT username, name FROM users WHERE id = ?',
+            [warehouseKeeperId]
+          );
+          
+          const userName = warehouseKeeperInfo.length > 0 
+            ? (warehouseKeeperInfo[0].name || warehouseKeeperInfo[0].username)
+            : 'Warehouse Keeper';
+
+          await createSaleTransaction(
+            item.itemId,
+            item.quantity,
+            item.unitPrice,
+            warehouseKeeperId,
+            userName,
+            'WAREHOUSE_KEEPER',
+            saleId
+          );
+          
+          console.log(`[WarehouseSale] Created stock transaction for item ${item.itemId}, quantity: ${item.quantity}`);
+        } catch (stockError) {
+          console.error(`[WarehouseSale] Error creating stock transaction for item ${item.itemId}:`, stockError);
+          // Don't fail the sale if stock tracking fails
+        }
       }
 
       await connection.commit();
@@ -180,7 +319,7 @@ class WarehouseSale {
       const [rows] = await connection.execute(
         `SELECT s.id, s.invoice_no as invoice_number, s.scope_type, s.scope_id, s.user_id, s.shift_id, 
                 s.subtotal as total_amount, s.tax as tax_amount, s.discount as discount_amount, s.total as final_amount,
-                s.payment_method, s.payment_status, s.customer_info, s.notes, s.status, 
+                s.payment_method, s.payment_status, s.customer_info, s.customer_name, s.customer_phone, s.notes, s.status, 
                 s.created_at, s.updated_at,
                 u.username as warehouse_keeper_name
          FROM sales s

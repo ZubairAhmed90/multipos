@@ -10,8 +10,30 @@ const { createSaleTransaction, createReturnTransaction, createAdjustmentTransact
 const InvoiceNumberService = require('../services/invoiceNumberService');
 const LedgerService = require('../services/ledgerService');
 
-// @desc    Create new sale
-// @route   POST /api/sales
+
+// Helper function to get customer's current running balance
+const getCustomerRunningBalance = async (customerName, customerPhone, scopeType, scopeName) => {
+  try {
+    const [latestSale] = await pool.execute(`
+      SELECT running_balance 
+      FROM sales 
+      WHERE (customer_name = ? OR customer_phone = ?)
+        AND scope_type = ? 
+        AND scope_id = ?
+      ORDER BY created_at DESC 
+      LIMIT 1
+    `, [customerName, customerPhone, scopeType, scopeName]);
+    
+    if (latestSale.length > 0) {
+      return parseFloat(latestSale[0].running_balance) || 0;
+    }
+    return 0;
+  } catch (error) {
+    console.error('Error fetching customer running balance:', error);
+    return 0;
+  }
+};
+
 // @access  Private (Admin, Cashier)
 const createSale = async (req, res, next) => {
   
@@ -30,7 +52,6 @@ const createSale = async (req, res, next) => {
     // Debug: Log the received payment method
     console.log('[SalesController] Received paymentMethod:', paymentMethod, 'Type:', typeof paymentMethod);
     console.log('[SalesController] Received paymentType:', paymentType, 'Type:', typeof paymentType);
-
 
     // Validate items
     if (!items || items.length === 0) {
@@ -95,6 +116,9 @@ const createSale = async (req, res, next) => {
     let finalTax = parseFloat(tax) || 0;
     let finalDiscount = parseFloat(discount) || 0;
     let finalTotal = parseFloat(total) || 0;
+    
+    // IMPORTANT: Store the bill amount (items total) separately from the net total (which includes credit)
+    const billAmount = finalSubtotal + finalTax - finalDiscount; // The actual bill amount
 
     // If totals are not provided, calculate them from enriched items
     if (subtotal === undefined || subtotal === null || subtotal === '' || tax === undefined || tax === null || tax === '' || total === undefined || total === null || total === '') {
@@ -182,305 +206,473 @@ const createSale = async (req, res, next) => {
       scopeName = scopeId || '';
     }
     
-    // Calculate payment amounts - Enhanced partial payment logic
+    // Get customer's current running balance from previous transactions
+    const previousRunningBalance = await getCustomerRunningBalance(customerName, customerPhone, scopeType, scopeName);
+    console.log('💰 Customer previous running balance:', previousRunningBalance);
+
+    // ✅ CORRECTED: Payment calculation for different scenarios
     let finalPaymentAmount, finalCreditAmount;
-    
+
+    console.log('💰 Payment calculation - Inputs:', {
+        paymentMethod,
+        paymentAmount: paymentAmount !== undefined ? parseFloat(paymentAmount) : null,
+        creditAmount: creditAmount !== undefined ? parseFloat(creditAmount) : null,
+        billAmount,
+        previousRunningBalance,
+        customerHasCredit: previousRunningBalance < 0
+    });
+
     if (paymentMethod === 'FULLY_CREDIT') {
-      // For FULLY_CREDIT, payment amount is 0, credit amount is total
-      finalPaymentAmount = 0;
-      finalCreditAmount = finalTotal;
+        // Scenario 4: Fully Credit
+        // Customer takes items on complete credit
+        finalPaymentAmount = 0;
+        finalCreditAmount = billAmount;
+        console.log('💰 Scenario 4 - Fully Credit:', { finalPaymentAmount, finalCreditAmount });
+    } else if (paymentType === 'BALANCE_PAYMENT' || (paymentAmount !== undefined && parseFloat(paymentAmount) === 0 && creditAmount !== undefined)) {
+        // NEW SCENARIO: Balance Payment
+        // Customer uses their available credit balance (negative outstanding balance)
+        // Payment: 0 (no cash paid), Credit: billAmount (uses from balance)
+        finalPaymentAmount = 0;
+        finalCreditAmount = parseFloat(creditAmount) || billAmount; // Use credit amount from frontend or bill amount
+        console.log('💰 Scenario 5 - Balance Payment:', { 
+            previousBalance: previousRunningBalance,
+            finalPaymentAmount, 
+            finalCreditAmount,
+            billAmount 
+        });
     } else {
-      // For other payment methods, handle partial payments properly
-      const providedPaymentAmount = paymentAmount !== undefined ? parseFloat(paymentAmount) : null;
-      const providedCreditAmount = creditAmount !== undefined ? parseFloat(creditAmount) : null;
-      
-      if (providedPaymentAmount !== null && providedCreditAmount !== null) {
-        // Both amounts provided - validate they add up to total
-        const sum = providedPaymentAmount + providedCreditAmount;
-        if (Math.abs(sum - finalTotal) > 0.01) { // Allow small rounding differences
-          console.warn('[SalesController] Payment amounts don\'t add up to total. Adjusting credit amount.');
-          finalPaymentAmount = providedPaymentAmount;
-          finalCreditAmount = Math.max(0, finalTotal - providedPaymentAmount);
+        // Handle other payment methods
+        const providedPaymentAmount = paymentAmount !== undefined ? parseFloat(paymentAmount) : null;
+        const providedCreditAmount = creditAmount !== undefined ? parseFloat(creditAmount) : null;
+        
+        if (providedPaymentAmount !== null && providedCreditAmount !== null) {
+            // Both amounts explicitly provided
+            finalPaymentAmount = providedPaymentAmount;
+            finalCreditAmount = providedCreditAmount;
+            console.log('💰 Both amounts provided:', { finalPaymentAmount, finalCreditAmount });
+        } else if (providedPaymentAmount !== null) {
+            // Only payment amount provided - calculate credit
+            finalPaymentAmount = providedPaymentAmount;
+            finalCreditAmount = billAmount - providedPaymentAmount;
+            console.log('💰 Payment amount provided, credit calculated:', { finalPaymentAmount, finalCreditAmount });
+        } else if (providedCreditAmount !== null) {
+            // Only credit amount provided - calculate payment
+            finalCreditAmount = providedCreditAmount;
+            finalPaymentAmount = billAmount - providedCreditAmount;
+            console.log('💰 Credit amount provided, payment calculated:', { finalPaymentAmount, finalCreditAmount });
         } else {
-          finalPaymentAmount = providedPaymentAmount;
-          finalCreditAmount = providedCreditAmount;
+            // No amounts provided - assume full payment (Scenario 1)
+            finalPaymentAmount = billAmount;
+            finalCreditAmount = 0;
+            console.log('💰 Scenario 1 - Full Payment (default):', { finalPaymentAmount, finalCreditAmount });
         }
-      } else if (providedPaymentAmount !== null) {
-        // Only payment amount provided
-        finalPaymentAmount = providedPaymentAmount;
-        finalCreditAmount = Math.max(0, finalTotal - providedPaymentAmount);
-      } else if (providedCreditAmount !== null) {
-        // Only credit amount provided
-        finalCreditAmount = providedCreditAmount;
-        finalPaymentAmount = Math.max(0, finalTotal - providedCreditAmount);
-      } else {
-        // No amounts provided - assume full payment
-        finalPaymentAmount = finalTotal;
-        finalCreditAmount = 0;
-      }
+    }
+
+    // ✅ CORRECTED: Handle customer's previous balance (credit/advance payment)
+    // Only auto-adjust if amounts weren't explicitly provided by frontend
+    const amountsExplicitlyProvided = paymentAmount !== undefined && creditAmount !== undefined;
+    
+    let adjustedCreditAmount = finalCreditAmount;
+    let adjustedPaymentAmount = finalPaymentAmount;
+
+    // Special handling for BALANCE_PAYMENT: Don't adjust, amounts are correct
+    if (paymentType === 'BALANCE_PAYMENT') {
+        console.log('💰 Balance Payment - Using amounts from frontend without adjustment:', {
+            finalPaymentAmount,
+            finalCreditAmount,
+            previousBalance: previousRunningBalance
+        });
+        // Keep the amounts as-is - no adjustment needed
+        adjustedPaymentAmount = finalPaymentAmount;
+        adjustedCreditAmount = finalCreditAmount;
+    } else if (previousRunningBalance < 0 && !amountsExplicitlyProvided) {
+        // Customer has advance credit - use it for this purchase (only if amounts weren't explicitly set)
+        const availableCredit = Math.abs(previousRunningBalance);
+        
+        console.log('💰 Customer has advance credit:', {
+            previousBalance: previousRunningBalance,
+            availableCredit,
+            billAmount,
+            currentPayment: adjustedPaymentAmount,
+            currentCredit: adjustedCreditAmount
+        });
+        
+        if (billAmount <= availableCredit) {
+            // Entire purchase can be covered by existing credit
+            adjustedPaymentAmount = 0;
+            adjustedCreditAmount = -billAmount; // Negative credit means using advance credit
+            console.log('💰 Using full credit for purchase');
+        } else {
+            // Part of purchase covered by credit, rest by payment
+            adjustedPaymentAmount = billAmount - availableCredit;
+            adjustedCreditAmount = -availableCredit; // Negative credit means using advance credit
+            console.log('💰 Using partial credit for purchase');
+        }
+        
+        console.log('💰 After credit adjustment:', {
+            adjustedPaymentAmount,
+            adjustedCreditAmount
+        });
+    } else if (previousRunningBalance < 0 && amountsExplicitlyProvided) {
+        console.log('💰 Skipping credit adjustment - amounts explicitly provided by frontend');
+    }
+
+    // Use adjusted amounts
+    finalPaymentAmount = adjustedPaymentAmount;
+    finalCreditAmount = adjustedCreditAmount;
+
+    // Calculate running balance for this transaction
+    // running_balance = previous_balance + (bill_amount - payment_amount)
+    // This means: balance increases by unpaid amount (credit given)
+    // OR: balance decreases by payment amount (debt paid)
+    const newCreditAmount = billAmount - finalPaymentAmount;
+    const runningBalance = previousRunningBalance + newCreditAmount;
+
+    console.log('💰 FINAL Payment calculation:', {
+        scenario: getPaymentScenario(finalPaymentAmount, finalCreditAmount, billAmount),
+        previousRunningBalance,
+        billAmount,
+        finalPaymentAmount,
+        finalCreditAmount,
+        newCreditAmount,
+        runningBalance,
+        calculation: `${previousRunningBalance} + ${newCreditAmount} = ${runningBalance}`
+    });
+
+    // Helper function to identify payment scenario
+    function getPaymentScenario(payment, credit, bill) {
+        if (payment === bill && credit === 0) return 'Full Payment';
+        if (payment === 0 && credit === bill) return 'Fully Credit';
+        if (payment > 0 && credit > 0 && payment + credit === bill) return 'Partial Payment';
+        if (credit < 0) return 'Using Customer Credit';
+        return 'Mixed Scenario';
+    }
+
+    // ✅ CORRECTED: Payment validation for all scenarios
+    let isValid = true;
+    let errorMessage = '';
+
+    // Calculate the actual amount that needs to be covered
+    // Use finalTotal (which includes outstanding balance) instead of billAmount (cart only)
+    const amountToCover = finalTotal; // This includes outstanding balance from frontend
+    
+    console.log('💰 Validation amounts:', {
+        billAmount, // Cart only (subtotal + tax - discount)
+        finalTotal, // Cart + outstanding (from frontend)
+        paymentAmount: finalPaymentAmount,
+        creditAmount: finalCreditAmount,
+        using: 'finalTotal for validation'
+    });
+
+    if (finalCreditAmount < 0) {
+        // Customer is using advance credit OR overpaying (negative credit amount)
+        // Example: Payment: 7000, Credit: -5900, Bill: 5400
+        // Validation: 7000 + (-5900) = 1100 ❌ BUT net amount (5400) is already paid via credit
+        // ACTUALLY: frontend sends paymentAmount + creditAmount = totalWithOutstanding
+        // So validation should check against finalTotal (not billAmount)
+        const totalCoverage = finalPaymentAmount + finalCreditAmount; // Don't use Math.abs!
+        isValid = Math.abs(totalCoverage - finalTotal) <= 0.01;
+        errorMessage = `Payment (${finalPaymentAmount}) + credit (${finalCreditAmount}) must equal total amount (${finalTotal})`;
+        
+        console.log('💰 Overpayment/Credit validation:', {
+            billAmount,
+            finalTotal,
+            creditAmount: finalCreditAmount, // Keep negative
+            paymentAmount: finalPaymentAmount,
+            totalCoverage,
+            isValid
+        });
+    } else {
+        // Normal case: payment + credit should equal total amount (including outstanding)
+        const totalCoverage = finalPaymentAmount + finalCreditAmount;
+        isValid = Math.abs(totalCoverage - finalTotal) <= 0.01;
+        errorMessage = `Payment amount (${finalPaymentAmount}) + credit amount (${finalCreditAmount}) must equal total amount (${finalTotal})`;
+        
+        console.log('💰 Normal payment validation:', {
+            billAmount,
+            finalTotal,
+            paymentAmount: finalPaymentAmount,
+            creditAmount: finalCreditAmount,
+            totalCoverage,
+            isValid
+        });
+    }
+
+    if (!isValid) {
+        return res.status(400).json({
+            success: false,
+            message: errorMessage
+        });
     }
     
-    // Determine payment and credit status
-    const finalCreditStatus = creditStatus || (finalCreditAmount > 0 ? 'PENDING' : 'NONE');
-    
-    // Enhanced payment status logic
+    // ✅ CORRECTED: Enhanced payment status logic
     let finalPaymentStatus;
     if (paymentStatus) {
-      // Use provided status if valid
-      finalPaymentStatus = paymentStatus;
+        // Use provided status if valid
+        finalPaymentStatus = paymentStatus;
+    } else if (paymentType === 'BALANCE_PAYMENT') {
+        // Balance payment: Customer uses credit balance - payment is COMPLETED using credit
+        finalPaymentStatus = 'COMPLETED';
     } else if (paymentMethod === 'FULLY_CREDIT') {
-      finalPaymentStatus = 'PENDING';  // ✅ Fixed: Fully credit sales should be PENDING
+        finalPaymentStatus = 'PENDING';  // Fully credit sales are PENDING
     } else if (finalCreditAmount > 0) {
-      finalPaymentStatus = 'PENDING';  // ✅ Fixed: Partial payments should be PENDING
+        finalPaymentStatus = 'PENDING';  // Customer still owes money
+    } else if (finalCreditAmount < 0) {
+        // Customer used advance credit - payment is COMPLETED but they have new credit
+        finalPaymentStatus = 'COMPLETED';
     } else {
-      finalPaymentStatus = 'COMPLETED';
+        // Credit amount is 0 - payment is exactly balanced
+        finalPaymentStatus = 'COMPLETED';
     }
+
+    console.log('💰 Payment status determination:', {
+        paymentMethod,
+        finalCreditAmount,
+        finalPaymentStatus
+    });
     
-    // Validate payment amounts
-    if (finalPaymentAmount < 0 || finalCreditAmount < 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Payment amounts cannot be negative'
-      });
-    }
+    // Determine credit status
+    // Credit status should be 'PENDING' if credit exists (positive or negative)
+    const finalCreditStatus = creditStatus || ((finalCreditAmount > 0 || finalCreditAmount < 0) ? 'PENDING' : 'NONE');
     
-    if (Math.abs((finalPaymentAmount + finalCreditAmount) - finalTotal) > 0.01) {
-      return res.status(400).json({
-        success: false,
-        message: 'Payment amount and credit amount must equal the total amount'
-      });
+    // Validate payment amounts (allow negative for overpayments creating advance credit)
+    // Only block invalid scenarios: paymentAmount is negative but total is positive
+    if (finalPaymentAmount < 0 && finalTotal > 0) {
+        return res.status(400).json({
+            success: false,
+            message: 'Payment amount cannot be negative when total is positive'
+        });
     }
     
     // Validate partial payment logic
     if (finalPaymentStatus === 'PARTIAL' && finalCreditAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Partial payment requires a credit amount greater than 0'
-      });
+        return res.status(400).json({
+            success: false,
+            message: 'Partial payment requires a credit amount greater than 0'
+        });
     }
     
     if (finalPaymentStatus === 'COMPLETED' && finalCreditAmount > 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Completed payment cannot have a credit amount'
-      });
+        return res.status(400).json({
+            success: false,
+            message: 'Completed payment cannot have a credit amount'
+        });
     }
     
     console.log('[SalesController] Calculated amounts:', {
-      paymentMethod,
-      finalTotal,
-      finalPaymentAmount,
-      finalCreditAmount,
-      finalCreditStatus,
-      finalPaymentStatus,
-      validation: 'passed'
+        paymentMethod,
+        finalTotal,
+        finalPaymentAmount,
+        finalCreditAmount,
+        finalCreditStatus,
+        finalPaymentStatus,
+        validation: 'passed'
     });
-    
     
     // Create customer record if customer name/phone is provided and doesn't exist
     let customerId = null;
     if (customerName || customerPhone) {
-      try {
-        console.log('🔍 Creating customer record for:', { customerName, customerPhone, scopeType, scopeId, scopeIdType: typeof scopeId });
-        
-        // Check if customer already exists
-        const [existingCustomers] = await pool.execute(
-          'SELECT id FROM customers WHERE name = ? OR phone = ?',
-          [customerName, customerPhone]
-        );
-        
-        if (existingCustomers.length === 0) {
-          // Resolve scopeId to actual ID if it's a string (branch/warehouse name)
-          let resolvedBranchId = null;
-          let resolvedWarehouseId = null;
-          
-          if (scopeType === 'BRANCH') {
-            if (typeof scopeId === 'number') {
-              resolvedBranchId = scopeId;
-            } else if (typeof scopeId === 'string') {
-              // Look up branch ID by name
-              try {
-                const [branches] = await pool.execute('SELECT id FROM branches WHERE name = ?', [scopeId]);
-                if (branches.length > 0) {
-                  resolvedBranchId = branches[0].id;
-                  console.log('🔍 Resolved branch name to ID:', scopeId, '->', resolvedBranchId);
-                } else {
-                  console.log('⚠️ Branch not found by name:', scopeId, 'using default branch ID 1');
-                  resolvedBranchId = 1; // Default fallback
-                }
-              } catch (error) {
-                console.error('❌ Error looking up branch:', error);
-                resolvedBranchId = 1; // Default fallback
-              }
-            }
-          } else if (scopeType === 'WAREHOUSE') {
-            if (typeof scopeId === 'number') {
-              resolvedWarehouseId = scopeId;
-            } else if (typeof scopeId === 'string') {
-              // Look up warehouse ID by name
-              try {
-                const [warehouses] = await pool.execute('SELECT id FROM warehouses WHERE name = ?', [scopeId]);
-                if (warehouses.length > 0) {
-                  resolvedWarehouseId = warehouses[0].id;
-                  console.log('🔍 Resolved warehouse name to ID:', scopeId, '->', resolvedWarehouseId);
-                } else {
-                  console.log('⚠️ Warehouse not found by name:', scopeId, 'using default warehouse ID 1');
-                  resolvedWarehouseId = 1; // Default fallback
-                }
-              } catch (error) {
-                console.error('❌ Error looking up warehouse:', error);
-                resolvedWarehouseId = 1; // Default fallback
-              }
-            }
-          }
-          
-          // Create new customer record with proper branch/warehouse scope
-          const customerData = {
-            name: customerName || 'Walk-in Customer',
-            email: customerInfo?.email || '',
-            phone: customerPhone || '',
-            address: customerInfo?.address || '',
-            city: '',
-            state: '',
-            zip_code: '',
-            customer_type: 'INDIVIDUAL',
-            credit_limit: 0.00,
-            current_balance: finalCreditAmount || 0.00,
-            payment_terms: 'CASH',
-            branch_id: resolvedBranchId,
-            warehouse_id: resolvedWarehouseId,
-            status: 'ACTIVE',
-            notes: `Auto-created from POS sale`,
-            created_at: new Date(),
-            updated_at: new Date()
-          };
-          
-          console.log('📝 Customer data to insert:', customerData);
-          
-          const [customerResult] = await pool.execute(`
-            INSERT INTO customers (
-              name, email, phone, address, city, state, zip_code, 
-              customer_type, credit_limit, current_balance, payment_terms,
-              branch_id, warehouse_id, status, notes, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [
-            customerData.name,
-            customerData.email,
-            customerData.phone,
-            customerData.address,
-            customerData.city,
-            customerData.state,
-            customerData.zip_code,
-            customerData.customer_type,
-            customerData.credit_limit,
-            customerData.current_balance,
-            customerData.payment_terms,
-            customerData.branch_id,
-            customerData.warehouse_id,
-            customerData.status,
-            customerData.notes,
-            customerData.created_at,
-            customerData.updated_at
-          ]);
-          
-          customerId = customerResult.insertId;
-          console.log('✅ Customer created successfully with ID:', customerId);
-        } else {
-          customerId = existingCustomers[0].id;
-          console.log('ℹ️ Customer already exists with ID:', customerId);
-          
-          // Update existing customer's balance if there's credit
-          if (finalCreditAmount > 0) {
-            await pool.execute(
-              'UPDATE customers SET current_balance = current_balance + ? WHERE id = ?',
-              [finalCreditAmount, customerId]
+        try {
+            console.log('🔍 Creating customer record for:', { customerName, customerPhone, scopeType, scopeId, scopeIdType: typeof scopeId });
+            
+            // Check if customer already exists
+            const [existingCustomers] = await pool.execute(
+                'SELECT id FROM customers WHERE name = ? OR phone = ?',
+                [customerName, customerPhone]
             );
-            console.log('💰 Updated customer balance by:', finalCreditAmount);
-          }
+            
+            if (existingCustomers.length === 0) {
+                // Resolve scopeId to actual ID if it's a string (branch/warehouse name)
+                let resolvedBranchId = null;
+                let resolvedWarehouseId = null;
+                
+                if (scopeType === 'BRANCH') {
+                    if (typeof scopeId === 'number') {
+                        resolvedBranchId = scopeId;
+                    } else if (typeof scopeId === 'string') {
+                        // Look up branch ID by name
+                        try {
+                            const [branches] = await pool.execute('SELECT id FROM branches WHERE name = ?', [scopeId]);
+                            if (branches.length > 0) {
+                                resolvedBranchId = branches[0].id;
+                                console.log('🔍 Resolved branch name to ID:', scopeId, '->', resolvedBranchId);
+                            } else {
+                                console.log('⚠️ Branch not found by name:', scopeId, 'using default branch ID 1');
+                                resolvedBranchId = 1; // Default fallback
+                            }
+                        } catch (error) {
+                            console.error('❌ Error looking up branch:', error);
+                            resolvedBranchId = 1; // Default fallback
+                        }
+                    }
+                } else if (scopeType === 'WAREHOUSE') {
+                    if (typeof scopeId === 'number') {
+                        resolvedWarehouseId = scopeId;
+                    } else if (typeof scopeId === 'string') {
+                        // Look up warehouse ID by name
+                        try {
+                            const [warehouses] = await pool.execute('SELECT id FROM warehouses WHERE name = ?', [scopeId]);
+                            if (warehouses.length > 0) {
+                                resolvedWarehouseId = warehouses[0].id;
+                                console.log('🔍 Resolved warehouse name to ID:', scopeId, '->', resolvedWarehouseId);
+                            } else {
+                                console.log('⚠️ Warehouse not found by name:', scopeId, 'using default warehouse ID 1');
+                                resolvedWarehouseId = 1; // Default fallback
+                            }
+                        } catch (error) {
+                            console.error('❌ Error looking up warehouse:', error);
+                            resolvedWarehouseId = 1; // Default fallback
+                        }
+                    }
+                }
+                
+                // Create new customer record with proper branch/warehouse scope
+                const customerData = {
+                    name: customerName || 'Walk-in Customer',
+                    email: customerInfo?.email || '',
+                    phone: customerPhone || '',
+                    address: customerInfo?.address || '',
+                    city: '',
+                    state: '',
+                    zip_code: '',
+                    customer_type: 'INDIVIDUAL',
+                    credit_limit: 0.00,
+                    current_balance: finalCreditAmount || 0.00,
+                    payment_terms: 'CASH',
+                    branch_id: resolvedBranchId,
+                    warehouse_id: resolvedWarehouseId,
+                    status: 'ACTIVE',
+                    notes: `Auto-created from POS sale`,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                };
+                
+                console.log('📝 Customer data to insert:', customerData);
+                
+                const [customerResult] = await pool.execute(`
+                    INSERT INTO customers (
+                        name, email, phone, address, city, state, zip_code, 
+                        customer_type, credit_limit, current_balance, payment_terms,
+                        branch_id, warehouse_id, status, notes, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [
+                    customerData.name,
+                    customerData.email,
+                    customerData.phone,
+                    customerData.address,
+                    customerData.city,
+                    customerData.state,
+                    customerData.zip_code,
+                    customerData.customer_type,
+                    customerData.credit_limit,
+                    customerData.current_balance,
+                    customerData.payment_terms,
+                    customerData.branch_id,
+                    customerData.warehouse_id,
+                    customerData.status,
+                    customerData.notes,
+                    customerData.created_at,
+                    customerData.updated_at
+                ]);
+                
+                customerId = customerResult.insertId;
+                console.log('✅ Customer created successfully with ID:', customerId);
+            } else {
+                customerId = existingCustomers[0].id;
+                console.log('ℹ️ Customer already exists with ID:', customerId);
+                
+                // Update existing customer's balance if there's credit
+                if (finalCreditAmount > 0) {
+                    await pool.execute(
+                        'UPDATE customers SET current_balance = current_balance + ? WHERE id = ?',
+                        [finalCreditAmount, customerId]
+                    );
+                    console.log('💰 Updated customer balance by:', finalCreditAmount);
+                }
+            }
+        } catch (customerError) {
+            console.error('❌ Error creating/updating customer:', customerError);
+            // Don't fail the sale if customer creation fails
         }
-      } catch (customerError) {
-        console.error('❌ Error creating/updating customer:', customerError);
-        // Don't fail the sale if customer creation fails
-      }
     }
 
     // Create sale
     const saleData = {
-      invoiceNo: invoiceNo || null,
-      scopeType: scopeType || null,
-      scopeId: scopeName || scopeId || null, // Store branch/warehouse name instead of ID
-      userId: req.user.id || null,
-      shiftId: req.body.shiftId || req.currentShift?.id || null,
-      subtotal: finalSubtotal || 0,
-      tax: finalTax || 0,
-      discount: finalDiscount || 0,
-      total: finalTotal || 0,
-      paymentMethod: paymentMethod || null,
-      paymentType: paymentType || null, // Add payment type (PARTIAL_PAYMENT, FULLY_CREDIT, FULL_PAYMENT)
-      paymentStatus: finalPaymentStatus || null,
-      customerInfo: customerInfo ? JSON.stringify(customerInfo) : null,
-      customerName: customerName || null,
-      customerPhone: customerPhone || null,
-      customerId: customerId, // Add customer ID reference
-      paymentAmount: finalPaymentAmount || 0,
-      creditAmount: finalCreditAmount || 0,
-      creditStatus: finalCreditStatus || 'NONE',
-      creditDueDate: finalCreditAmount > 0 ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : null, // 30 days from now
-      notes: notes || null,
-      status: status || 'COMPLETED',
-      items: enrichedItems.map(item => ({
-        inventoryItemId: item.inventoryItemId || null,
-        sku: item.sku || null,
-        name: item.name || null,
-        quantity: item.quantity || 0,
-        unitPrice: item.unitPrice || 0,
-        originalPrice: item.originalPrice || item.unitPrice || 0,
-        discount: item.discount || 0,
-        discountType: item.discountType || 'amount',
-        total: (item.unitPrice * item.quantity) - (item.discount || 0)
-      }))
+        invoiceNo: invoiceNo || null,
+        scopeType: scopeType || null,
+        scopeId: scopeName || scopeId || null,
+        userId: req.user.id || null,
+        shiftId: req.body.shiftId || req.currentShift?.id || null,
+        subtotal: finalSubtotal || 0,
+        tax: finalTax || 0,
+        discount: finalDiscount || 0,
+        total: billAmount || 0, // ✅ Use bill amount, not final total with credit adjustments
+        paymentMethod: paymentMethod || null,
+        paymentType: paymentType || null,
+        paymentStatus: finalPaymentStatus || null,
+        customerInfo: customerInfo ? JSON.stringify(customerInfo) : null,
+        customerName: customerName || null,
+        customerPhone: customerPhone || null,
+        customerId: customerId,
+        paymentAmount: finalPaymentAmount || 0,
+        creditAmount: finalCreditAmount || 0,
+        runningBalance: runningBalance || 0, // ADD THIS LINE - crucial for tracking balance
+        creditStatus: finalCreditStatus || 'NONE',
+        creditDueDate: finalCreditAmount > 0 ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : null,
+        notes: notes || null,
+        status: status || 'COMPLETED',
+        items: enrichedItems.map(item => ({
+            inventoryItemId: item.inventoryItemId || null,
+            sku: item.sku || null,
+            name: item.name || null,
+            quantity: item.quantity || 0,
+            unitPrice: item.unitPrice || 0,
+            originalPrice: item.originalPrice || item.unitPrice || 0,
+            discount: item.discount || 0,
+            discountType: item.discountType || 'amount',
+            total: (item.unitPrice * item.quantity) - (item.discount || 0)
+        }))
     };
-
 
     // Validate required fields before creating sale
     if (!req.user.id) {
-      return res.status(400).json({
-        success: false,
-        message: 'User ID is required'
-      });
+        return res.status(400).json({
+            success: false,
+            message: 'User ID is required'
+        });
     }
 
     if (!scopeType) {
-      return res.status(400).json({
-        success: false,
-        message: 'Scope type is required'
-      });
+        return res.status(400).json({
+            success: false,
+            message: 'Scope type is required'
+        });
     }
 
     if (!scopeName) {
-      return res.status(400).json({
-        success: false,
-        message: 'Scope ID/Name is required'
-      });
+        return res.status(400).json({
+            success: false,
+            message: 'Scope ID/Name is required'
+        });
     }
 
     if (!paymentMethod) {
-      return res.status(400).json({
-        success: false,
-        message: 'Payment method is required'
-      });
+        return res.status(400).json({
+            success: false,
+            message: 'Payment method is required'
+        });
     }
 
     // Final validation - ensure no null SKUs
     for (const item of saleData.items) {
-      if (!item.sku) {
-        console.error('[SalesController] SKU is null for item:', item);
-        return res.status(400).json({
-          success: false,
-          message: `SKU is required for item ${item.inventoryItemId}`,
-          item: item
-        });
-      }
+        if (!item.sku) {
+            console.error('[SalesController] SKU is null for item:', item);
+            return res.status(400).json({
+                success: false,
+                message: `SKU is required for item ${item.inventoryItemId}`,
+                item: item
+            });
+        }
     }
 
     console.log('[SalesController] Creating sale with data:', saleData);
@@ -491,139 +683,139 @@ const createSale = async (req, res, next) => {
     
     let sale;
     try {
-      sale = await Sale.create(saleData);
-      console.log('[SalesController] Sale created successfully:', sale.id);
+        sale = await Sale.create(saleData);
+        console.log('[SalesController] Sale created successfully:', sale.id);
     } catch (saleError) {
-      console.error('[SalesController] Error in Sale.create:', saleError);
-      throw saleError;
+        console.error('[SalesController] Error in Sale.create:', saleError);
+        throw saleError;
     }
 
     // Update inventory stock and create transaction records
     for (const item of enrichedItems) {
-      try {
-        // Skip manual items (they don't have inventoryItemId)
-        if (!item.inventoryItemId) {
-          console.log(`[SalesController] Skipping manual item in sale creation: ${item.name}`);
-          continue;
+        try {
+            // Skip manual items (they don't have inventoryItemId)
+            if (!item.inventoryItemId) {
+                console.log(`[SalesController] Skipping manual item in sale creation: ${item.name}`);
+                continue;
+            }
+            
+            console.log(`[SalesController] Updating stock for item ${item.inventoryItemId}, quantity change: ${-item.quantity}`);
+            
+            // Update stock first
+            await InventoryItem.updateStock(item.inventoryItemId, -item.quantity);
+            
+            // Create transaction record for stock report
+            console.log(`[SalesController] Creating stock transaction for item ${item.inventoryItemId}:`, {
+                inventoryItemId: item.inventoryItemId,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice,
+                userId: req.user.id,
+                userName: req.user.name || req.user.username,
+                userRole: req.user.role,
+                saleId: sale.id
+            });
+            
+            await createSaleTransaction(
+                item.inventoryItemId,
+                item.quantity,
+                item.unitPrice,
+                req.user.id,
+                req.user.name || req.user.username, // Use username as fallback
+                req.user.role,
+                sale.id
+            );
+            
+        } catch (error) {
+            console.error(`[SalesController] Error updating stock for item ${item.inventoryItemId}:`, error);
+            throw new Error(`Failed to update stock for item ${item.inventoryItemId}: ${error.message}`);
         }
-        
-        console.log(`[SalesController] Updating stock for item ${item.inventoryItemId}, quantity change: ${-item.quantity}`);
-        
-        // Update stock first
-      await InventoryItem.updateStock(item.inventoryItemId, -item.quantity);
-        
-        // Create transaction record for stock report
-        console.log(`[SalesController] Creating stock transaction for item ${item.inventoryItemId}:`, {
-          inventoryItemId: item.inventoryItemId,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          userId: req.user.id,
-          userName: req.user.name || req.user.username,
-          userRole: req.user.role,
-          saleId: sale.id
-        });
-        
-        await createSaleTransaction(
-          item.inventoryItemId,
-          item.quantity,
-          item.unitPrice,
-          req.user.id,
-          req.user.name || req.user.username, // Use username as fallback
-          req.user.role,
-          sale.id
-        );
-        
-      } catch (error) {
-        console.error(`[SalesController] Error updating stock for item ${item.inventoryItemId}:`, error);
-        throw new Error(`Failed to update stock for item ${item.inventoryItemId}: ${error.message}`);
-      }
     }
 
     // Record sale in ledger with proper debit/credit entries
     try {
-      console.log('[SalesController] Starting ledger recording...');
-      const ledgerResult = await LedgerService.recordSaleTransaction({
-        saleId: sale.id,
-        invoiceNo: invoiceNo,
-        scopeType: scopeType,
-        scopeId: scopeId,
-        totalAmount: finalTotal,
-        paymentAmount: finalPaymentAmount,
-        creditAmount: finalCreditAmount,
-        paymentMethod: paymentMethod,
-        customerInfo: customerInfo,
-        userId: req.user.id,
-        items: enrichedItems
-      });
-      console.log('[SalesController] Sale recorded in ledger successfully:', ledgerResult);
+        console.log('[SalesController] Starting ledger recording...');
+        const ledgerResult = await LedgerService.recordSaleTransaction({
+            saleId: sale.id,
+            invoiceNo: invoiceNo,
+            scopeType: scopeType,
+            scopeId: scopeId,
+            totalAmount: billAmount, // ✅ Use bill amount for ledger
+            paymentAmount: finalPaymentAmount,
+            creditAmount: finalCreditAmount,
+            paymentMethod: paymentMethod,
+            customerInfo: customerInfo,
+            userId: req.user.id,
+            items: enrichedItems
+        });
+        console.log('[SalesController] Sale recorded in ledger successfully:', ledgerResult);
     } catch (ledgerError) {
-      console.error('[SalesController] CRITICAL ERROR recording sale in ledger:', ledgerError);
-      console.error('[SalesController] Ledger error stack:', ledgerError.stack);
-      console.error('[SalesController] Ledger error details:', {
-        message: ledgerError.message,
-        code: ledgerError.code,
-        errno: ledgerError.errno,
-        sqlState: ledgerError.sqlState,
-        sqlMessage: ledgerError.sqlMessage
-      });
-      // Don't fail the sale if ledger recording fails, but log it properly
+        console.error('[SalesController] CRITICAL ERROR recording sale in ledger:', ledgerError);
+        console.error('[SalesController] Ledger error stack:', ledgerError.stack);
+        console.error('[SalesController] Ledger error details:', {
+            message: ledgerError.message,
+            code: ledgerError.code,
+            errno: ledgerError.errno,
+            sqlState: ledgerError.sqlState,
+            sqlMessage: ledgerError.sqlMessage
+        });
+        // Don't fail the sale if ledger recording fails, but log it properly
     }
 
     // Create financial voucher for the sale
     try {
-      const voucherNo = `VCH-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
-      const voucherData = {
-        voucherNo: voucherNo,
-        type: 'INCOME',
-        category: 'SALES',
-        paymentMethod: paymentMethod.toUpperCase(),
-        amount: finalTotal,
-        description: `Sale from POS Terminal - ${scopeType}: ${scopeName}`,
-        reference: invoiceNo,
-        scopeType: scopeType,
-        scopeId: scopeId,
-        userId: req.user.id,
-        userName: req.user.name,
-        userRole: req.user.role,
-        status: 'APPROVED', // Auto-approve sales from POS
-        approvedBy: req.user.id,
-        approvalNotes: null,
-        rejectionReason: null
-      };
+        const voucherNo = `VCH-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+        const voucherData = {
+            voucherNo: voucherNo,
+            type: 'INCOME',
+            category: 'SALES',
+            paymentMethod: paymentMethod.toUpperCase(),
+            amount: billAmount, // ✅ Use bill amount for voucher
+            description: `Sale from POS Terminal - ${scopeType}: ${scopeName}`,
+            reference: invoiceNo,
+            scopeType: scopeType,
+            scopeId: scopeId,
+            userId: req.user.id,
+            userName: req.user.name,
+            userRole: req.user.role,
+            status: 'APPROVED', // Auto-approve sales from POS
+            approvedBy: req.user.id,
+            approvalNotes: null,
+            rejectionReason: null
+        };
 
-      await FinancialVoucher.create(voucherData);
+        await FinancialVoucher.create(voucherData);
     } catch (voucherError) {
-      console.error('Error creating financial voucher for sale:', voucherError);
-      // Don't fail the sale if voucher creation fails
+        console.error('Error creating financial voucher for sale:', voucherError);
+        // Don't fail the sale if voucher creation fails
     }
 
     res.status(201).json({
-      success: true,
-      message: 'Sale created successfully',
-      data: {
-        ...sale,
-        invoice_no: sale.invoiceNo  // Add snake_case version for frontend compatibility
-      }
+        success: true,
+        message: 'Sale created successfully',
+        data: {
+            ...sale,
+            invoice_no: sale.invoiceNo  // Add snake_case version for frontend compatibility
+        }
     });
   } catch (error) {
     console.error('[SalesController] Error creating sale:', error);
     console.error('[SalesController] Error stack:', error.stack);
     console.error('[SalesController] Error details:', {
-      message: error.message,
-      name: error.name,
-      code: error.code,
-      errno: error.errno,
-      sqlState: error.sqlState,
-      sqlMessage: error.sqlMessage
+        message: error.message,
+        name: error.name,
+        code: error.code,
+        errno: error.errno,
+        sqlState: error.sqlState,
+        sqlMessage: error.sqlMessage
     });
     
     res.status(500).json({
-      success: false,
-      message: 'Error creating sale',
-      error: error.message,
-      errorCode: error.code,
-      sqlMessage: error.sqlMessage,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        success: false,
+        message: 'Error creating sale',
+        error: error.message,
+        errorCode: error.code,
+        sqlMessage: error.sqlMessage,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
@@ -649,72 +841,72 @@ const getSales = async (req, res, next) => {
       
       if (userBranchName) {
         // Handle both string and number comparisons for scope_id
-        whereConditions.push('scope_type = ? AND (scope_id = ? OR scope_id = ?)');
+        whereConditions.push('s.scope_type = ? AND (s.scope_id = ? OR s.scope_id = ?)');
         params.push('BRANCH', userBranchName, String(userBranchName));
       } else {
-        whereConditions.push('scope_type = ?');
+        whereConditions.push('s.scope_type = ?');
         params.push('BRANCH');
       }
     } else if (req.user.role === 'WAREHOUSE_KEEPER') {
       // For testing: Show all warehouse sales, not just current warehouse
-      whereConditions.push('scope_type = ?');
+      whereConditions.push('s.scope_type = ?');
       params.push('WAREHOUSE');
-      // whereConditions.push('scope_type = ? AND scope_id = ?');
+      // whereConditions.push('s.scope_type = ? AND s.scope_id = ?');
       // params.push('WAREHOUSE', req.user.warehouseName);
     } else if (req.user.role === 'ADMIN') {
       // Admin can filter by scopeType and/or scopeId
       if (scopeType && scopeType !== 'all') {
-        whereConditions.push('scope_type = ?');
+        whereConditions.push('s.scope_type = ?');
         params.push(scopeType);
       }
       if (scopeId && scopeId !== 'all') {
-        whereConditions.push('scope_id = ?');
+        whereConditions.push('s.scope_id = ?');
         params.push(scopeId);
       }
     }
 
     if (startDate) {
-      whereConditions.push('created_at >= ?');
+      whereConditions.push('s.created_at >= ?');
       params.push(startDate);
     }
 
     if (endDate) {
-      whereConditions.push('created_at <= ?');
+      whereConditions.push('s.created_at <= ?');
       params.push(endDate);
     }
 
     if (paymentMethod) {
-      whereConditions.push('payment_method = ?');
+      whereConditions.push('s.payment_method = ?');
       params.push(paymentMethod);
     }
 
     if (status) {
-      whereConditions.push('status = ?');
+      whereConditions.push('s.status = ?');
       params.push(status);
     }
 
     if (retailerId && retailerId !== 'all') {
-      whereConditions.push('JSON_EXTRACT(customer_info, "$.id") = ?');
+      whereConditions.push('JSON_EXTRACT(s.customer_info, "$.id") = ?');
       params.push(retailerId);
     }
 
     if (customerPhone) {
-      whereConditions.push('customer_phone = ?');
+      whereConditions.push('s.customer_phone = ?');
       params.push(customerPhone);
     }
 
     if (customerName) {
-      whereConditions.push('customer_name LIKE ?');
+      whereConditions.push('s.customer_name LIKE ?');
       params.push(`%${customerName}%`);
     }
 
     if (creditStatus) {
-      whereConditions.push('credit_status = ?');
+      whereConditions.push('s.credit_status = ?');
       params.push(creditStatus);
     }
 
     if (paymentStatus) {
-      whereConditions.push('payment_status = ?');
+      whereConditions.push('s.payment_status = ?');
       params.push(paymentStatus);
     }
 
@@ -760,9 +952,28 @@ const getSales = async (req, res, next) => {
         ORDER BY si.id
       `, [sale.id]);
 
+      // Parse customer_info and enrich with salesperson name if missing
+      let customerInfo = sale.customer_info ? JSON.parse(sale.customer_info) : null;
+      
+      // If customerInfo has salesperson with ID but no name, fetch the name from database
+      if (customerInfo && customerInfo.salesperson && customerInfo.salesperson.id && !customerInfo.salesperson.name) {
+        try {
+          const [salespersonRows] = await pool.execute(
+            'SELECT name, phone FROM salespeople WHERE id = ?',
+            [customerInfo.salesperson.id]
+          );
+          if (salespersonRows.length > 0) {
+            customerInfo.salesperson.name = salespersonRows[0].name || null;
+            customerInfo.salesperson.phone = customerInfo.salesperson.phone || salespersonRows[0].phone || null;
+          }
+        } catch (error) {
+          console.error('[SalesController] Error fetching salesperson name:', error);
+        }
+      }
+      
       const saleData = {
         ...sale,
-        customerInfo: sale.customer_info ? JSON.parse(sale.customer_info) : null,
+        customerInfo: customerInfo,
         items: items.map(item => ({
           id: item.id,
           inventoryItemId: item.inventory_item_id,
@@ -1545,6 +1756,9 @@ const createSalesReturn = async (req, res, next) => {
 
     const salesReturn = await SalesReturn.create(returnData);
 
+    const actingUserName = req.user.name || req.user.username || req.user.email || 'System';
+    const actingUserRole = req.user.role || 'ADMIN';
+
     // Restore inventory stock and create transaction records
     for (const item of enrichedItems) {
       try {
@@ -1555,7 +1769,7 @@ const createSalesReturn = async (req, res, next) => {
         }
         
         // Update stock first
-      await InventoryItem.updateStock(item.inventoryItemId, item.quantity);
+        await InventoryItem.updateStock(item.inventoryItemId, item.quantity);
         
         // Create transaction record for stock report
         await createReturnTransaction(
@@ -1563,8 +1777,8 @@ const createSalesReturn = async (req, res, next) => {
           item.quantity,
           item.unitPrice,
           req.user.id,
-          req.user.name,
-          req.user.role,
+          actingUserName,
+          actingUserRole,
           salesReturn.id
         );
         
@@ -2399,9 +2613,28 @@ const searchSales = async (req, res, next) => {
         ORDER BY si.id
       `, [sale.id]);
 
+      // Parse customer_info and enrich with salesperson name if missing
+      let customerInfo = sale.customer_info ? JSON.parse(sale.customer_info) : null;
+      
+      // If customerInfo has salesperson with ID but no name, fetch the name from database
+      if (customerInfo && customerInfo.salesperson && customerInfo.salesperson.id && !customerInfo.salesperson.name) {
+        try {
+          const [salespersonRows] = await pool.execute(
+            'SELECT name, phone FROM salespeople WHERE id = ?',
+            [customerInfo.salesperson.id]
+          );
+          if (salespersonRows.length > 0) {
+            customerInfo.salesperson.name = salespersonRows[0].name || null;
+            customerInfo.salesperson.phone = customerInfo.salesperson.phone || salespersonRows[0].phone || null;
+          }
+        } catch (error) {
+          console.error('[SalesController] Error fetching salesperson name:', error);
+        }
+      }
+      
       const saleData = {
         ...sale,
-        customerInfo: sale.customer_info ? JSON.parse(sale.customer_info) : null,
+        customerInfo: customerInfo,
         items: items.map(item => ({
           id: item.id,
           inventoryItemId: item.inventory_item_id,
@@ -2606,14 +2839,18 @@ const getNextInvoiceNumber = async (req, res, next) => {
   }
 };
 
-// @desc    Search outstanding payments by customer name or phone (TOTAL SUM ONLY)
+// @desc    Search outstanding payments by customer name or phone (FIXED VERSION)
+// @route   GET /api/sales/outstanding
+// @access  Private (Cashier)
+// @desc    Search outstanding payments by customer name or phone (COMPLETELY FIXED)
 // @route   GET /api/sales/outstanding
 // @access  Private (Cashier)
 const searchOutstandingPayments = async (req, res) => {
   try {
     const { customerName, phone } = req.query;
     
-    console.log('🔍 searchOutstandingPayments - req.user:', req.user);
+    console.log('🔍 OUTSTANDING PAYMENTS DEBUG - Request params:', { customerName, phone });
+    console.log('🔍 OUTSTANDING PAYMENTS DEBUG - User:', req.user.role, req.user.branchId, req.user.warehouseId);
 
     if (!customerName && !phone) {
       return res.status(400).json({
@@ -2622,88 +2859,107 @@ const searchOutstandingPayments = async (req, res) => {
       });
     }
 
-    // Get user's scope information based on role
-    let scopeType, scope;
+    // Get user's scope information
+    let scopeType, scopeName;
     
     if (req.user.role === 'CASHIER' && req.user.branchId) {
-      // For cashiers, get branch name from branch ID
       const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [req.user.branchId]);
       if (branches.length > 0) {
         scopeType = 'BRANCH';
-        scope = branches[0].name;
+        scopeName = branches[0].name;
       }
     } else if (req.user.role === 'WAREHOUSE_KEEPER' && req.user.warehouseId) {
-      // For warehouse keepers, get warehouse name from warehouse ID
       const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [req.user.warehouseId]);
       if (warehouses.length > 0) {
         scopeType = 'WAREHOUSE';
-        scope = warehouses[0].name;
+        scopeName = warehouses[0].name;
       }
     } else if (req.user.role === 'ADMIN') {
-      // Admin can see all transactions (no scope restrictions)
       scopeType = null;
-      scope = null;
+      scopeName = null;
     }
 
-    console.log('🔍 searchOutstandingPayments - scope:', scope, 'scopeType:', scopeType);
+    console.log('🔍 Scope info:', { scopeType, scopeName });
 
-    // Validate scope information for non-admin users
-    if (req.user.role !== 'ADMIN' && (!scope || !scopeType)) {
-      console.error('❌ Missing scope information:', { scope, scopeType, role: req.user.role });
-      return res.status(400).json({
-        success: false,
-        message: 'User scope information is missing'
-      });
-    }
-
+    // ✅ FIXED: SIMPLE AND RELIABLE QUERY - Get ONLY the latest transaction
     let query = `
       SELECT 
-        customer_name,
-        customer_phone as phone,
-        SUM(credit_amount) as total_outstanding,
-        COUNT(id) as pending_sales_count
-      FROM sales
-      WHERE credit_amount > 0 
-        AND (payment_status = 'PENDING' OR payment_status = 'PARTIAL')
+        s.customer_name,
+        s.customer_phone,
+        s.running_balance,
+        s.invoice_no,
+        s.created_at,
+        s.payment_status,
+        s.credit_amount,
+        s.payment_amount,
+        s.total,
+        s.subtotal
+      FROM sales s
+      WHERE (s.customer_name = ? OR s.customer_phone = ?)
+        AND ABS(s.running_balance) > 0.01
     `;
     
-    const params = [];
-    
-    // Add scope filtering for non-admin users
-    if (req.user.role !== 'ADMIN' && scope && scopeType) {
-      query += ' AND scope_type = ? AND scope_id = ?';
-      params.push(scopeType, scope);
-    }
-    
-    if (customerName) {
-      query += ' AND customer_name LIKE ?';
-      params.push(`%${customerName}%`);
-    }
-    
-    if (phone) {
-      query += ' AND customer_phone LIKE ?';
-      params.push(`%${phone}%`);
-    }
-    
-    query += ' GROUP BY customer_name, customer_phone HAVING total_outstanding > 0';
+    let params = [customerName || phone, phone || customerName];
 
-    console.log('🔍 searchOutstandingPayments - Final query:', query);
-    console.log('🔍 searchOutstandingPayments - Final params:', params);
+    // Add scope filtering for non-admin users
+    if (req.user.role !== 'ADMIN' && scopeType && scopeName) {
+      query += ' AND s.scope_type = ? AND s.scope_id = ?';
+      params.push(scopeType, scopeName);
+    }
+
+    // ✅ CRITICAL: Order by latest and get only one record per customer
+    query += ' ORDER BY s.created_at DESC, s.id DESC LIMIT 1';
+
+    console.log('🔍 FINAL OUTSTANDING PAYMENTS QUERY:', query);
+    console.log('🔍 FINAL OUTSTANDING PAYMENTS PARAMS:', params);
 
     const [results] = await pool.execute(query, params);
 
+    console.log('🔍 OUTSTANDING PAYMENTS RESULTS:', results);
+
+    if (results.length === 0) {
+      return res.json({
+        success: true,
+        data: []
+      });
+    }
+
+    // Format the single result
+    const customer = results[0];
+    const outstanding = parseFloat(customer.running_balance) || 0;
+    
+    const formattedResult = {
+      customerName: customer.customer_name,
+      phone: customer.customer_phone,
+      totalOutstanding: Math.abs(outstanding), // Absolute value for display
+      outstandingAmount: Math.abs(outstanding), // For frontend compatibility
+      creditAmount: outstanding, // Actual balance (can be negative)
+      finalAmount: outstanding, // Actual balance
+      pendingSalesCount: 1,
+      isCredit: outstanding < 0,
+      latestInvoice: customer.invoice_no,
+      lastTransactionDate: customer.created_at,
+      paymentStatus: customer.payment_status,
+      // Debug info
+      _debug: {
+        running_balance: customer.running_balance,
+        credit_amount: customer.credit_amount,
+        payment_amount: customer.payment_amount,
+        total: customer.total,
+        subtotal: customer.subtotal
+      }
+    };
+
+    console.log('🔍 FORMATTED OUTSTANDING PAYMENT:', formattedResult);
+    console.log('🔍 EXPECTED: -2050, ACTUAL:', outstanding);
+
     res.json({
       success: true,
-      data: results.map(customer => ({
-        customerName: customer.customer_name,
-        phone: customer.phone,
-        totalOutstanding: parseFloat(customer.total_outstanding) || 0,
-        pendingSalesCount: customer.pending_sales_count
-      }))
+      data: [formattedResult]
     });
 
   } catch (error) {
-    console.error('Error searching outstanding payments:', error);
+    console.error('❌ Error in searchOutstandingPayments:', error);
     res.status(500).json({
       success: false,
       message: 'Error searching outstanding payments',
@@ -2712,12 +2968,16 @@ const searchOutstandingPayments = async (req, res) => {
   }
 };
 
+
+// @desc    Clear outstanding payment for customer
+// @route   POST /api/sales/clear-outstanding
+// @access  Private (Cashier)
 // @desc    Clear outstanding payment for customer
 // @route   POST /api/sales/clear-outstanding
 // @access  Private (Cashier)
 const clearOutstandingPayment = async (req, res) => {
   try {
-    const { customerName, phone, paymentAmount, paymentMethod } = req.body;
+    const { customerName, phone, paymentAmount, paymentMethod, creditAmount = 0 } = req.body;
 
     if (!customerName || !phone || !paymentAmount || !paymentMethod) {
       return res.status(400).json({
@@ -2767,11 +3027,10 @@ const clearOutstandingPayment = async (req, res) => {
 
       // Build query with conditional scope filtering
       let query = `
-        SELECT id, invoice_no, credit_amount, payment_amount, total, payment_status
+        SELECT id, invoice_no, credit_amount, running_balance, payment_amount, total, payment_status, scope_type, scope_id
         FROM sales 
         WHERE customer_name = ? AND customer_phone = ? 
-          AND (payment_status = 'PENDING' OR payment_status = 'PARTIAL') 
-          AND credit_amount > 0
+          AND running_balance != 0
       `;
       
       const queryParams = [customerName, phone];
@@ -2796,51 +3055,316 @@ const clearOutstandingPayment = async (req, res) => {
         });
       }
 
-      let remainingPayment = parseFloat(paymentAmount);
+      let normalizedPaymentAmount = parseFloat(paymentAmount);
+      let normalizedCreditAmount = parseFloat(creditAmount);
+
+      if (Number.isNaN(normalizedPaymentAmount) || normalizedPaymentAmount < 0) {
+        normalizedPaymentAmount = 0;
+      }
+
+      if (Number.isNaN(normalizedCreditAmount)) {
+        normalizedCreditAmount = 0;
+      }
+
+      // Calculate total outstanding amount before processing
+      const totalOutstandingBefore = outstandingSales.reduce((sum, sale) => sum + parseFloat(sale.running_balance), 0);
+      console.log('💰 Total outstanding before:', totalOutstandingBefore);
+
+      const targetOutstanding = normalizedCreditAmount;
+      let totalAdjustment = totalOutstandingBefore - targetOutstanding;
+
+      if (!Number.isFinite(totalAdjustment)) {
+        totalAdjustment = 0;
+      }
+
+      if (totalAdjustment < 0) {
+        totalAdjustment = 0;
+      }
+
+      const cashToApply = Math.min(totalAdjustment, normalizedPaymentAmount);
+      let paymentRemaining = cashToApply;
+      let creditAdjustmentRemaining = totalAdjustment - cashToApply;
+      if (creditAdjustmentRemaining < 0) {
+        creditAdjustmentRemaining = 0;
+      }
+
       let processedSales = [];
 
       // Process each outstanding sale
       for (const sale of outstandingSales) {
-        if (remainingPayment <= 0) break;
+        const currentRunningBalance = parseFloat(sale.running_balance);
 
-        const currentCredit = parseFloat(sale.credit_amount);
-        const paymentToApply = Math.min(remainingPayment, currentCredit);
-        
-        // Update the sale
-        const newPaymentAmount = parseFloat(sale.payment_amount) + paymentToApply;
-        const newCreditAmount = currentCredit - paymentToApply;
-        const newPaymentStatus = newCreditAmount <= 0 ? 'COMPLETED' : 'PARTIAL';
+        if (currentRunningBalance < 0 && paymentRemaining > 0) {
+          // Negative running balance (customer has advance credit) - reduce credit
+          const creditToUse = Math.min(paymentRemaining, Math.abs(currentRunningBalance));
 
-        await connection.execute(
-          `UPDATE sales 
-           SET payment_amount = ?, 
-               credit_amount = ?, 
-               payment_status = ?,
-               updated_at = NOW()
-           WHERE id = ?`,
-          [newPaymentAmount, newCreditAmount, newPaymentStatus, sale.id]
-        );
+          const newRunningBalance = currentRunningBalance + creditToUse;
+          const newCreditAmount = parseFloat(sale.credit_amount) + creditToUse;
 
-        processedSales.push({
-          saleId: sale.id,
-          invoiceNo: sale.invoice_no,
-          paymentApplied: paymentToApply,
-          remainingCredit: newCreditAmount,
-          newStatus: newPaymentStatus
+          await connection.execute(
+            `UPDATE sales 
+             SET credit_amount = ?, 
+                 running_balance = ?,
+                 updated_at = NOW()
+             WHERE id = ?`,
+            [newCreditAmount, newRunningBalance, sale.id]
+          );
+
+          processedSales.push({
+            saleId: sale.id,
+            invoiceNo: sale.invoice_no,
+            creditUsed: creditToUse,
+            remainingRunningBalance: newRunningBalance,
+            newStatus: sale.payment_status,
+            isCredit: true
+          });
+
+          paymentRemaining -= creditToUse;
+        }
+
+        if (currentRunningBalance > 0) {
+          if (paymentRemaining > 0) {
+            const paymentToApply = Math.min(paymentRemaining, currentRunningBalance);
+
+            const newPaymentAmount = parseFloat(sale.payment_amount) + paymentToApply;
+            const newCreditAmount = parseFloat(sale.credit_amount) - paymentToApply;
+            const newRunningBalance = currentRunningBalance - paymentToApply;
+            const newPaymentStatus = newRunningBalance <= 0 ? 'COMPLETED' : 'PARTIAL';
+
+            await connection.execute(
+              `UPDATE sales 
+               SET payment_amount = ?, 
+                   credit_amount = ?, 
+                   running_balance = ?,
+                   payment_status = ?,
+                   updated_at = NOW()
+               WHERE id = ?`,
+              [newPaymentAmount, newCreditAmount, newRunningBalance, newPaymentStatus, sale.id]
+            );
+
+            processedSales.push({
+              saleId: sale.id,
+              invoiceNo: sale.invoice_no,
+              paymentApplied: paymentToApply,
+              remainingRunningBalance: newRunningBalance,
+              newStatus: newPaymentStatus
+            });
+
+            paymentRemaining -= paymentToApply;
+          }
+
+          if (creditAdjustmentRemaining > 0) {
+            const creditToApply = Math.min(creditAdjustmentRemaining, currentRunningBalance);
+
+            const newCreditAmount = parseFloat(sale.credit_amount) - creditToApply;
+            const newRunningBalance = currentRunningBalance - creditToApply;
+            const newPaymentStatus = newRunningBalance <= 0 ? 'COMPLETED' : 'PARTIAL';
+
+            await connection.execute(
+              `UPDATE sales 
+               SET credit_amount = ?, 
+                   running_balance = ?,
+                   payment_status = ?,
+                   updated_at = NOW()
+               WHERE id = ?`,
+              [newCreditAmount, newRunningBalance, newPaymentStatus, sale.id]
+            );
+
+            processedSales.push({
+              saleId: sale.id,
+              invoiceNo: sale.invoice_no,
+              creditNoteApplied: creditToApply,
+              remainingRunningBalance: newRunningBalance,
+              newStatus: newPaymentStatus
+            });
+
+            creditAdjustmentRemaining -= creditToApply;
+          }
+        }
+      }
+
+      const totalPaymentApplied = cashToApply;
+      const finalCreditAmount = normalizedCreditAmount;
+      const totalSettlementAdjustment = totalOutstandingBefore - finalCreditAmount;
+      let settlementAmountRecorded = totalSettlementAdjustment;
+
+      // ✅ Determine the latest running balance after applying payments above
+      let latestRunningBalance = 0;
+      try {
+        let latestBalanceQuery = `
+          SELECT running_balance
+          FROM sales
+          WHERE customer_name = ? AND customer_phone = ?
+        `;
+        const latestBalanceParams = [customerName, phone];
+
+        if (req.user.role !== 'ADMIN' && scope && scopeType) {
+          latestBalanceQuery += ' AND scope_type = ? AND scope_id = ?';
+          latestBalanceParams.push(scopeType, scope);
+        }
+
+        latestBalanceQuery += ' ORDER BY created_at DESC, id DESC LIMIT 1';
+
+        const [latestBalanceRows] = await connection.execute(latestBalanceQuery, latestBalanceParams);
+        if (latestBalanceRows.length > 0) {
+          latestRunningBalance = parseFloat(latestBalanceRows[0].running_balance) || 0;
+        }
+      } catch (balanceError) {
+        console.error('❌ clearOutstandingPayment - Error fetching latest running balance:', balanceError);
+      }
+
+      // ✅ NEW: Create a settlement transaction in sales table for ledger tracking
+      
+      if (totalSettlementAdjustment > 0) {
+        console.log('💰 Creating settlement transaction:', {
+          customerName,
+          phone,
+          totalSettlementAdjustment,
+          finalCreditAmount,
+          scopeType,
+          scope
         });
 
-        remainingPayment -= paymentToApply;
+        // Generate invoice number for settlement
+        let settlementInvoiceNo;
+        try {
+          const numericScopeId = typeof scope === 'string' ? (scope.match(/^\d+$/) ? parseInt(scope) : scope) : scope;
+          settlementInvoiceNo = await InvoiceNumberService.generateInvoiceNumber(scopeType, numericScopeId);
+        } catch (invoiceError) {
+          console.error('Error generating settlement invoice number:', invoiceError);
+          settlementInvoiceNo = `SETTLE-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+        }
+
+        // Calculate new running balance after settlement
+        const settlementAmount = totalSettlementAdjustment;
+        settlementAmountRecorded = settlementAmount;
+        const newRunningBalance = finalCreditAmount !== 0 ? finalCreditAmount : latestRunningBalance;
+
+        // Create settlement sale record
+        const settlementData = {
+          invoiceNo: settlementInvoiceNo,
+          scopeType: scopeType,
+          scopeId: scope,
+          userId: req.user.id,
+          subtotal: 0, // No items in settlement
+          tax: 0,
+          discount: 0,
+          total: settlementAmount, // Total adjustment amount (cash + credit note)
+          paymentMethod: paymentMethod,
+          paymentType: 'OUTSTANDING_SETTLEMENT',
+          paymentStatus: finalCreditAmount > 0 ? 'PARTIAL' : 'COMPLETED',
+          customerInfo: JSON.stringify({
+            name: customerName,
+            phone: phone
+          }),
+          customerName: customerName,
+          customerPhone: phone,
+          paymentAmount: totalPaymentApplied,
+          creditAmount: finalCreditAmount,
+          runningBalance: newRunningBalance,
+          creditStatus: finalCreditAmount > 0 ? 'PENDING' : 'NONE',
+          notes: `Outstanding settlement adjustment ${settlementAmount.toFixed(2)} (cash: ${totalPaymentApplied.toFixed(2)}, balance: ${finalCreditAmount.toFixed(2)})`,
+          status: 'COMPLETED',
+          items: [] // No items for settlement
+        };
+
+        console.log('💰 Settlement data:', settlementData);
+
+        // Insert settlement record
+        const [settlementResult] = await connection.execute(`
+          INSERT INTO sales (
+            invoice_no, scope_type, scope_id, user_id, subtotal, tax, discount, total,
+            payment_method, payment_type, payment_status, customer_info, customer_name, 
+            customer_phone, payment_amount, credit_amount, running_balance, credit_status,
+            notes, status, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `, [
+          settlementData.invoiceNo,
+          settlementData.scopeType,
+          settlementData.scopeId,
+          settlementData.userId,
+          settlementData.subtotal,
+          settlementData.tax,
+          settlementData.discount,
+          settlementData.total,
+          settlementData.paymentMethod,
+          settlementData.paymentType,
+          settlementData.paymentStatus,
+          settlementData.customerInfo,
+          settlementData.customerName,
+          settlementData.customerPhone,
+          settlementData.paymentAmount,
+          settlementData.creditAmount,
+          settlementData.runningBalance,
+          settlementData.creditStatus,
+          settlementData.notes,
+          settlementData.status
+        ]);
+
+        const settlementId = settlementResult.insertId;
+
+        // ✅ Record settlement in ledger
+        try {
+          console.log('💰 Recording settlement in ledger...');
+          const ledgerResult = await LedgerService.recordSaleTransaction({
+            saleId: settlementId,
+            invoiceNo: settlementInvoiceNo,
+            scopeType: scopeType,
+            scopeId: scope,
+            totalAmount: settlementAmount,
+            paymentAmount: totalPaymentApplied,
+            creditAmount: finalCreditAmount,
+            paymentMethod: paymentMethod,
+            customerInfo: { name: customerName, phone: phone },
+            userId: req.user.id,
+            items: [],
+            isSettlement: true
+          });
+          console.log('💰 Settlement recorded in ledger:', ledgerResult);
+        } catch (ledgerError) {
+          console.error('💰 CRITICAL ERROR recording settlement in ledger:', ledgerError);
+          // Don't fail the settlement if ledger recording fails
+        }
+
+        // ✅ Create financial voucher for the settlement
+        try {
+          const voucherNo = `VCH-SETTLE-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+          const voucherData = {
+            voucherNo: voucherNo,
+            type: 'INCOME',
+            category: 'SETTLEMENT',
+            paymentMethod: paymentMethod.toUpperCase(),
+            amount: totalPaymentApplied,
+            description: `Outstanding payment settlement for ${customerName} (${phone})`,
+            reference: settlementInvoiceNo,
+            scopeType: scopeType,
+            scopeId: scope,
+            userId: req.user.id,
+            userName: req.user.name,
+            userRole: req.user.role,
+            status: 'APPROVED',
+            approvedBy: req.user.id,
+            approvalNotes: null,
+            rejectionReason: null
+          };
+
+          await FinancialVoucher.create(voucherData);
+        } catch (voucherError) {
+          console.error('Error creating financial voucher for settlement:', voucherError);
+          // Don't fail the settlement if voucher creation fails
+        }
+
+        console.log('✅ Settlement transaction created with ID:', settlementId);
       }
 
       await connection.commit();
 
       // Get updated outstanding amount within the user's scope
       let remainingQuery = `
-        SELECT SUM(credit_amount) as remaining_outstanding
+        SELECT SUM(running_balance) as remaining_outstanding
         FROM sales 
         WHERE customer_name = ? AND customer_phone = ? 
-          AND (payment_status = 'PENDING' OR payment_status = 'PARTIAL') 
-          AND credit_amount > 0
+          AND running_balance != 0
       `;
       
       const remainingParams = [customerName, phone];
@@ -2864,12 +3388,15 @@ const clearOutstandingPayment = async (req, res) => {
         data: {
           customerName,
           phone,
-          paymentAmount: parseFloat(paymentAmount),
+          paymentAmount: totalPaymentApplied,
           paymentMethod,
           remainingOutstanding,
-          isFullyCleared: remainingOutstanding <= 0,
+          isFullyCleared: Math.abs(remainingOutstanding) <= 0.01, // Allow small rounding differences
           processedSales,
-          unprocessedAmount: remainingPayment
+          unprocessedAmount: 0,
+          settlementCreated: totalPaymentApplied > 0,
+          settlementAmount: settlementAmountRecorded,
+          settlementCredit: finalCreditAmount
         }
       });
 

@@ -5,6 +5,69 @@ const Warehouse = require('../models/Warehouse');
 const { executeQuery, pool } = require('../config/database');
 const { createStockReportEntry, createAdjustmentTransaction } = require('../middleware/stockTracking');
 
+// Helper to normalise date strings to YYYY-MM-DD
+const normalizeDateInput = (value) => {
+  if (!value && value !== 0) return null;
+
+  if (value instanceof Date) {
+    return !isNaN(value.getTime()) ? value.toISOString().split('T')[0] : null;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    // Already ISO formatted
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+
+    // Attempt to parse using Date constructor
+    const directDate = new Date(trimmed);
+    if (!isNaN(directDate.getTime())) {
+      return directDate.toISOString().split('T')[0];
+    }
+
+    // Handle DD/MM/YYYY or MM/DD/YYYY variations
+    const match = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+    if (match) {
+      let [ , part1, part2, part3 ] = match;
+      let day;
+      let month;
+      let year = parseInt(part3, 10);
+
+      // Determine if format is DD/MM or MM/DD
+      const first = parseInt(part1, 10);
+      const second = parseInt(part2, 10);
+
+      if (first > 12 && second <= 12) {
+        // Clearly DD/MM
+        day = first;
+        month = second;
+      } else if (second > 12 && first <= 12) {
+        // Clearly MM/DD
+        month = first;
+        day = second;
+      } else {
+        // Ambiguous, fallback to MM/DD (default for many locales)
+        month = first;
+        day = second;
+      }
+
+      if (year < 100) {
+        year += year >= 70 ? 1900 : 2000; // simple two-digit year handling
+      }
+
+      const composed = new Date(year, month - 1, day);
+      if (!isNaN(composed.getTime())) {
+        return composed.toISOString().split('T')[0];
+      }
+    }
+  }
+
+  return null;
+};
+
 // @desc    Get all inventory items
 // @route   GET /api/inventory
 // @access  Private (Admin, Warehouse Keeper, Cashier)
@@ -64,7 +127,7 @@ const getInventoryItems = async (req, res, next) => {
       
       // If specific branch requested, filter to that branch
       if (scopeType === 'BRANCH' && scopeId) {
-        whereConditions.push('scope_id = ?');
+        whereConditions.push('i.scope_id = ?');
         params.push(scopeId);
       }
     }
@@ -102,7 +165,8 @@ const getInventoryItems = async (req, res, next) => {
         COALESCE(sr.total_purchased, 0) as total_purchased,
         COALESCE(sr.total_sold, 0) as total_sold,
         COALESCE(sr.total_returned, 0) as total_returned,
-        COALESCE(sr.total_adjusted, 0) as total_adjusted
+        COALESCE(sr.total_adjusted, 0) as total_adjusted,
+        COALESCE(pr.pending_returns, 0) as pending_returns
       FROM inventory_items i
       LEFT JOIN branches b ON i.scope_type = 'BRANCH' AND i.scope_id = b.id
       LEFT JOIN warehouses w ON i.scope_type = 'WAREHOUSE' AND i.scope_id = w.id
@@ -110,13 +174,20 @@ const getInventoryItems = async (req, res, next) => {
       LEFT JOIN (
         SELECT 
           inventory_item_id,
-          SUM(CASE WHEN movement_type = 'PURCHASE' THEN quantity ELSE 0 END) as total_purchased,
-          SUM(CASE WHEN movement_type = 'SALE' THEN ABS(quantity) ELSE 0 END) as total_sold,
-          SUM(CASE WHEN movement_type = 'RETURN' THEN quantity ELSE 0 END) as total_returned,
-          SUM(CASE WHEN movement_type = 'ADJUSTMENT' THEN quantity ELSE 0 END) as total_adjusted
-        FROM stock_movements 
+          SUM(CASE WHEN transaction_type = 'PURCHASE' THEN quantity_change ELSE 0 END) as total_purchased,
+          SUM(CASE WHEN transaction_type = 'SALE' THEN ABS(quantity_change) ELSE 0 END) as total_sold,
+          SUM(CASE WHEN transaction_type = 'RETURN' THEN quantity_change ELSE 0 END) as total_returned,
+          SUM(CASE WHEN transaction_type = 'ADJUSTMENT' THEN quantity_change ELSE 0 END) as total_adjusted
+        FROM stock_reports 
         GROUP BY inventory_item_id
       ) sr ON i.id = sr.inventory_item_id
+      LEFT JOIN (
+        SELECT 
+          sri.inventory_item_id,
+          SUM(sri.remaining_quantity) AS pending_returns
+        FROM sales_return_items sri
+        GROUP BY sri.inventory_item_id
+      ) pr ON i.id = pr.inventory_item_id
       ${whereClause}
       ORDER BY i.created_at DESC
     `, params);
@@ -144,7 +215,7 @@ const getInventoryItems = async (req, res, next) => {
       warehouseName: item.warehouse_name,
       totalPurchased: parseFloat(item.total_purchased) || 0,
       totalSold: parseFloat(item.total_sold) || 0,
-      totalReturned: parseFloat(item.total_returned) || 0,
+      totalReturned: parseFloat(item.pending_returns) || 0,
       totalAdjusted: parseFloat(item.total_adjusted) || 0,
       supplierId: item.supplier_id,
       supplierName: item.supplier_name,
@@ -398,6 +469,32 @@ const updateInventoryItem = async (req, res, next) => {
           message: `SKU '${updateData.sku}' already exists in this ${inventoryItem.scopeType.toLowerCase()}`
         });
       }
+    }
+
+    // Normalise numeric fields
+    const numericFields = {
+      costPrice: 'float',
+      sellingPrice: 'float',
+      currentStock: 'int',
+      minStockLevel: 'int',
+      maxStockLevel: 'int',
+      purchasePrice: 'float'
+    };
+
+    Object.entries(numericFields).forEach(([field, type]) => {
+      if (Object.prototype.hasOwnProperty.call(updateData, field) && updateData[field] !== null && updateData[field] !== '') {
+        const parsed = type === 'int' ? parseInt(updateData[field], 10) : parseFloat(updateData[field]);
+        if (!Number.isNaN(parsed)) {
+          updateData[field] = parsed;
+        } else {
+          delete updateData[field];
+        }
+      }
+    });
+
+    if (Object.prototype.hasOwnProperty.call(updateData, 'purchaseDate')) {
+      const normalizedDate = normalizeDateInput(updateData.purchaseDate);
+      updateData.purchaseDate = normalizedDate;
     }
 
     const updatedItem = await InventoryItem.update(id, updateData);

@@ -75,14 +75,14 @@ router.route('/salesperson-stats/:warehouseId/:userId')
 
 // Outstanding payments routes (must be before /:id route)
 router.route('/outstanding')
-  .get(auth, rbac('ADMIN', 'CASHIER'), searchOutstandingPayments);
+  .get(auth, rbac('ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER'), searchOutstandingPayments);
 
 router.route('/clear-outstanding')
-  .post(auth, rbac('ADMIN', 'CASHIER'), clearOutstandingPayment);
+  .post(auth, rbac('ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER'), clearOutstandingPayment);
 
 router.route('/:id')
   .get(auth, rbac('ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER'), getSale)
-  .put(auth, rbac('ADMIN', 'CASHIER'), checkCashierSalesPermission, validateSaleUpdate, updateSale)
-  .delete(auth, rbac('ADMIN', 'CASHIER'), checkCashierSalesPermission, deleteSale);
+  .put(auth, rbac('ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER'), checkCashierSalesPermission, validateSaleUpdate, updateSale)
+  .delete(auth, rbac('ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER'), checkCashierSalesPermission, deleteSale);
 
 module.exports = router;

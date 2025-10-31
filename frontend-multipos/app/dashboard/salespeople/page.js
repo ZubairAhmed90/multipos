@@ -32,6 +32,9 @@ import {
   Menu,
   ListItemIcon
 } from '@mui/material'
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
+import { DatePicker } from '@mui/x-date-pickers/DatePicker'
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns'
 import {
   Add as AddIcon,
   Edit as EditIcon,
@@ -46,7 +49,9 @@ import {
   FileDownload as DownloadIcon,
   Refresh as RefreshIcon,
   FilterList as FilterIcon,
-  Clear as ClearIcon
+  Clear as ClearIcon,
+  Visibility as ViewIcon,
+  ShoppingCart as SalesIcon
 } from '@mui/icons-material'
 import { useSelector } from 'react-redux'
 import withAuth from '../../../components/auth/withAuth'
@@ -69,6 +74,13 @@ const SalespeoplePage = () => {
   const [salespersonToDelete, setSalespersonToDelete] = useState(null)
   const [exportMenuAnchor, setExportMenuAnchor] = useState(null)
   const [warehouseFilter, setWarehouseFilter] = useState('all')
+  const [salesDialogOpen, setSalesDialogOpen] = useState(false)
+  const [selectedSalespersonForSales, setSelectedSalespersonForSales] = useState(null)
+  const [salespersonSales, setSalespersonSales] = useState([])
+  const [salespersonSalesLoading, setSalespersonSalesLoading] = useState(false)
+  const [salespersonExportMenuAnchor, setSalespersonExportMenuAnchor] = useState(null)
+  const [salespersonStartDate, setSalespersonStartDate] = useState(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)) // 30 days ago
+  const [salespersonEndDate, setSalespersonEndDate] = useState(new Date()) // Today
 
   // Load salespeople and warehouses
   const loadData = useCallback(async () => {
@@ -343,6 +355,370 @@ const SalespeoplePage = () => {
 
   const canManageSalespeople = user?.role === 'ADMIN' || user?.role === 'WAREHOUSE_KEEPER'
 
+  // Load sales for a specific salesperson with date filters
+  const loadSalespersonSales = async (salespersonId, startDate = null, endDate = null) => {
+    try {
+      setSalespersonSalesLoading(true)
+      const params = {
+        salespersonId: salespersonId,
+        scopeType: 'WAREHOUSE' // Only warehouse sales have salespeople
+      }
+      
+      // Add date filters if provided
+      if (startDate) {
+        params.startDate = startDate.toISOString().split('T')[0]
+      }
+      if (endDate) {
+        params.endDate = endDate.toISOString().split('T')[0]
+      }
+      
+      const response = await api.get('/sales', { params })
+      if (response.data.success) {
+        setSalespersonSales(response.data.data || [])
+      }
+    } catch (err) {
+      console.error('Error loading salesperson sales:', err)
+      setError(err.response?.data?.message || 'Failed to load sales')
+      setSalespersonSales([])
+    } finally {
+      setSalespersonSalesLoading(false)
+    }
+  }
+
+  // Handle view sales for salesperson
+  const handleViewSales = (salesperson) => {
+    setSelectedSalespersonForSales(salesperson)
+    setSalesDialogOpen(true)
+    // Reset dates to default (last 30 days)
+    setSalespersonStartDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))
+    setSalespersonEndDate(new Date())
+    loadSalespersonSales(salesperson.id, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), new Date())
+  }
+
+  // Handle date filter change
+  const handleSalespersonDateFilterChange = () => {
+    if (selectedSalespersonForSales) {
+      loadSalespersonSales(selectedSalespersonForSales.id, salespersonStartDate, salespersonEndDate)
+    }
+  }
+
+  // Quick date filter presets
+  const setDateFilterPreset = (preset) => {
+    const today = new Date()
+    const endDate = new Date(today)
+    endDate.setHours(23, 59, 59, 999)
+    
+    let startDate = new Date()
+    
+    switch (preset) {
+      case 'today':
+        startDate = new Date(today)
+        startDate.setHours(0, 0, 0, 0)
+        break
+      case 'week':
+        startDate = new Date(today)
+        startDate.setDate(today.getDate() - 7)
+        startDate.setHours(0, 0, 0, 0)
+        break
+      case 'month':
+        startDate = new Date(today)
+        startDate.setMonth(today.getMonth() - 1)
+        startDate.setHours(0, 0, 0, 0)
+        break
+      case '3months':
+        startDate = new Date(today)
+        startDate.setMonth(today.getMonth() - 3)
+        startDate.setHours(0, 0, 0, 0)
+        break
+      case 'year':
+        startDate = new Date(today)
+        startDate.setFullYear(today.getFullYear() - 1)
+        startDate.setHours(0, 0, 0, 0)
+        break
+      case 'all':
+        startDate = new Date(2020, 0, 1) // Very old date to get all records
+        endDate = new Date(today)
+        endDate.setHours(23, 59, 59, 999)
+        break
+      default:
+        startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+        startDate.setHours(0, 0, 0, 0)
+    }
+    
+    setSalespersonStartDate(startDate)
+    setSalespersonEndDate(endDate)
+    
+    if (selectedSalespersonForSales) {
+      loadSalespersonSales(selectedSalespersonForSales.id, startDate, endDate)
+    }
+  }
+
+  // Export salesperson sales
+  const generateSalesCSV = (salesData) => {
+    const headers = ['ID', 'Date', 'Time', 'Invoice #', 'Customer', 'Subtotal', 'Tax', 'Discount', 'Total', 'Payment', 'Credit', 'Balance', 'Payment Method', 'Payment Status', 'Created By']
+    const rows = salesData.map(sale => {
+      const saleDate = new Date(sale.created_at)
+      const customerInfo = sale.customerInfo || (sale.customer_info ? JSON.parse(sale.customer_info) : {})
+      return [
+        sale.id,
+        saleDate.toLocaleDateString(),
+        saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+        sale.invoice_no || 'N/A',
+        customerInfo.name || sale.customer_name || 'Walk-in Customer',
+        parseFloat(sale.subtotal || 0).toFixed(2),
+        parseFloat(sale.tax || 0).toFixed(2),
+        parseFloat(sale.discount || 0).toFixed(2),
+        parseFloat(sale.total || 0).toFixed(2),
+        parseFloat(sale.payment_amount || 0).toFixed(2),
+        parseFloat(sale.credit_amount || 0).toFixed(2),
+        parseFloat(sale.running_balance || 0).toFixed(2),
+        sale.payment_method || 'Cash',
+        sale.payment_status || 'N/A',
+        sale.username || sale.created_by || 'Unknown'
+      ]
+    })
+    return [headers, ...rows].map(row => row.join(',')).join('\n')
+  }
+
+  const generateSalesExcel = async (salesData) => {
+    try {
+      const XLSX = await import('xlsx')
+      const excelData = salesData.map(sale => {
+        const saleDate = new Date(sale.created_at)
+        const customerInfo = sale.customerInfo || (sale.customer_info ? JSON.parse(sale.customer_info) : {})
+        return {
+          'ID': sale.id,
+          'Date': saleDate.toLocaleDateString(),
+          'Time': saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+          'Invoice #': sale.invoice_no || 'N/A',
+          'Customer': customerInfo.name || sale.customer_name || 'Walk-in Customer',
+          'Subtotal': parseFloat(sale.subtotal || 0).toFixed(2),
+          'Tax': parseFloat(sale.tax || 0).toFixed(2),
+          'Discount': parseFloat(sale.discount || 0).toFixed(2),
+          'Total': parseFloat(sale.total || 0).toFixed(2),
+          'Payment': parseFloat(sale.payment_amount || 0).toFixed(2),
+          'Credit': parseFloat(sale.credit_amount || 0).toFixed(2),
+          'Balance': parseFloat(sale.running_balance || 0).toFixed(2),
+          'Payment Method': sale.payment_method || 'Cash',
+          'Payment Status': sale.payment_status || 'N/A',
+          'Created By': sale.username || sale.created_by || 'Unknown'
+        }
+      })
+      const workbook = XLSX.utils.book_new()
+      const worksheet = XLSX.utils.json_to_sheet(excelData)
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Sales Data')
+      const excelBuffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' })
+      return excelBuffer
+    } catch (error) {
+      console.warn('XLSX library not available, falling back to CSV format:', error)
+      return generateSalesCSV(salesData)
+    }
+  }
+
+  const handleSalespersonExportClick = (event) => {
+    setSalespersonExportMenuAnchor(event.currentTarget)
+  }
+
+  const handleSalespersonExportClose = () => {
+    setSalespersonExportMenuAnchor(null)
+  }
+
+  // Generate PDF HTML for salesperson sales
+  const generateSalesPDF = (salesData, salespersonName) => {
+    const totalRevenue = salesData.reduce((sum, s) => sum + parseFloat(s.total || 0), 0)
+    const totalPayment = salesData.reduce((sum, s) => sum + parseFloat(s.payment_amount || 0), 0)
+    const totalCredit = salesData.reduce((sum, s) => sum + parseFloat(s.credit_amount || 0), 0)
+    const totalTransactions = salesData.length
+    
+    const dateRange = salespersonStartDate && salespersonEndDate
+      ? `${salespersonStartDate.toLocaleDateString()} to ${salespersonEndDate.toLocaleDateString()}`
+      : 'All Time'
+    
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Salesperson Sales Report - ${salespersonName}</title>
+          <style>
+            body { 
+              font-family: Arial, sans-serif; 
+              margin: 20px; 
+              font-size: 12px;
+            }
+            .header { 
+              text-align: center; 
+              margin-bottom: 30px; 
+              border-bottom: 2px solid #333; 
+              padding-bottom: 20px; 
+            }
+            .summary { 
+              background: #f5f5f5; 
+              padding: 15px; 
+              margin-bottom: 20px; 
+              border-radius: 5px;
+              display: grid;
+              grid-template-columns: 1fr 1fr 1fr 1fr;
+              gap: 10px;
+            }
+            .summary-item {
+              text-align: center;
+              padding: 10px;
+              background: white;
+              border-radius: 3px;
+            }
+            .summary-label {
+              font-size: 11px;
+              color: #666;
+              margin-bottom: 5px;
+            }
+            .summary-value {
+              font-size: 18px;
+              font-weight: bold;
+            }
+            table { 
+              width: 100%; 
+              border-collapse: collapse; 
+              margin-top: 20px; 
+              font-size: 11px;
+            }
+            th, td { 
+              border: 1px solid #ddd; 
+              padding: 8px; 
+              text-align: left; 
+            }
+            th { 
+              background-color: #f2f2f2; 
+              font-weight: bold;
+            }
+            .amount { text-align: right; }
+            .status-completed { color: #28a745; font-weight: bold; }
+            .status-pending { color: #ffc107; font-weight: bold; }
+            .total-row { 
+              font-weight: bold; 
+              background-color: #e6f3ff; 
+            }
+            @media print {
+              body { margin: 0; }
+              .header { page-break-after: avoid; }
+              table { page-break-inside: auto; }
+              tr { page-break-inside: avoid; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Salesperson Sales Report</h1>
+            <p>Generated on: ${new Date().toLocaleDateString()}</p>
+            <p><strong>Salesperson:</strong> ${salespersonName}</p>
+            <p><strong>Date Range:</strong> ${dateRange}</p>
+          </div>
+          
+          <div class="summary">
+            <div class="summary-item">
+              <div class="summary-label">Total Sales</div>
+              <div class="summary-value">${totalTransactions}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Total Revenue</div>
+              <div class="summary-value" style="color: #28a745;">${totalRevenue.toFixed(2)}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Total Payments</div>
+              <div class="summary-value" style="color: #2196f3;">${totalPayment.toFixed(2)}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Total Credit</div>
+              <div class="summary-value" style="color: #ff9800;">${totalCredit.toFixed(2)}</div>
+            </div>
+          </div>
+          
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Invoice #</th>
+                <th>Customer</th>
+                <th class="amount">Total</th>
+                <th class="amount">Payment</th>
+                <th class="amount">Credit</th>
+                <th>Payment Method</th>
+                <th>Status</th>
+                <th>Created By</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${salesData.map(sale => {
+                const saleDate = new Date(sale.created_at)
+                const customerInfo = sale.customerInfo || (sale.customer_info ? JSON.parse(sale.customer_info) : {})
+                const customerName = customerInfo.name || sale.customer_name || 'Walk-in Customer'
+                return `
+                  <tr>
+                    <td>${saleDate.toLocaleDateString()} ${saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}</td>
+                    <td>${sale.invoice_no || 'N/A'}</td>
+                    <td>${customerName}</td>
+                    <td class="amount">${parseFloat(sale.total || 0).toFixed(2)}</td>
+                    <td class="amount">${parseFloat(sale.payment_amount || 0).toFixed(2)}</td>
+                    <td class="amount">${parseFloat(sale.credit_amount || 0).toFixed(2)}</td>
+                    <td>${sale.payment_method || 'Cash'}</td>
+                    <td class="status-${sale.payment_status?.toLowerCase() || 'completed'}">${sale.payment_status || 'COMPLETED'}</td>
+                    <td>${sale.username || sale.created_by || 'Unknown'}</td>
+                  </tr>
+                `
+              }).join('')}
+              <tr class="total-row">
+                <td colspan="3"><strong>Total</strong></td>
+                <td class="amount"><strong>${totalRevenue.toFixed(2)}</strong></td>
+                <td class="amount"><strong>${totalPayment.toFixed(2)}</strong></td>
+                <td class="amount"><strong>${totalCredit.toFixed(2)}</strong></td>
+                <td colspan="3"></td>
+              </tr>
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `
+    return htmlContent
+  }
+
+  const exportSalespersonSalesCSV = () => {
+    const csvContent = generateSalesCSV(salespersonSales)
+    const salespersonName = selectedSalespersonForSales?.name?.replace(/\s+/g, '_') || 'salesperson'
+    const dateSuffix = salespersonStartDate && salespersonEndDate
+      ? `_${salespersonStartDate.toISOString().split('T')[0]}_to_${salespersonEndDate.toISOString().split('T')[0]}`
+      : `_${new Date().toISOString().split('T')[0]}`
+    downloadFile(csvContent, `sales_${salespersonName}${dateSuffix}.csv`, 'text/csv')
+    handleSalespersonExportClose()
+  }
+
+  const exportSalespersonSalesExcel = async () => {
+    try {
+      const excelContent = await generateSalesExcel(salespersonSales)
+      const salespersonName = selectedSalespersonForSales?.name?.replace(/\s+/g, '_') || 'salesperson'
+      const dateSuffix = salespersonStartDate && salespersonEndDate
+        ? `_${salespersonStartDate.toISOString().split('T')[0]}_to_${salespersonEndDate.toISOString().split('T')[0]}`
+        : `_${new Date().toISOString().split('T')[0]}`
+      downloadFile(excelContent, `sales_${salespersonName}${dateSuffix}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    } catch (error) {
+      console.error('Error exporting to Excel:', error)
+    }
+    handleSalespersonExportClose()
+  }
+
+  const exportSalespersonSalesPDF = () => {
+    const salespersonName = selectedSalespersonForSales?.name || 'Salesperson'
+    const pdfContent = generateSalesPDF(salespersonSales, salespersonName)
+    const printWindow = window.open('', '_blank')
+    printWindow.document.write(pdfContent)
+    printWindow.document.close()
+    
+    // Wait for content to load, then trigger print
+    setTimeout(() => {
+      printWindow.print()
+    }, 250)
+    
+    handleSalespersonExportClose()
+  }
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '50vh' }}>
@@ -576,6 +952,15 @@ const SalespeoplePage = () => {
                 </TableCell>
                 <TableCell align="center">
                   <Box sx={{ display: 'flex', gap: 0.5 }}>
+                    <Tooltip title="View Sales">
+                      <IconButton
+                        size="small"
+                        color="primary"
+                        onClick={() => handleViewSales(salesperson)}
+                      >
+                        <ViewIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
                     <Tooltip title="Edit">
                       <IconButton
                         size="small"
@@ -665,6 +1050,244 @@ const SalespeoplePage = () => {
           Export as Excel
         </MenuItem>
         <MenuItem onClick={exportToPDF}>
+          <ListItemIcon>
+            <DownloadIcon fontSize="small" />
+          </ListItemIcon>
+          Export as PDF
+        </MenuItem>
+      </Menu>
+
+      {/* Salesperson Sales Dialog */}
+      <Dialog 
+        open={salesDialogOpen} 
+        onClose={() => {
+          setSalesDialogOpen(false)
+          setSelectedSalespersonForSales(null)
+          setSalespersonSales([])
+        }}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <SalesIcon color="primary" />
+              <Typography variant="h6">
+                Sales for {selectedSalespersonForSales?.name || 'Salesperson'}
+              </Typography>
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<ExportIcon />}
+                onClick={handleSalespersonExportClick}
+                disabled={salespersonSales.length === 0}
+              >
+                Export
+              </Button>
+            </Box>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          {/* Date Filter Section */}
+          <Card sx={{ mb: 3, p: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
+              <Typography variant="subtitle2" sx={{ minWidth: 120 }}>Date Range:</Typography>
+              <LocalizationProvider dateAdapter={AdapterDateFns}>
+                <DatePicker
+                  label="Start Date"
+                  value={salespersonStartDate}
+                  onChange={(newValue) => {
+                    setSalespersonStartDate(newValue)
+                  }}
+                  slotProps={{
+                    textField: {
+                      size: 'small',
+                      sx: { width: 180 }
+                    }
+                  }}
+                />
+              </LocalizationProvider>
+              <LocalizationProvider dateAdapter={AdapterDateFns}>
+                <DatePicker
+                  label="End Date"
+                  value={salespersonEndDate}
+                  onChange={(newValue) => {
+                    setSalespersonEndDate(newValue)
+                  }}
+                  slotProps={{
+                    textField: {
+                      size: 'small',
+                      sx: { width: 180 }
+                    }
+                  }}
+                />
+              </LocalizationProvider>
+              <Button
+                variant="contained"
+                size="small"
+                onClick={handleSalespersonDateFilterChange}
+              >
+                Apply Filter
+              </Button>
+            </Box>
+            
+            {/* Quick Date Presets */}
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              <Button size="small" variant="outlined" onClick={() => setDateFilterPreset('today')}>
+                Today
+              </Button>
+              <Button size="small" variant="outlined" onClick={() => setDateFilterPreset('week')}>
+                Last 7 Days
+              </Button>
+              <Button size="small" variant="outlined" onClick={() => setDateFilterPreset('month')}>
+                Last Month
+              </Button>
+              <Button size="small" variant="outlined" onClick={() => setDateFilterPreset('3months')}>
+                Last 3 Months
+              </Button>
+              <Button size="small" variant="outlined" onClick={() => setDateFilterPreset('year')}>
+                Last Year
+              </Button>
+              <Button size="small" variant="outlined" onClick={() => setDateFilterPreset('all')}>
+                All Time
+              </Button>
+            </Box>
+          </Card>
+
+          {salespersonSalesLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+              <CircularProgress />
+            </Box>
+          ) : salespersonSales.length === 0 ? (
+            <Box sx={{ textAlign: 'center', py: 4 }}>
+              <SalesIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
+              <Typography variant="h6" color="text.secondary">
+                No sales found
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                This salesperson hasn&apos;t made any sales yet
+              </Typography>
+            </Box>
+          ) : (
+            <>
+              {/* Sales Summary */}
+              <Box sx={{ mb: 3, p: 2, bgcolor: 'background.default', borderRadius: 1 }}>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Typography variant="caption" color="text.secondary">Total Sales</Typography>
+                    <Typography variant="h6">{salespersonSales.length}</Typography>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Typography variant="caption" color="text.secondary">Total Revenue</Typography>
+                    <Typography variant="h6" color="success.main">
+                      {salespersonSales.reduce((sum, s) => sum + parseFloat(s.total || 0), 0).toFixed(2)}
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Typography variant="caption" color="text.secondary">Total Payments</Typography>
+                    <Typography variant="h6" color="primary.main">
+                      {salespersonSales.reduce((sum, s) => sum + parseFloat(s.payment_amount || 0), 0).toFixed(2)}
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={3}>
+                    <Typography variant="caption" color="text.secondary">Total Credit</Typography>
+                    <Typography variant="h6" color="warning.main">
+                      {salespersonSales.reduce((sum, s) => sum + parseFloat(s.credit_amount || 0), 0).toFixed(2)}
+                    </Typography>
+                  </Grid>
+                </Grid>
+              </Box>
+
+              {/* Sales Table */}
+              <TableContainer component={Paper} sx={{ maxHeight: 500 }}>
+                <Table stickyHeader size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Date</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Invoice #</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Customer</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }} align="right">Total</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }} align="right">Payment</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }} align="right">Credit</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Payment Method</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Status</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Created By</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {salespersonSales.map((sale) => {
+                      const saleDate = new Date(sale.created_at)
+                      const customerInfo = sale.customerInfo || (sale.customer_info ? JSON.parse(sale.customer_info) : {})
+                      return (
+                        <TableRow key={sale.id} hover>
+                          <TableCell>
+                            {saleDate.toLocaleDateString()} {saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                          </TableCell>
+                          <TableCell>{sale.invoice_no || 'N/A'}</TableCell>
+                          <TableCell>{customerInfo.name || sale.customer_name || 'Walk-in Customer'}</TableCell>
+                          <TableCell align="right">{parseFloat(sale.total || 0).toFixed(2)}</TableCell>
+                          <TableCell align="right" sx={{ color: 'success.main' }}>
+                            {parseFloat(sale.payment_amount || 0).toFixed(2)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ color: 'warning.main' }}>
+                            {parseFloat(sale.credit_amount || 0).toFixed(2)}
+                          </TableCell>
+                          <TableCell>
+                            <Chip 
+                              label={sale.payment_method || 'Cash'} 
+                              size="small"
+                              color={sale.payment_method === 'FULLY_CREDIT' ? 'error' : sale.payment_method === 'PARTIAL_PAYMENT' ? 'warning' : 'default'}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Chip 
+                              label={sale.payment_status || 'N/A'} 
+                              size="small"
+                              color={sale.payment_status === 'COMPLETED' ? 'success' : sale.payment_status === 'PENDING' ? 'warning' : 'default'}
+                            />
+                          </TableCell>
+                          <TableCell>{sale.username || sale.created_by || 'Unknown'}</TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => {
+            setSalesDialogOpen(false)
+            setSelectedSalespersonForSales(null)
+            setSalespersonSales([])
+          }}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Salesperson Sales Export Menu */}
+      <Menu
+        anchorEl={salespersonExportMenuAnchor}
+        open={Boolean(salespersonExportMenuAnchor)}
+        onClose={handleSalespersonExportClose}
+      >
+        <MenuItem onClick={exportSalespersonSalesCSV}>
+          <ListItemIcon>
+            <DownloadIcon fontSize="small" />
+          </ListItemIcon>
+          Export as CSV
+        </MenuItem>
+        <MenuItem onClick={exportSalespersonSalesExcel}>
+          <ListItemIcon>
+            <DownloadIcon fontSize="small" />
+          </ListItemIcon>
+          Export as Excel
+        </MenuItem>
+        <MenuItem onClick={exportSalespersonSalesPDF}>
           <ListItemIcon>
             <DownloadIcon fontSize="small" />
           </ListItemIcon>

@@ -614,8 +614,16 @@
     
     body('total')
       .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Total must be a non-negative number'),
+      .custom((value) => {
+        // Allow negative total to represent customer advance credit
+        // Example: Customer has -29000 credit, buys 9000 item → Total = -20000
+        if (value === undefined || value === null || value === '') {
+          return true; // Allow empty values
+        }
+        const num = parseFloat(value);
+        return !isNaN(num); // Allow any number (positive or negative)
+      })
+      .withMessage('Total must be a valid number'),
     
     body('paymentStatus')
       .optional()
@@ -633,13 +641,29 @@
     
     body('paymentAmount')
       .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Payment amount must be a non-negative number'),
+      .custom((value) => {
+        // Allow negative payment amount to represent customer advance credit being used
+        // Example: Customer has advance credit, payment amount can be negative
+        if (value === undefined || value === null || value === '') {
+          return true; // Allow empty values
+        }
+        const num = parseFloat(value);
+        return !isNaN(num); // Allow any number (positive or negative)
+      })
+      .withMessage('Payment amount must be a valid number'),
     
     body('creditAmount')
       .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Credit amount must be a non-negative number'),
+      .custom((value) => {
+        // Allow negative credit amounts to represent overpayments/advance credit
+        // Example: -18000 means customer has 18000 credit balance
+        if (value === undefined || value === null || value === '') {
+          return true; // Allow empty values
+        }
+        const num = parseFloat(value);
+        return !isNaN(num); // Allow any number (positive or negative)
+      })
+      .withMessage('Credit amount must be a valid number'),
     
     body('creditStatus')
       .optional()
@@ -749,8 +773,16 @@
     
     body('total')
       .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Total must be a non-negative number'),
+      .custom((value) => {
+        // Allow negative total to represent customer advance credit
+        // Example: Customer has -29000 credit, buys 9000 item → Total = -20000
+        if (value === undefined || value === null || value === '') {
+          return true; // Allow empty values
+        }
+        const num = parseFloat(value);
+        return !isNaN(num); // Allow any number (positive or negative)
+      })
+      .withMessage('Total must be a valid number'),
     
     body('paymentStatus')
       .optional()
@@ -1196,48 +1228,93 @@
     // Warehouse Sale Validation
     validateWarehouseSale: [
       body('retailerId')
-        .notEmpty()
-        .withMessage('Retailer ID is required')
-        .isInt()
-        .withMessage('Retailer ID must be a valid integer'),
+        .optional({ values: 'falsy' }) // This allows null, undefined, empty string
+        .custom((value) => {
+          // If retailerId is provided, it must be valid
+          if (!value || value === 'null' || value === 'undefined') {
+            return true; // Allow empty/null values
+          }
+          // Accept both string and number
+          const num = parseInt(value);
+          return !isNaN(num) && num > 0;
+        })
+        .withMessage('Retailer ID must be a valid positive integer'),
       
       body('items')
         .isArray({ min: 1 })
         .withMessage('At least one item is required'),
       
+      // Accept both itemId and inventoryItemId for flexibility
       body('items.*.itemId')
-        .notEmpty()
-        .withMessage('Item ID is required')
-        .isInt()
-        .withMessage('Item ID must be a valid integer'),
+        .optional()
+        .custom((value, { req, path }) => {
+          const itemIndex = path.match(/\[(\d+)\]/)?.[1];
+          const inventoryItemId = req.body.items?.[itemIndex]?.inventoryItemId;
+          // If itemId is not provided, check inventoryItemId
+          if (!value && !inventoryItemId) {
+            return false; // At least one must be provided
+          }
+          return true;
+        })
+        .withMessage('Item ID is required'),
+      
+      body('items.*.inventoryItemId')
+        .optional()
+        .custom((value) => {
+          if (!value) return true; // Optional if itemId is provided
+          const num = parseInt(value);
+          return !isNaN(num) && num > 0;
+        })
+        .withMessage('Inventory item ID must be a valid positive integer'),
       
       body('items.*.quantity')
-        .isInt({ min: 1 })
-        .withMessage('Quantity must be a positive integer'),
+        .isFloat({ min: 0.01 })
+        .withMessage('Quantity must be greater than 0'),
       
       body('items.*.unitPrice')
         .isFloat({ min: 0 })
         .withMessage('Unit price must be a positive number'),
       
+      // Make totalPrice optional since frontend calculates it
       body('items.*.totalPrice')
+        .optional()
         .isFloat({ min: 0 })
         .withMessage('Total price must be a positive number'),
       
+      // Accept multiple field names for totals
+      body('subtotal')
+        .optional()
+        .isFloat({ min: 0 })
+        .withMessage('Subtotal must be a positive number'),
+      
       body('totalAmount')
+        .optional()
         .isFloat({ min: 0 })
         .withMessage('Total amount must be a positive number'),
+      
+      body('total')
+        .optional()
+        .isFloat({ min: 0 })
+        .withMessage('Total must be a positive number'),
       
       body('taxAmount')
         .optional()
         .isFloat({ min: 0 })
         .withMessage('Tax amount must be a positive number'),
       
+      body('taxRate')
+        .optional()
+        .isFloat({ min: 0 })
+        .withMessage('Tax rate must be a positive number'),
+      
       body('discountAmount')
         .optional()
         .isFloat({ min: 0 })
         .withMessage('Discount amount must be a positive number'),
       
+      // Make finalAmount optional
       body('finalAmount')
+        .optional()
         .isFloat({ min: 0 })
         .withMessage('Final amount must be a positive number'),
       
@@ -1248,13 +1325,27 @@
       
       body('paymentAmount')
         .optional()
-        .isFloat({ min: 0 })
-        .withMessage('Payment amount must be a positive number'),
+        .custom((value) => {
+          // Allow any payment amount (can be negative for overpayments creating advance credit)
+          if (value === undefined || value === null || value === '') {
+            return true; // Allow empty values
+          }
+          const num = parseFloat(value);
+          return !isNaN(num); // Allow any number (positive or negative)
+        })
+        .withMessage('Payment amount must be a valid number'),
       
       body('creditAmount')
         .optional()
-        .isFloat({ min: 0 })
-        .withMessage('Credit amount must be a positive number'),
+        .custom((value) => {
+          // Allow negative credit amount for customer advance credit
+          if (value === undefined || value === null || value === '') {
+            return true; // Allow empty values
+          }
+          const num = parseFloat(value);
+          return !isNaN(num); // Allow any number (positive or negative)
+        })
+        .withMessage('Credit amount must be a valid number'),
       
       body('paymentTerms')
         .optional()

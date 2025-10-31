@@ -116,10 +116,10 @@ function ProductStockHistoryPage() {
   const renderProductOverview = () => {
     if (!productData) return null
 
-    const stockStatus = productData.currentStock <= productData.minStockLevel ? 'low' : 
-                       productData.currentStock >= productData.maxStockLevel ? 'high' : 'normal'
+    const stockStatus = productData.current_stock <= productData.min_stock_level ? 'low' : 
+                       productData.current_stock >= productData.max_stock_level ? 'high' : 'normal'
     
-    const stockPercentage = (productData.currentStock / productData.maxStockLevel) * 100
+    const stockPercentage = (productData.current_stock / productData.max_stock_level) * 100
 
     return (
       <Grid container spacing={3}>
@@ -145,7 +145,7 @@ function ProductStockHistoryPage() {
                     Cost Price
                   </Typography>
                   <Typography variant="h6" color="primary">
-                    ${productData.costPrice?.toFixed(2) || '0.00'}
+                    {parseFloat(productData.cost_price || 0).toFixed(2)}
                   </Typography>
                 </Grid>
                 <Grid item xs={6}>
@@ -153,9 +153,39 @@ function ProductStockHistoryPage() {
                     Selling Price
                   </Typography>
                   <Typography variant="h6" color="success.main">
-                    ${productData.sellingPrice?.toFixed(2) || '0.00'}
+                    {parseFloat(productData.selling_price || 0).toFixed(2)}
                   </Typography>
                 </Grid>
+                {productData.supplier_name && (
+                  <>
+                    <Grid item xs={6}>
+                      <Typography variant="body2" color="text.secondary">
+                        Supplier
+                      </Typography>
+                      <Typography variant="body1">
+                        {productData.supplier_name}
+                      </Typography>
+                      {productData.supplierCompanyName && (
+                        <Typography variant="caption" color="text.secondary">
+                          {productData.supplierCompanyName}
+                        </Typography>
+                      )}
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Typography variant="body2" color="text.secondary">
+                        Purchase Date
+                      </Typography>
+                      <Typography variant="body1">
+                        {productData.purchase_date ? new Date(productData.purchase_date).toLocaleDateString() : 'N/A'}
+                      </Typography>
+                      {productData.purchase_price && (
+                        <Typography variant="caption" color="text.secondary">
+                          Purchase Price: {parseFloat(productData.purchase_price).toFixed(2)}
+                        </Typography>
+                      )}
+                    </Grid>
+                  </>
+                )}
               </Grid>
             </CardContent>
           </Card>
@@ -175,7 +205,7 @@ function ProductStockHistoryPage() {
                     Current Stock
                   </Typography>
                   <Typography variant="h5" fontWeight="bold">
-                    {productData.currentStock}
+                    {productData.current_stock}
                   </Typography>
                 </Box>
                 <LinearProgress
@@ -192,7 +222,7 @@ function ProductStockHistoryPage() {
                     Min Level
                   </Typography>
                   <Typography variant="body1">
-                    {productData.minStockLevel}
+                    {productData.min_stock_level}
                   </Typography>
                 </Grid>
                 <Grid item xs={6}>
@@ -200,10 +230,11 @@ function ProductStockHistoryPage() {
                     Max Level
                   </Typography>
                   <Typography variant="body1">
-                    {productData.maxStockLevel}
+                    {productData.max_stock_level}
                   </Typography>
                 </Grid>
               </Grid>
+
 
               <Box sx={{ mt: 2 }}>
                 <Chip

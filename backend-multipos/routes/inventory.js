@@ -23,31 +23,6 @@ router.get('/', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), inventoryCon
 // @access  Private (Admin, Warehouse Keeper, Cashier)
 router.get('/cross-branch', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), checkCrossBranchVisibility, inventoryController.getCrossBranchInventory);
 
-// @route   GET /api/inventory/:id
-// @desc    Get single inventory item
-// @access  Private (Admin, Warehouse Keeper, Cashier)
-router.get('/:id', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), inventoryController.getInventoryItem);
-
-// @route   POST /api/inventory
-// @desc    Create new inventory item
-// @access  Private (Admin, Warehouse Keeper, Cashier with permission)
-router.post('/', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), requireShiftAccessForInventory, checkWarehouseKeeperInventoryPermission, checkCashierInventoryPermission, inventoryItemValidation, inventoryController.createInventoryItem);
-
-// @route   PUT /api/inventory/:id
-// @desc    Update inventory item
-// @access  Private (Admin, Warehouse Keeper, Cashier with permission)
-router.put('/:id', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), requireShiftAccessForInventory, checkWarehouseKeeperInventoryPermission, checkCashierInventoryPermission, inventoryItemUpdateValidation, inventoryController.updateInventoryItem);
-
-// @route   DELETE /api/inventory/:id
-// @desc    Delete inventory item
-// @access  Private (Admin only)
-router.delete('/:id', auth, requireAdmin, inventoryController.deleteInventoryItem);
-
-// @route   PATCH /api/inventory/:id/quantity
-// @desc    Update inventory quantity
-// @access  Private (Admin, Warehouse Keeper, Cashier with permission)
-router.patch('/:id/quantity', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), requireShiftAccessForInventory, checkWarehouseKeeperInventoryPermission, checkCashierInventoryPermission, inventoryController.updateQuantity);
-
 // Real-time data endpoints (replaces WebSocket)
 router.get('/changes',
   auth,
@@ -74,9 +49,12 @@ router.get('/summary',
 router.post('/import-excel', 
   auth, 
   (req, res, next) => {
-    // Allow Admin, Warehouse Keeper, and Cashier with inventory permission
-    if (req.user.role === 'ADMIN' || req.user.role === 'WAREHOUSE_KEEPER' || 
-        (req.user.role === 'CASHIER' && req.user.inventoryPermission)) {
+    const hasInventoryAccess =
+      req.user.role === 'ADMIN' ||
+      req.user.role === 'WAREHOUSE_KEEPER' ||
+      (req.user.role === 'CASHIER' && (req.user.inventoryPermission !== false));
+
+    if (hasInventoryAccess) {
       next();
     } else {
       return res.status(403).json({
@@ -96,9 +74,12 @@ router.post('/import-excel',
 router.get('/excel-template', 
   auth, 
   (req, res, next) => {
-    // Allow Admin, Warehouse Keeper, and Cashier with inventory permission
-    if (req.user.role === 'ADMIN' || req.user.role === 'WAREHOUSE_KEEPER' || 
-        (req.user.role === 'CASHIER' && req.user.inventoryPermission)) {
+    const hasInventoryAccess =
+      req.user.role === 'ADMIN' ||
+      req.user.role === 'WAREHOUSE_KEEPER' ||
+      (req.user.role === 'CASHIER' && (req.user.inventoryPermission !== false));
+
+    if (hasInventoryAccess) {
       next();
     } else {
       return res.status(403).json({
@@ -109,5 +90,30 @@ router.get('/excel-template',
   },
   excelImportController.getExcelTemplate
 );
+
+// @route   GET /api/inventory/:id
+// @desc    Get single inventory item
+// @access  Private (Admin, Warehouse Keeper, Cashier)
+router.get('/:id', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), inventoryController.getInventoryItem);
+
+// @route   POST /api/inventory
+// @desc    Create new inventory item
+// @access  Private (Admin, Warehouse Keeper, Cashier with permission)
+router.post('/', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), requireShiftAccessForInventory, checkWarehouseKeeperInventoryPermission, checkCashierInventoryPermission, inventoryItemValidation, inventoryController.createInventoryItem);
+
+// @route   PUT /api/inventory/:id
+// @desc    Update inventory item
+// @access  Private (Admin, Warehouse Keeper, Cashier with permission)
+router.put('/:id', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), requireShiftAccessForInventory, checkWarehouseKeeperInventoryPermission, checkCashierInventoryPermission, inventoryItemUpdateValidation, inventoryController.updateInventoryItem);
+
+// @route   DELETE /api/inventory/:id
+// @desc    Delete inventory item
+// @access  Private (Admin only)
+router.delete('/:id', auth, requireAdmin, inventoryController.deleteInventoryItem);
+
+// @route   PATCH /api/inventory/:id/quantity
+// @desc    Update inventory quantity
+// @access  Private (Admin, Warehouse Keeper, Cashier with permission)
+router.patch('/:id/quantity', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), requireShiftAccessForInventory, checkWarehouseKeeperInventoryPermission, checkCashierInventoryPermission, inventoryController.updateQuantity);
 
 module.exports = router;

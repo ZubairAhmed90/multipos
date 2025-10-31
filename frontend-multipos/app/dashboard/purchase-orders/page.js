@@ -69,15 +69,18 @@ import {
   ExpandMore as ExpandMoreIcon,
   Refresh as RefreshIcon,
   GetApp as ExportIcon,
-  Print as PrintIcon
+  Print as PrintIcon,
+  Block as BlockIcon,
+  Cancel as CancelIcon
 } from '@mui/icons-material'
 import withAuth from '../../../components/auth/withAuth.js'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../components/auth/RouteGuard'
 import { 
-  fetchPurchaseOrders, 
+  fetchPurchaseOrders,
+  fetchPurchaseOrder,
   fetchSuppliers, 
-  createPurchaseOrder, 
+  createPurchaseOrder,
   updatePurchaseOrderStatus,
   deletePurchaseOrder,
   setFilters,
@@ -144,6 +147,7 @@ const statusConfig = {
   ORDERED: { color: 'primary', icon: <ShoppingCartIcon />, label: 'Ordered' },
   SHIPPED: { color: 'secondary', icon: <ShippingIcon />, label: 'Shipped' },
   DELIVERED: { color: 'success', icon: <CheckIcon />, label: 'Delivered' },
+  COMPLETED: { color: 'success', icon: <CheckIcon />, label: 'Completed' },
   CANCELLED: { color: 'error', icon: <DeleteIcon />, label: 'Cancelled' }
 }
 
@@ -173,22 +177,21 @@ function PurchaseOrdersPage() {
     orderDate: new Date().toISOString().split('T')[0],
     expectedDelivery: '',
     notes: '',
-    items: [{ itemName: '', itemSku: '', itemDescription: '', quantityOrdered: 1, unitPrice: 0, notes: '' }]
+    items: [{ itemName: '', itemSku: '', itemCategory: 'General', itemDescription: '', quantityOrdered: 1, unitPrice: 0, notes: '' }]
   })
   
   const [formErrors, setFormErrors] = useState({})
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Load data on component mount
-  useEffect(() => {
-    dispatch(fetchPurchaseOrders(filters))
-    dispatch(fetchSuppliers())
-  }, [dispatch])
-
-  // Load purchase orders when filters change
+  // Load data on component mount and when filters change
   useEffect(() => {
     dispatch(fetchPurchaseOrders(filters))
   }, [dispatch, filters])
+  
+  // Load suppliers once on mount
+  useEffect(() => {
+    dispatch(fetchSuppliers())
+  }, [dispatch])
 
   // Handle form field changes
   const handleFieldChange = (field, value) => {
@@ -220,7 +223,7 @@ function PurchaseOrdersPage() {
   const addItem = () => {
     setFormData(prev => ({
       ...prev,
-      items: [...prev.items, { itemName: '', itemSku: '', itemDescription: '', quantityOrdered: 1, unitPrice: 0, notes: '' }]
+      items: [...prev.items, { itemName: '', itemSku: '', itemCategory: 'General', itemDescription: '', quantityOrdered: 1, unitPrice: 0, notes: '' }]
     }))
   }
 
@@ -292,14 +295,21 @@ function PurchaseOrdersPage() {
       orderDate: new Date().toISOString().split('T')[0],
       expectedDelivery: '',
       notes: '',
-      items: [{ itemName: '', itemSku: '', itemDescription: '', quantityOrdered: 1, unitPrice: 0, notes: '' }]
+      items: [{ itemName: '', itemSku: '', itemCategory: 'General', itemDescription: '', quantityOrdered: 1, unitPrice: 0, notes: '' }]
     })
     setFormErrors({})
   }
 
   // Handle view order
-  const handleViewOrder = (order) => {
-    setSelectedOrder(order)
+  const handleViewOrder = async (order) => {
+    // Fetch full order details with items from backend
+    try {
+      const response = await dispatch(fetchPurchaseOrder(order.id))
+      setSelectedOrder(response.payload.data)
+    } catch (error) {
+      console.error('Error fetching order details:', error)
+      setSelectedOrder(order) // Fallback to list item
+    }
     setViewDialogOpen(true)
   }
 
@@ -380,7 +390,7 @@ function PurchaseOrdersPage() {
             </Box>
             
             <Grid container spacing={2}>
-              <Grid item xs={12} md={3}>
+              <Grid item xs={12} md={4} lg={4} xl={4}>
                 <TextField
                   fullWidth
                   size="small"
@@ -388,6 +398,7 @@ function PurchaseOrdersPage() {
                   placeholder="Search by order number or supplier..."
                   value={filters.search}
                   onChange={(e) => handleFilterChange('search', e.target.value)}
+                  sx={{ minWidth: { xs: '100%', md: 320, lg: 360 } }}
                   InputProps={{
                     startAdornment: (
                       <InputAdornment position="start">
@@ -405,13 +416,14 @@ function PurchaseOrdersPage() {
                 />
               </Grid>
               
-              <Grid item xs={12} md={2}>
+              <Grid item xs={12} md={4} lg={4} xl={4}>
                 <FormControl fullWidth size="small">
                   <InputLabel>Status</InputLabel>
                   <Select
                     value={filters.status}
                     label="Status"
                     onChange={(e) => handleFilterChange('status', e.target.value)}
+                    sx={{ minWidth: { xs: '100%', md: 220, lg: 260 } }}
                   >
                     <MenuItem value="">All Status</MenuItem>
                     {Object.keys(statusConfig).map(status => (
@@ -423,13 +435,14 @@ function PurchaseOrdersPage() {
                 </FormControl>
               </Grid>
               
-              <Grid item xs={12} md={2}>
+              <Grid item xs={12} md={4} lg={4} xl={4}>
                 <FormControl fullWidth size="small">
                   <InputLabel>Supplier</InputLabel>
                   <Select
                     value={filters.supplierId}
                     label="Supplier"
                     onChange={(e) => handleFilterChange('supplierId', e.target.value)}
+                    sx={{ minWidth: { xs: '100%', md: 220, lg: 260 } }}
                   >
                     <MenuItem value="">All Suppliers</MenuItem>
                     {suppliers.map(supplier => (
@@ -441,7 +454,7 @@ function PurchaseOrdersPage() {
                 </FormControl>
               </Grid>
               
-              <Grid item xs={12} md={2}>
+              <Grid item xs={12} md={3} lg={3} xl={3}>
                 <TextField
                   fullWidth
                   size="small"
@@ -450,10 +463,11 @@ function PurchaseOrdersPage() {
                   value={filters.orderDateFrom}
                   onChange={(e) => handleFilterChange('orderDateFrom', e.target.value)}
                   InputLabelProps={{ shrink: true }}
+                  sx={{ minWidth: { xs: '100%', md: 200 } }}
                 />
               </Grid>
               
-              <Grid item xs={12} md={2}>
+              <Grid item xs={12} md={3} lg={3} xl={3}>
                 <TextField
                   fullWidth
                   size="small"
@@ -462,10 +476,11 @@ function PurchaseOrdersPage() {
                   value={filters.orderDateTo}
                   onChange={(e) => handleFilterChange('orderDateTo', e.target.value)}
                   InputLabelProps={{ shrink: true }}
+                  sx={{ minWidth: { xs: '100%', md: 200 } }}
                 />
               </Grid>
               
-              <Grid item xs={12} md={1}>
+              <Grid item xs={12} md={2} lg={2} xl={2}>
                 <Button
                   fullWidth
                   variant="outlined"
@@ -579,14 +594,26 @@ function PurchaseOrdersPage() {
                               </IconButton>
                             </Tooltip>
                             
-                            {order.status === 'PENDING' && (
-                              <Tooltip title="Approve">
+                            {order.status === 'PENDING' && user?.role !== 'CASHIER' && (
+                              <Tooltip title="Approve & Receive (Update Inventory)">
                                 <IconButton
                                   size="small"
-                                  onClick={() => handleStatusUpdate(order.id, 'APPROVED')}
+                                  onClick={() => handleStatusUpdate(order.id, 'COMPLETED')}
                                   color="success"
                                 >
                                   <CheckIcon />
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                            
+                            {user?.role === 'ADMIN' && order.status === 'PENDING' && (
+                              <Tooltip title="Reject/Cancel Order">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => handleStatusUpdate(order.id, 'CANCELLED')}
+                                  color="error"
+                                >
+                                  <CancelIcon />
                                 </IconButton>
                               </Tooltip>
                             )}
@@ -778,7 +805,7 @@ function PurchaseOrdersPage() {
                 <Card key={index} sx={{ mb: 2 }}>
                   <CardContent>
                     <Grid container spacing={2}>
-                      <Grid item xs={12} md={4}>
+                      <Grid item xs={12} sm={6} md={3}>
                         <TextField
                           fullWidth
                           label="Item Name *"
@@ -789,7 +816,7 @@ function PurchaseOrdersPage() {
                         />
                       </Grid>
                       
-                      <Grid item xs={12} md={2}>
+                      <Grid item xs={12} sm={6} md={2}>
                         <TextField
                           fullWidth
                           label="SKU"
@@ -798,7 +825,26 @@ function PurchaseOrdersPage() {
                         />
                       </Grid>
                       
-                      <Grid item xs={12} md={2}>
+                      <Grid item xs={12} sm={6} md={2}>
+                        <FormControl fullWidth>
+                          <InputLabel>Category</InputLabel>
+                          <Select
+                            value={item.itemCategory || 'General'}
+                            label="Category"
+                            onChange={(e) => handleItemChange(index, 'itemCategory', e.target.value)}
+                          >
+                            <MenuItem value="General">General</MenuItem>
+                            <MenuItem value="Food">Food</MenuItem>
+                            <MenuItem value="Accessories">Accessories</MenuItem>
+                            <MenuItem value="Medicine">Medicine</MenuItem>
+                            <MenuItem value="Toys">Toys</MenuItem>
+                            <MenuItem value="Grooming">Grooming</MenuItem>
+                            <MenuItem value="Other">Other</MenuItem>
+                          </Select>
+                        </FormControl>
+                      </Grid>
+                      
+                      <Grid item xs={12} sm={6} md={2}>
                         <TextField
                           fullWidth
                           label="Quantity *"
@@ -810,7 +856,7 @@ function PurchaseOrdersPage() {
                         />
                       </Grid>
                       
-                      <Grid item xs={12} md={2}>
+                      <Grid item xs={12} sm={6} md={2}>
                         <TextField
                           fullWidth
                           label="Unit Price *"
@@ -823,8 +869,8 @@ function PurchaseOrdersPage() {
                         />
                       </Grid>
                       
-                      <Grid item xs={12} md={2}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                      <Grid item xs={12} sm={6} md={1}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', height: '100%', justifyContent: 'space-between' }}>
                           <Typography variant="body2" fontWeight="medium">
                             Total: {(item.quantityOrdered * item.unitPrice).toFixed(2)}
                           </Typography>
@@ -910,14 +956,19 @@ function PurchaseOrdersPage() {
                     <Typography variant="body2"><strong>Scope:</strong> {selectedOrder.scopeName || selectedOrder.scopeType || 'Unknown'}</Typography>
                     <Typography variant="body2"><strong>Order Date:</strong> {new Date(selectedOrder.orderDate).toLocaleDateString()}</Typography>
                     <Typography variant="body2"><strong>Expected Delivery:</strong> {selectedOrder.expectedDelivery ? new Date(selectedOrder.expectedDelivery).toLocaleDateString() : 'Not set'}</Typography>
-                    <Typography variant="body2"><strong>Status:</strong> 
-                      <Chip
-                        icon={statusConfig[selectedOrder.status]?.icon}
-                        label={statusConfig[selectedOrder.status]?.label || selectedOrder.status}
-                        color={statusConfig[selectedOrder.status]?.color || 'default'}
-                        size="small"
-                        sx={{ ml: 1 }}
-                      />
+                    <Typography variant="body2">
+                      <strong>Status:</strong> 
+                      {selectedOrder.status ? (
+                        <Chip
+                          icon={statusConfig[selectedOrder.status]?.icon}
+                          label={statusConfig[selectedOrder.status]?.label || selectedOrder.status}
+                          color={statusConfig[selectedOrder.status]?.color || 'default'}
+                          size="small"
+                          sx={{ ml: 1 }}
+                        />
+                      ) : (
+                        <span style={{ marginLeft: '8px', color: '#999' }}>No Status</span>
+                      )}
                     </Typography>
                     <Typography variant="body2"><strong>Total Amount:</strong> {parseFloat(selectedOrder.totalAmount || 0).toFixed(2)}</Typography>
                   </Grid>

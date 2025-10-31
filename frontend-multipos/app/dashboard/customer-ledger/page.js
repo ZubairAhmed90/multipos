@@ -157,6 +157,19 @@ function CustomerLedgerPage() {
   // Export dropdown state
   const [exportAnchorEl, setExportAnchorEl] = useState(null)
   
+  const getCustomerIdentifier = (customer) => {
+    if (!customer) return ''
+    if (customer.id) return customer.id
+    if (customer.customer_name) return customer.customer_name
+    if (customer.customer_phone) return customer.customer_phone
+    return ''
+  }
+
+  const getCustomerDisplayName = (customer) => {
+    if (!customer) return ''
+    if (customer.isAllCustomers) return 'All Customers'
+    return customer.customer_name || customer.customer_phone || 'Unknown Customer'
+  }
 
   const loadCustomers = useCallback(() => {
     const params = {
@@ -194,19 +207,43 @@ function CustomerLedgerPage() {
   }
 
   const handleViewLedger = (customer) => {
-    setSelectedCustomer(customer)
+    const identifier = getCustomerIdentifier(customer)
+    const enrichedCustomer = {
+      ...customer,
+      id: identifier
+    }
+    setSelectedCustomer(enrichedCustomer)
     setLedgerDialogOpen(true)
     setLedgerPage(1)
-    loadCustomerLedger(customer.customer_name || customer.customer_phone)
+    loadCustomerLedger(identifier)
+  }
+
+  const handleViewAllLedger = () => {
+    const allPlaceholder = {
+      id: '__all__',
+      customer_name: 'All Customers',
+      customer_phone: '',
+      total_transactions: pagination.customers.total,
+      isAllCustomers: true
+    }
+    setSelectedCustomer(allPlaceholder)
+    setLedgerDialogOpen(true)
+    setLedgerPage(1)
+    loadCustomerLedger(allPlaceholder.id)
   }
 
   const handleViewDetailedLedger = (customer) => {
-    const customerId = customer.customer_name || customer.customer_phone
+    const customerId = getCustomerIdentifier(customer)
+    if (!customerId || customerId === '__all__') {
+      alert('Detailed view is only available for individual customers.')
+      return
+    }
     // Open detailed ledger view in new tab
     window.open(`/dashboard/customer-ledger/detailed/${encodeURIComponent(customerId)}`, '_blank')
   }
 
   const handleExportLedger = (customerId, format = 'pdf', detailed = false) => {
+    if (!customerId) return
     dispatch(exportCustomerLedger({ 
       customerId, 
       params: { ...ledgerFilters, format, detailed: detailed.toString() }
@@ -223,7 +260,11 @@ function CustomerLedgerPage() {
   }
 
   const handleExportAction = (format, detailed = false) => {
-    const customerId = selectedCustomer?.customer_name || selectedCustomer?.customer_phone
+    const customerId = getCustomerIdentifier(selectedCustomer)
+    if (!customerId) {
+      handleExportClose()
+      return
+    }
     dispatch(exportCustomerLedger({ 
       customerId, 
       params: { ...ledgerFilters, format, detailed: detailed.toString() }
@@ -240,68 +281,83 @@ function CustomerLedgerPage() {
     
     // Refresh current customer ledger if dialog is open
     if (selectedCustomer && ledgerDialogOpen) {
-      loadCustomerLedger(selectedCustomer.customer_name || selectedCustomer.customer_phone)
+      const identifier = getCustomerIdentifier(selectedCustomer)
+      if (identifier) {
+        loadCustomerLedger(identifier)
+      }
     }
   }, [loadCustomers, selectedCustomer, ledgerDialogOpen, loadCustomerLedger])
 
 
   // Calculate summary totals
-  const calculateSummaryTotals = () => {
-    console.log('calculateSummaryTotals - currentCustomerLedger:', currentCustomerLedger)
-    console.log('calculateSummaryTotals - transactions:', currentCustomerLedger?.transactions)
-    
-    if (!currentCustomerLedger || !currentCustomerLedger.transactions) {
-      console.log('No transactions found, returning zeros')
-      return {
-        totalTransactions: 0,
-        totalAmount: 0,
-        totalPaid: 0,
-        totalCredit: 0,
-        currentBalance: 0
-      }
-    }
-
-    const transactions = currentCustomerLedger.transactions
-    console.log('Processing transactions:', transactions.length, 'transactions')
-    
-    // Calculate totals properly
-    const totals = transactions.reduce((acc, transaction) => {
-      // Use Amount column only (current bill amounts, not including old balances) and corrected paid_amount
-      const currentAmount = parseFloat(transaction.subtotal || transaction.amount || transaction.total || 0) // Amount column only
-      // Use corrected payment amount (0 for FULLY_CREDIT)
-      const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0)
-      
-      console.log('Transaction:', transaction.invoice_no, {
-        currentAmount,
-        correctedPaid
-      })
-      
-      return {
-        totalTransactions: acc.totalTransactions + 1,
-        totalAmount: acc.totalAmount + currentAmount, // Sum of Amount column only (not including old balances)
-        totalPaid: acc.totalPaid + correctedPaid,
-        totalCredit: 0 // We'll set this to outstanding balance later
-      }
-    }, {
+ // Calculate summary totals - CORRECTED VERSION
+const calculateSummaryTotals = () => {
+  console.log('calculateSummaryTotals - currentCustomerLedger:', currentCustomerLedger)
+  console.log('calculateSummaryTotals - transactions:', currentCustomerLedger?.transactions)
+  
+  if (!currentCustomerLedger || !currentCustomerLedger.transactions) {
+    console.log('No transactions found, returning zeros')
+    return {
       totalTransactions: 0,
       totalAmount: 0,
       totalPaid: 0,
-      totalCredit: 0
-    })
-    
-    // Calculate outstanding balance as Total Amount - Total Paid
-    // Since totalAmount already includes old balances, we just subtract totalPaid
-    const outstandingBalance = totals.totalAmount - totals.totalPaid
-    
-    // Set totalCredit to be the same as outstandingBalance for consistency
-    totals.totalCredit = outstandingBalance
-    
-    console.log('Final totals:', totals)
-    return {
-      ...totals,
-      outstandingBalance: outstandingBalance
+      totalCredit: 0,
+      currentBalance: 0,
+      outstandingBalance: 0
     }
   }
+
+  const transactions = currentCustomerLedger.transactions
+  console.log('Processing transactions:', transactions.length, 'transactions')
+  
+  // CORRECTED: Use the backend-calculated summary instead of recalculating
+  // The backend already provides the correct summary in currentCustomerLedger.summary
+  if (currentCustomerLedger.summary) {
+    console.log('Using backend summary:', currentCustomerLedger.summary)
+    return {
+      totalTransactions: currentCustomerLedger.summary.totalTransactions,
+      totalAmount: currentCustomerLedger.summary.totalAmount,
+      totalPaid: currentCustomerLedger.summary.totalPaid,
+      totalCredit: currentCustomerLedger.summary.totalCredit,
+      outstandingBalance: currentCustomerLedger.summary.outstandingBalance
+    }
+  }
+  
+  // Fallback calculation if summary is not available
+  console.log('Backend summary not available, using fallback calculation')
+  
+  // Calculate totals from transaction data
+  const totals = transactions.reduce((acc, transaction) => {
+    const currentAmount = parseFloat(transaction.amount || 0)
+    const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0)
+    
+    return {
+      totalTransactions: acc.totalTransactions + 1,
+      totalAmount: acc.totalAmount + currentAmount,
+      totalPaid: acc.totalPaid + correctedPaid,
+      totalCredit: acc.totalCredit
+    }
+  }, {
+    totalTransactions: 0,
+    totalAmount: 0,
+    totalPaid: 0,
+    totalCredit: 0
+  })
+  
+  // Use the running balance from the most recent transaction as outstanding balance
+  const sortedTransactions = [...transactions].sort((a, b) => 
+    new Date(b.transaction_date) - new Date(a.transaction_date)
+  )
+  const outstandingBalance = sortedTransactions.length > 0 
+    ? parseFloat(sortedTransactions[0].running_balance || 0)
+    : totals.totalAmount - totals.totalPaid
+  
+  console.log('Fallback totals:', { ...totals, outstandingBalance })
+  return {
+    ...totals,
+    outstandingBalance: outstandingBalance
+  }
+}
 
   const handleSort = (field) => {
     // For transaction_date, always sort in ascending order (earliest dates first)
@@ -374,7 +430,10 @@ function CustomerLedgerPage() {
 
   const handleLedgerFilterChange = () => {
     setLedgerPage(1)
-    loadCustomerLedger(selectedCustomer.customer_name || selectedCustomer.customer_phone)
+    const identifier = getCustomerIdentifier(selectedCustomer)
+    if (identifier) {
+      loadCustomerLedger(identifier)
+    }
   }
 
   const formatCurrency = (amount) => {
@@ -435,6 +494,394 @@ function CustomerLedgerPage() {
     }
   }
 
+  const viewingAllCustomers = Boolean(selectedCustomer?.isAllCustomers)
+  const summaryTotals = calculateSummaryTotals()
+
+  const renderSingleCustomerLedger = () => {
+    const transactions = currentCustomerLedger?.transactions || []
+    const totalRecords = currentCustomerLedger?.pagination?.total || 0
+
+    return (
+      <>
+      <TableContainer component={Paper}>
+        <Table>
+          <TableHead>
+            <TableRow>
+              <TableCell 
+                sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                onClick={() => handleSort('transaction_date')}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Date
+                  {getSortIcon('transaction_date')}
+                </Box>
+              </TableCell>
+              <TableCell 
+                sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                onClick={() => handleSort('invoice_no')}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Invoice
+                  {getSortIcon('invoice_no')}
+                </Box>
+              </TableCell>
+              {viewingAllCustomers && (
+                <TableCell>Customer</TableCell>
+              )}
+              <TableCell 
+                sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                onClick={() => handleSort('amount')}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Amount
+                  {getSortIcon('amount')}
+                </Box>
+              </TableCell>
+              <TableCell>
+                Old Balance
+              </TableCell>
+              <TableCell 
+                sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                onClick={() => handleSort('total_amount')}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Total Amount
+                  {getSortIcon('total_amount')}
+                </Box>
+              </TableCell>
+              <TableCell 
+                sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                onClick={() => handleSort('paid_amount')}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Payment
+                  {getSortIcon('paid_amount')}
+                </Box>
+              </TableCell>
+              <TableCell 
+                sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                onClick={() => handleSort('payment_method')}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Payment Method
+                  {getSortIcon('payment_method')}
+                </Box>
+              </TableCell>
+              <TableCell 
+                sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                onClick={() => handleSort('status')}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Status
+                  {getSortIcon('status')}
+                </Box>
+              </TableCell>
+              <TableCell 
+                sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
+                onClick={() => handleSort('balance')}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Balance
+                  {getSortIcon('balance')}
+                </Box>
+              </TableCell>
+              <TableCell>Actions</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {sortTransactions(transactions)?.map((transaction, index) => {
+              const currentAmount = parseFloat(transaction.subtotal || transaction.amount || transaction.total || 0)
+              const oldBalance = parseFloat(transaction.old_balance || transaction.previous_balance || 0)
+              const totalAmount = parseFloat(transaction.total_amount || transaction.total || 0)
+              const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0)
+              const balance = parseFloat(transaction.running_balance || transaction.balance || (totalAmount - correctedPaid))
+
+              return (
+                <TableRow key={transaction.transaction_id || index}>
+                  <TableCell>{formatDate(transaction.transaction_date)}</TableCell>
+                  <TableCell>{transaction.invoice_no}</TableCell>
+                  {viewingAllCustomers && (
+                    <TableCell>
+                      <Typography variant="body2" fontWeight="medium">
+                        {transaction.customer_name || 'N/A'}
+                      </Typography>
+                      {transaction.customer_phone && (
+                        <Typography variant="caption" color="text.secondary">
+                          {transaction.customer_phone}
+                        </Typography>
+                      )}
+                    </TableCell>
+                  )}
+                  <TableCell>{formatCurrency(currentAmount)}</TableCell>
+                  <TableCell>
+                    <Typography 
+                      variant="body2"
+                      color="warning.main"
+                      fontWeight="medium"
+                    >
+                      {formatCurrency(oldBalance)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Typography 
+                      variant="body2"
+                      color="primary.main"
+                      fontWeight="bold"
+                    >
+                      {formatCurrency(totalAmount)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Typography 
+                      variant="body2"
+                      color="success.main"
+                      fontWeight="medium"
+                    >
+                      {formatCurrency(correctedPaid)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>{transaction.payment_method}</TableCell>
+                  <TableCell>
+                    <Chip
+                      label={transaction.payment_status_display}
+                      color={getPaymentStatusColor(transaction.payment_status)}
+                      size="small"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Typography 
+                      variant="body2"
+                      color={balance < 0 ? 'success.main' : 'error.main'}
+                      fontWeight="medium"
+                    >
+                      {formatCurrency(balance)}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Tooltip title="View Sale Items">
+                      <IconButton
+                        size="small"
+                        onClick={() => fetchSaleItems(transaction.transaction_id)}
+                        color="primary"
+                        disabled={loadingSaleItems}
+                      >
+                        <ReceiptIcon />
+                      </IconButton>
+                    </Tooltip>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+
+      {transactions.length > 0 && (
+        <Box sx={{ mt: 2, mb: 2 }}>
+          <Paper sx={{ p: 2, backgroundColor: 'grey.50' }}>
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={3}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Total Transactions
+                </Typography>
+                <Typography variant="h6" color="primary">
+                  {summaryTotals.totalTransactions}
+                </Typography>
+              </Grid>
+              <Grid item xs={12} sm={3}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Total Amount
+                </Typography>
+                <Typography variant="h6" color="text.primary">
+                  {formatCurrency(summaryTotals.totalAmount)}
+                </Typography>
+              </Grid>
+              <Grid item xs={12} sm={3}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Total Paid
+                </Typography>
+                <Typography variant="h6" color="success.main">
+                  {formatCurrency(summaryTotals.totalPaid)}
+                </Typography>
+              </Grid>
+              <Grid item xs={12} sm={3}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Outstanding Balance
+                </Typography>
+                <Typography variant="h6" color="error.main">
+                  {formatCurrency(summaryTotals.outstandingBalance)}
+                </Typography>
+              </Grid>
+            </Grid>
+          </Paper>
+        </Box>
+      )}
+
+      {totalRecords > 50 && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
+          <Pagination
+            count={Math.ceil(totalRecords / 50)}
+            page={ledgerPage}
+            onChange={(event, page) => {
+              setLedgerPage(page)
+              const identifier = getCustomerIdentifier(selectedCustomer)
+              if (identifier) {
+                loadCustomerLedger(identifier)
+              }
+            }}
+            color="primary"
+          />
+        </Box>
+      )}
+      </>
+    )
+  }
+
+  const renderAllCustomerLedgers = () => {
+    const groups = currentCustomerLedger?.groupedLedgers || []
+    const uniqueCount = currentCustomerLedger?.customer?.unique_customers ?? groups.length
+    const overallSummary = summaryTotals
+
+    if (groups.length === 0) {
+      return (
+        <Box sx={{ p: 3 }}>
+          <Typography variant="body2" color="text.secondary">
+            No customer ledger data found for the selected filters.
+          </Typography>
+        </Box>
+      )
+    }
+
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        {groups.length > 0 && (
+          <Paper sx={{ p: 2, backgroundColor: 'grey.50' }}>
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={3}>
+                <Typography variant="subtitle2" color="text.secondary">Total Customers</Typography>
+                <Typography variant="h6" color="primary">{uniqueCount}</Typography>
+              </Grid>
+              <Grid item xs={12} sm={3}>
+                <Typography variant="subtitle2" color="text.secondary">Total Amount</Typography>
+                <Typography variant="h6">{formatCurrency(overallSummary.totalAmount)}</Typography>
+              </Grid>
+              <Grid item xs={12} sm={3}>
+                <Typography variant="subtitle2" color="text.secondary">Total Paid</Typography>
+                <Typography variant="h6" color="success.main">{formatCurrency(overallSummary.totalPaid)}</Typography>
+              </Grid>
+              <Grid item xs={12} sm={3}>
+                <Typography variant="subtitle2" color="text.secondary">Outstanding</Typography>
+                <Typography variant="h6" color="error.main">{formatCurrency(overallSummary.outstandingBalance)}</Typography>
+              </Grid>
+            </Grid>
+          </Paper>
+        )}
+        {groups.map((group, index) => {
+          const groupKey = group.customer?.key || `${group.customer?.name || 'customer'}-${index}`
+          const groupSummary = group.summary || {}
+          const transactions = group.transactions || []
+
+          return (
+            <Paper key={groupKey} sx={{ p: 2 }} elevation={1}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Box>
+                  <Typography variant="h6">
+                    {group.customer?.name || 'Unknown Customer'}
+                  </Typography>
+                  {group.customer?.phone && (
+                    <Typography variant="body2" color="text.secondary">
+                      {group.customer.phone}
+                    </Typography>
+                  )}
+                </Box>
+                <Chip label={`Transactions: ${groupSummary.totalTransactions || 0}`} color="primary" size="small" />
+              </Box>
+
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={12} sm={3}>
+                  <Typography variant="subtitle2" color="text.secondary">Total Amount</Typography>
+                  <Typography variant="h6">{formatCurrency(groupSummary.totalAmount)}</Typography>
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <Typography variant="subtitle2" color="text.secondary">Total Paid</Typography>
+                  <Typography variant="h6" color="success.main">{formatCurrency(groupSummary.totalPaid)}</Typography>
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <Typography variant="subtitle2" color="text.secondary">Outstanding</Typography>
+                  <Typography variant="h6" color="error.main">{formatCurrency(groupSummary.outstandingBalance)}</Typography>
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <Typography variant="subtitle2" color="text.secondary">Total Credit</Typography>
+                  <Typography variant="h6">{formatCurrency(groupSummary.totalCredit)}</Typography>
+                </Grid>
+              </Grid>
+
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Date</TableCell>
+                      <TableCell>Invoice</TableCell>
+                      <TableCell align="right">Amount</TableCell>
+                      <TableCell align="right">Old Balance</TableCell>
+                      <TableCell align="right">Total Amount</TableCell>
+                      <TableCell align="right">Payment</TableCell>
+                      <TableCell>Payment Method</TableCell>
+                      <TableCell>Status</TableCell>
+                      <TableCell align="right">Balance</TableCell>
+                      <TableCell>Actions</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {transactions.map((transaction, txIndex) => {
+                      const currentAmount = parseFloat(transaction.subtotal || transaction.amount || transaction.total || 0)
+                      const oldBalance = parseFloat(transaction.old_balance || transaction.previous_balance || 0)
+                      const totalAmount = parseFloat(transaction.total_amount || transaction.total || 0)
+                      const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0)
+                      const balance = parseFloat(transaction.running_balance || transaction.balance || (totalAmount - correctedPaid))
+
+                      return (
+                        <TableRow key={transaction.transaction_id || txIndex}>
+                          <TableCell>{formatDate(transaction.transaction_date)}</TableCell>
+                          <TableCell>{transaction.invoice_no}</TableCell>
+                          <TableCell align="right">{formatCurrency(currentAmount)}</TableCell>
+                          <TableCell align="right">{formatCurrency(oldBalance)}</TableCell>
+                          <TableCell align="right">{formatCurrency(totalAmount)}</TableCell>
+                          <TableCell align="right">{formatCurrency(correctedPaid)}</TableCell>
+                          <TableCell>{transaction.payment_method}</TableCell>
+                          <TableCell>
+                            <Chip
+                              label={transaction.payment_status_display}
+                              color={getPaymentStatusColor(transaction.payment_status)}
+                              size="small"
+                            />
+                          </TableCell>
+                          <TableCell align="right">{formatCurrency(balance)}</TableCell>
+                          <TableCell>
+                            <Tooltip title="View Sale Items">
+                              <IconButton
+                                size="small"
+                                onClick={() => fetchSaleItems(transaction.transaction_id)}
+                                color="primary"
+                                disabled={loadingSaleItems}
+                              >
+                                <ReceiptIcon />
+                              </IconButton>
+                            </Tooltip>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Paper>
+          )
+        })}
+      </Box>
+    )
+  }
+
   return (
     <RouteGuard allowedRoles={['ADMIN', 'CASHIER', 'WAREHOUSE_KEEPER']}>
       <DashboardLayout>
@@ -463,6 +910,14 @@ function CustomerLedgerPage() {
                 Customer Ledger
               </Typography>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Button
+                  variant="contained"
+                  startIcon={<ViewIcon />}
+                  size="small"
+                  onClick={handleViewAllLedger}
+                >
+                  See All Ledger
+                </Button>
                 <Tooltip title="Refresh customer data">
                   <IconButton onClick={handleManualRefresh} size="small">
                     <RefreshIcon />
@@ -627,7 +1082,7 @@ function CustomerLedgerPage() {
                               <Tooltip title="Export PDF">
                                 <IconButton
                                   size="small"
-                                  onClick={() => handleExportLedger(customer.customer_name || customer.customer_phone)}
+                                  onClick={() => handleExportLedger(getCustomerIdentifier(customer))}
                                   color="secondary"
                                 >
                                   <DownloadIcon />
@@ -677,7 +1132,7 @@ function CustomerLedgerPage() {
             <DialogTitle>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Typography variant="h6">
-                  Customer Ledger: {selectedCustomer?.customer_name || selectedCustomer?.customer_phone}
+                  Customer Ledger: {getCustomerDisplayName(selectedCustomer)}
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Tooltip title="Refresh data">
@@ -691,6 +1146,11 @@ function CustomerLedgerPage() {
             <DialogContent>
               {currentCustomerLedger && (
                 <>
+                  {viewingAllCustomers && (
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                      Displaying combined ledger across all customers. Use filters to narrow the date range before exporting.
+                    </Alert>
+                  )}
 
                   {/* Filters */}
                   <Box sx={{ mb: 3 }}>
@@ -743,237 +1203,7 @@ function CustomerLedgerPage() {
                     </Grid>
                   </Box>
 
-                  {/* Transactions Table */}
-                  <TableContainer component={Paper}>
-                    <Table>
-                      <TableHead>
-                        <TableRow>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('transaction_date')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Date
-                              {getSortIcon('transaction_date')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('invoice_no')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Invoice
-                              {getSortIcon('invoice_no')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('amount')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Amount
-                              {getSortIcon('amount')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('old_balance')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Old Balance
-                              {getSortIcon('old_balance')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('total_amount')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Total Amount
-                              {getSortIcon('total_amount')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('paid_amount')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Payment
-                              {getSortIcon('paid_amount')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('payment_method')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Payment Method
-                              {getSortIcon('payment_method')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('status')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Status
-                              {getSortIcon('status')}
-                            </Box>
-                          </TableCell>
-                          <TableCell 
-                            sx={{ cursor: 'pointer', '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}
-                            onClick={() => handleSort('balance')}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                              Balance
-                              {getSortIcon('balance')}
-                            </Box>
-                          </TableCell>
-                          <TableCell>Actions</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {sortTransactions(currentCustomerLedger.transactions).map((transaction) => (
-                          <TableRow key={transaction.transaction_id}>
-                            <TableCell>{formatDate(transaction.transaction_date)}</TableCell>
-                            <TableCell>{transaction.invoice_no}</TableCell>
-                            <TableCell>{formatCurrency(transaction.subtotal)}</TableCell>
-                            <TableCell>
-                              <Typography 
-                                variant="body2"
-
-
-                                color="warning.main"
-                                fontWeight="medium"
-                              >
-                                {formatCurrency(transaction.old_balance || 0)}
-                              </Typography>
-                            </TableCell>
-                            <TableCell>
-                              <Typography 
-                                variant="body2"
-                                color="primary.main"
-                                fontWeight="bold"
-                              >
-                                {formatCurrency(transaction.total_amount || transaction.total)}
-                              </Typography>
-                            </TableCell>
-                            <TableCell>
-                              <Typography 
-                                variant="body2"
-                                color="success.main"
-                                fontWeight="medium"
-                              >
-                                {(() => {
-                                  // Use corrected payment amount (0 for FULLY_CREDIT)
-                                  const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0);
-                                  return formatCurrency(correctedPaid);
-                                })()}
-                              </Typography>
-                            </TableCell>
-                            <TableCell>{transaction.payment_method}</TableCell>
-                            <TableCell>
-                              <Chip
-                                label={transaction.payment_status_display}
-                                color={getPaymentStatusColor(transaction.payment_status)}
-                                size="small"
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Typography 
-                                variant="body2"
-                                color={(() => {
-                                  const totalAmount = parseFloat(transaction.total_amount || transaction.total || 0);
-                                  // Use corrected payment amount (0 for FULLY_CREDIT)
-                                  const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0);
-                                  const balance = totalAmount - correctedPaid;
-                                  return balance > 0 ? 'error.main' : 'success.main';
-                                })()}
-                                fontWeight="medium"
-                              >
-                                {(() => {
-                                  const totalAmount = parseFloat(transaction.total_amount || transaction.total || 0);
-                                  // Use corrected payment amount (0 for FULLY_CREDIT)
-                                  const correctedPaid = transaction.payment_method === 'FULLY_CREDIT' ? 0 : parseFloat(transaction.paid_amount || 0);
-                                  const balance = totalAmount - correctedPaid;
-                                  return formatCurrency(balance);
-                                })()}
-                              </Typography>
-                            </TableCell>
-                            <TableCell>
-                              <Tooltip title="View Sale Items">
-                                <IconButton
-                                  size="small"
-                                  onClick={() => fetchSaleItems(transaction.transaction_id)}
-                                  color="primary"
-                                  disabled={loadingSaleItems}
-                                >
-                                  <ReceiptIcon />
-                                </IconButton>
-                              </Tooltip>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-
-                  {/* Summary Totals Row */}
-                  {currentCustomerLedger.transactions && currentCustomerLedger.transactions.length > 0 && (
-                    <Box sx={{ mt: 2, mb: 2 }}>
-                      <Paper sx={{ p: 2, backgroundColor: 'grey.50' }}>
-                        <Grid container spacing={2}>
-                          <Grid item xs={12} sm={3}>
-                            <Typography variant="subtitle2" color="text.secondary">
-                              Total Transactions
-                            </Typography>
-                            <Typography variant="h6" color="primary">
-                              {calculateSummaryTotals().totalTransactions}
-                            </Typography>
-                          </Grid>
-                          <Grid item xs={12} sm={3}>
-                            <Typography variant="subtitle2" color="text.secondary">
-                              Total Amount
-                            </Typography>
-                            <Typography variant="h6" color="text.primary">
-                              {formatCurrency(calculateSummaryTotals().totalAmount)}
-                            </Typography>
-                          </Grid>
-                          <Grid item xs={12} sm={3}>
-                            <Typography variant="subtitle2" color="text.secondary">
-                              Total Paid
-                            </Typography>
-                            <Typography variant="h6" color="success.main">
-                              {formatCurrency(calculateSummaryTotals().totalPaid)}
-                            </Typography>
-                          </Grid>
-                          <Grid item xs={12} sm={3}>
-                            <Typography variant="subtitle2" color="text.secondary">
-                              Outstanding Balance
-                            </Typography>
-                            <Typography variant="h6" color="error.main">
-                              {formatCurrency(calculateSummaryTotals().outstandingBalance)}
-                            </Typography>
-                          </Grid>
-                        </Grid>
-                      </Paper>
-                    </Box>
-                  )}
-
-                  {/* Pagination */}
-                  {currentCustomerLedger.pagination.total > 50 && (
-                    <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
-                      <Pagination
-                        count={Math.ceil(currentCustomerLedger.pagination.total / 50)}
-                        page={ledgerPage}
-                        onChange={(event, page) => {
-                          setLedgerPage(page)
-                          loadCustomerLedger(selectedCustomer.customer_name || selectedCustomer.customer_phone)
-                        }}
-                        color="primary"
-                      />
-                    </Box>
-                  )}
+                  {viewingAllCustomers ? renderAllCustomerLedgers() : renderSingleCustomerLedger()}
                 </>
               )}
             </DialogContent>
@@ -983,6 +1213,7 @@ function CustomerLedgerPage() {
                 startIcon={<ExportIcon />}
                 onClick={handleExportClick}
                 sx={{ minWidth: 120 }}
+                disabled={!selectedCustomer}
               >
                 Export
               </Button>

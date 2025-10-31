@@ -89,14 +89,16 @@ async function restockReturnItem(req, res) {
     const { returnId, itemId } = req.params;
     const { qty } = req.body || {};
 
-    const restockQty = parseInt(qty, 10);
-    if (!restockQty || restockQty <= 0) {
-      return res.status(400).json({ success: false, message: 'qty must be a positive integer' });
+    const restockQty = parseFloat(qty);
+    if (!Number.isFinite(restockQty) || restockQty <= 0) {
+      return res.status(400).json({ success: false, message: 'qty must be a positive number' });
     }
 
     // Load return line
     const items = await executeQuery(
-      `SELECT sri.id, sri.return_id, sri.inventory_item_id, sri.quantity AS remaining_qty,
+      `SELECT sri.id, sri.return_id, sri.inventory_item_id,
+              sri.quantity AS total_qty,
+              sri.remaining_quantity,
               sr.return_no, sr.status,
               ii.scope_type, ii.scope_id
        FROM sales_return_items sri
@@ -111,7 +113,8 @@ async function restockReturnItem(req, res) {
     }
 
     const line = items[0];
-    if (restockQty > Number(line.remaining_qty)) {
+    const remainingBefore = Number(line.remaining_quantity);
+    if (restockQty > remainingBefore) {
       return res.status(400).json({ success: false, message: 'qty exceeds remaining to restock' });
     }
 
@@ -120,7 +123,9 @@ async function restockReturnItem(req, res) {
     try {
       // Decrease remaining on return line
       await executeQuery(
-        `UPDATE sales_return_items SET quantity = quantity - ? WHERE id = ? AND return_id = ?`,
+        `UPDATE sales_return_items 
+         SET remaining_quantity = remaining_quantity - ?
+         WHERE id = ? AND return_id = ?`,
         [restockQty, itemId, returnId]
       );
 
@@ -144,7 +149,7 @@ async function restockReturnItem(req, res) {
 
       // If all items for this return are now zero, mark return completed
       const remaining = await executeQuery(
-        `SELECT SUM(quantity) AS remaining FROM sales_return_items WHERE return_id = ?`,
+        `SELECT SUM(remaining_quantity) AS remaining FROM sales_return_items WHERE return_id = ?`,
         [returnId]
       );
       const remainingQty = Number(remaining?.[0]?.remaining || 0);
@@ -154,6 +159,8 @@ async function restockReturnItem(req, res) {
 
       await executeQuery('COMMIT');
 
+      const remainingAfter = remainingBefore - restockQty;
+
       return res.json({
         success: true,
         message: 'Return restocked successfully',
@@ -161,7 +168,8 @@ async function restockReturnItem(req, res) {
           returnId: Number(returnId),
           itemId: Number(itemId),
           restocked: restockQty,
-          remainingAfter: Number(line.remaining_qty) - restockQty,
+          totalReturned: Number(line.total_qty),
+          remainingAfter,
           completed: remainingQty === 0
         }
       });

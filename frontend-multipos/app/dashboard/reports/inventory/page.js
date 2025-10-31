@@ -26,6 +26,7 @@ import {
   TableHead,
   TableRow,
   LinearProgress,
+  Menu,
 } from '@mui/material'
 import {
   Refresh,
@@ -46,6 +47,7 @@ const InventoryReportsPage = () => {
   const dispatch = useDispatch()
   const { user } = useSelector((state) => state.auth)
   const { inventoryReports, isLoading, error } = useSelector((state) => state.reports)
+  const [exportMenuAnchor, setExportMenuAnchor] = useState(null)
   
   const [filters, setFilters] = useState({
     warehouse: 'all',
@@ -69,63 +71,50 @@ const InventoryReportsPage = () => {
 
   const handleExport = async () => {
     try {
-      const XLSX = await import('xlsx')
-      
-      // Prepare data for Excel
-      const excelData = [
+      // Prepare data for CSV
+      const exportData = [
         // Summary data
-        { 'Report Type': 'Inventory Summary', 'Value': '' },
-        { 'Report Type': 'Total Items', 'Value': inventoryReports?.summary?.totalItems || 0 },
-        { 'Report Type': 'Low Stock Items', 'Value': inventoryReports?.summary?.lowStockItems || 0 },
-        { 'Report Type': 'Out of Stock Items', 'Value': inventoryReports?.summary?.outOfStockItems || 0 },
-        { 'Report Type': 'Total Value', 'Value': inventoryReports?.summary?.totalValue || 0 },
-        { 'Report Type': '', 'Value': '' },
-        
+        { Category: 'Inventory Summary', Value: '' },
+        { Category: 'Total Items', Value: inventoryReports?.summary?.totalItems || 0 },
+        { Category: 'Low Stock Items', Value: inventoryReports?.summary?.stockStatusCounts?.['Low Stock'] || 0 },
+        { Category: 'Out of Stock Items', Value: inventoryReports?.summary?.stockStatusCounts?.['Out of Stock'] || 0 },
+        { Category: 'Total Value', Value: inventoryReports?.summary?.totalValue || 0 },
+        { Category: '', Value: '' },
         // Category data
-        { 'Report Type': 'Items by Category', 'Value': '' },
+        { Category: 'Items by Category', Value: '' },
         ...categoryData.map(item => ({
-          'Report Type': item.name || 'N/A',
-          'Value': item.value || 0
+          Category: item.name || 'N/A',
+          Value: item.value || 0
         })),
-        { 'Report Type': '', 'Value': '' },
-        
+        { Category: '', Value: '' },
         // Low stock items
-        { 'Report Type': 'Low Stock Items', 'Value': '' },
+        { Category: 'Low Stock Items Details', Value: '' },
         ...lowStockItems.map(item => ({
-          'Report Type': item.name || 'N/A',
-          'Value': item.current_stock || 0
+          Category: item.name || 'N/A',
+          Value: `Current: ${item.current_stock || 0}, Min: ${item.min_stock_level || 0}`
         })),
-        { 'Report Type': '', 'Value': '' },
-        
+        { Category: '', Value: '' },
         // Top selling items
-        { 'Report Type': 'Top Selling Items', 'Value': '' },
+        { Category: 'Top Selling Items', Value: '' },
         ...topSellingItems.map(item => ({
-          'Report Type': item.name || 'N/A',
-          'Value': item.quantity_sold || 0
+          Category: item.name || 'N/A',
+          Value: `Sold: ${item.totalSold || 0}, Revenue: ${item.totalRevenue || 0}`
         }))
       ]
       
-      // Create workbook and worksheet
-      const workbook = XLSX.utils.book_new()
-      const worksheet = XLSX.utils.json_to_sheet(excelData)
-      
-      // Add worksheet to workbook
-      XLSX.utils.book_append_sheet(workbook, worksheet, 'Inventory Report')
-      
-      // Generate Excel file buffer
-      const excelBuffer = XLSX.write(workbook, { 
-        type: 'array', 
-        bookType: 'xlsx' 
-      })
+      // Convert to CSV
+      const headers = ['Category', 'Value']
+      const csvContent = [
+        headers.join(','),
+        ...exportData.map(row => `${row.Category || ''},${row.Value || ''}`)
+      ].join('\n')
       
       // Create download link
-      const blob = new Blob([excelBuffer], { 
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
-      })
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `inventory-report-${new Date().toISOString().split('T')[0]}.xlsx`
+      link.download = `inventory-report-${new Date().toISOString().split('T')[0]}.csv`
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
@@ -134,6 +123,131 @@ const InventoryReportsPage = () => {
       console.error('Export error:', error)
       alert('Failed to export inventory report. Please try again.')
     }
+  }
+
+  const handleExportPDF = () => {
+    // Generate PDF content
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Inventory Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 20px; }
+            h1 { text-align: center; }
+            .header { text-align: center; margin-bottom: 20px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            .summary { margin: 20px 0; }
+            .summary-row { display: flex; justify-content: space-between; padding: 5px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Inventory Report</h1>
+            <p>Generated on: ${new Date().toLocaleString()}</p>
+          </div>
+          
+          <div class="summary">
+            <h2>Summary</h2>
+            <div class="summary-row">
+              <strong>Total Items:</strong> <span>${inventoryReports?.summary?.totalItems || 0}</span>
+            </div>
+            <div class="summary-row">
+              <strong>Low Stock Items:</strong> <span>${inventoryReports?.summary?.stockStatusCounts?.['Low Stock'] || 0}</span>
+            </div>
+            <div class="summary-row">
+              <strong>Out of Stock Items:</strong> <span>${inventoryReports?.summary?.stockStatusCounts?.['Out of Stock'] || 0}</span>
+            </div>
+            <div class="summary-row">
+              <strong>Total Value:</strong> <span>${inventoryReports?.summary?.totalValue || 0}</span>
+            </div>
+            <div class="summary-row">
+              <strong>Turnover Rate:</strong> <span>${inventoryReports?.summary?.turnoverRate || 0}x</span>
+            </div>
+          </div>
+
+          ${categoryData.length > 0 ? `
+          <h2>Inventory by Category</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>Count</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${categoryData.map(item => `
+                <tr>
+                  <td>${item.name}</td>
+                  <td>${item.value}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          ` : ''}
+
+          ${lowStockItems.length > 0 ? `
+          <h2>Low Stock Alert</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Current Stock</th>
+                <th>Minimum Stock</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${lowStockItems.map((item, index) => `
+                <tr>
+                  <td>${item.name || item.itemName}</td>
+                  <td>${item.current_stock || item.currentStock || 0}</td>
+                  <td>${item.min_stock_level || item.minStockLevel || 0}</td>
+                  <td>${item.stockStatus || 'Low'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          ` : ''}
+
+          ${topSellingItems.length > 0 ? `
+          <h2>Top Selling Items</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Sold</th>
+                <th>Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${topSellingItems.map(item => `
+                <tr>
+                  <td>${item.name || item.itemName}</td>
+                  <td>${item.totalSold || item.quantity_sold || 0}</td>
+                  <td>${item.totalRevenue || 0}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          ` : ''}
+          
+          <div class="header" style="margin-top: 40px;">
+            <p>MultiPOS Dashboard - Inventory Report</p>
+          </div>
+        </body>
+      </html>
+    `
+    
+    // Open in new window for printing
+    const printWindow = window.open('', '_blank')
+    printWindow.document.write(htmlContent)
+    printWindow.document.close()
+    setTimeout(() => {
+      printWindow.print()
+    }, 500)
   }
 
   // Use real data from API - ensure arrays are properly handled
@@ -172,10 +286,24 @@ const InventoryReportsPage = () => {
               <Button
                 variant="contained"
                 startIcon={<Download />}
-                onClick={handleExport}
+                onClick={(e) => setExportMenuAnchor(e.currentTarget)}
               >
                 Export
               </Button>
+              <Menu
+                anchorEl={exportMenuAnchor}
+                open={Boolean(exportMenuAnchor)}
+                onClose={() => setExportMenuAnchor(null)}
+              >
+                <MenuItem onClick={() => { setExportMenuAnchor(null); handleExport(); }}>
+                  <Download sx={{ mr: 1 }} />
+                  Export to Excel
+                </MenuItem>
+                <MenuItem onClick={() => { setExportMenuAnchor(null); handleExportPDF(); }}>
+                  <Download sx={{ mr: 1 }} />
+                  Export to PDF
+                </MenuItem>
+              </Menu>
             </Box>
           </Box>
 

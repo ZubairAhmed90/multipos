@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useSelector, useDispatch } from 'react-redux'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../components/auth/RouteGuard'
@@ -192,19 +192,24 @@ const ReturnsPage = () => {
   const [restockQuantity, setRestockQuantity] = useState(0)
   const [restockLoading, setRestockLoading] = useState(false)
 
-  // Load returns data on component mount
-  useEffect(() => {
-    // Pass user scope for filtering
-    const params = {};
-    if (user?.role === 'WAREHOUSE_KEEPER') {
-      params.scopeType = 'WAREHOUSE';
-      params.scopeId = user.warehouseId;
-    } else if (user?.role === 'CASHIER') {
-      params.scopeType = 'BRANCH';
-      params.scopeId = user.branchId;
+  const getScopeParams = useCallback(() => {
+    const params = {}
+
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+      params.scopeType = 'WAREHOUSE'
+      params.scopeId = user.warehouseId
+    } else if (user?.role === 'CASHIER' && user?.branchId) {
+      params.scopeType = 'BRANCH'
+      params.scopeId = user.branchId
     }
-    // Admin doesn't need scope filtering - can see all returns
-    
+
+    return params
+  }, [user])
+
+  // Load returns data on component mount or when scope changes
+  useEffect(() => {
+    const params = getScopeParams()
+
     dispatch(fetchReturns(params))
     
     // Load warehouse settings for warehouse keepers
@@ -216,7 +221,7 @@ const ReturnsPage = () => {
     if (user?.role === 'CASHIER' && user?.branchId) {
       dispatch(fetchBranchSettings(user.branchId))
     }
-  }, [dispatch, user])
+  }, [dispatch, user, getScopeParams])
 
   const handleCreate = (data) => {
     dispatch(createReturn(data))
@@ -268,13 +273,14 @@ const ReturnsPage = () => {
 
   // Restock functionality
   const handleRestockItem = (returnItem, item) => {
+    const remainingQty = item.remainingQuantity !== undefined ? item.remainingQuantity : item.quantity
     setSelectedItemForRestock({
       returnId: returnItem.id,
       itemId: item.id,
       itemName: item.name || item.productName || item.itemName,
       sku: item.sku,
-      quantity: item.quantity,
-      remainingQuantity: item.quantity // Assuming all quantity is available for restock initially
+      totalQuantity: Math.max(0, parseFloat(item.quantity) || 0),
+      remainingQuantity: Math.max(0, parseFloat(remainingQty) || 0)
     })
     setRestockQuantity(0)
     setRestockDialog(true)
@@ -285,6 +291,7 @@ const ReturnsPage = () => {
       return
     }
 
+    const { returnId } = selectedItemForRestock
     setRestockLoading(true)
     try {
       const response = await api.post(
@@ -293,8 +300,21 @@ const ReturnsPage = () => {
       )
 
       if (response.data.success) {
-        // Refresh the returns data
-        dispatch(fetchReturns())
+        const scopeParams = getScopeParams()
+        await dispatch(fetchReturns(scopeParams))
+        
+        // Refresh selected return details if dialog is open
+        if (viewDetailsDialog || returnDetails) {
+          try {
+            const detailsResponse = await api.get(`/sales/returns/${returnId}`)
+            if (detailsResponse.data.success) {
+              setReturnDetails(detailsResponse.data.data)
+              setSelectedReturn(detailsResponse.data.data)
+            }
+          } catch (detailsError) {
+            console.error('Error refreshing return details:', detailsError)
+          }
+        }
         
         // Close dialog and show success message
         setRestockDialog(false)
@@ -1512,7 +1532,7 @@ const ReturnsPage = () => {
                                         size="small"
                                         onClick={() => handleRestockItem(returnDetails, item)}
                                         color="success"
-                                        disabled={restockLoading}
+                                        disabled={restockLoading || (item.remainingQuantity !== undefined && item.remainingQuantity <= 0)}
                                       >
                                         <RestockIcon />
                                       </IconButton>
@@ -1578,6 +1598,9 @@ const ReturnsPage = () => {
                 <Typography variant="body2" color="text.secondary">
                   Available Quantity: {selectedItemForRestock.remainingQuantity}
                 </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Returned Quantity: {selectedItemForRestock.totalQuantity}
+                </Typography>
                 
                 <Box sx={{ mt: 3 }}>
                   <TextField
@@ -1585,9 +1608,12 @@ const ReturnsPage = () => {
                     label="Restock Quantity"
                     type="number"
                     value={restockQuantity}
-                    onChange={(e) => setRestockQuantity(parseInt(e.target.value) || 0)}
+                    onChange={(e) => {
+                      const value = parseFloat(e.target.value)
+                      setRestockQuantity(Number.isFinite(value) && value > 0 ? value : 0)
+                    }}
                     inputProps={{ 
-                      min: 1, 
+                      min: 0, 
                       max: selectedItemForRestock.remainingQuantity 
                     }}
                     helperText={`Enter quantity to restock (max: ${selectedItemForRestock.remainingQuantity})`}

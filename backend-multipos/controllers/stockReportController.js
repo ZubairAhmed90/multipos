@@ -32,13 +32,13 @@ const getStockReports = async (req, res) => {
     let params = [];
     
     // Role-based filtering
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseName) {
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
       whereConditions.push('ii.scope_type = ? AND ii.scope_id = ?');
-      params.push('WAREHOUSE', user.warehouseName);
-    } else if (user?.role === 'CASHIER' && user?.branchName) {
-      // For cashiers, use branch name directly
+      params.push('WAREHOUSE', user.warehouseId);
+    } else if (user?.role === 'CASHIER' && user?.branchId) {
+      // For cashiers, use branch ID directly (inventory_items stores numeric IDs)
       whereConditions.push('ii.scope_type = ? AND ii.scope_id = ?');
-      params.push('BRANCH', user.branchName);
+      params.push('BRANCH', user.branchId);
     }
     
     // Additional filters
@@ -87,7 +87,7 @@ const getStockReports = async (req, res) => {
     
     console.log('[StockReportController] Query conditions:', { whereClause, params, limit, offset });
     
-    // Get inventory transactions with pagination
+    // Get inventory transactions with pagination and supplier info
     const [transactions] = await pool.execute(`
       SELECT 
         it.id,
@@ -103,13 +103,27 @@ const getStockReports = async (req, res) => {
         ii.name as itemName,
         ii.sku as itemSku,
         ii.category as itemCategory,
+        ii.supplier_id as supplierId,
+        ii.supplier_name as supplierName,
+        ii.purchase_date as purchaseDate,
+        ii.purchase_price as purchasePrice,
+        ii.created_at as itemCreatedAt,
+        c.name as supplierCompanyName,
+        c.contact_person as supplierContact,
+        c.phone as supplierPhone,
+        c.email as supplierEmail,
         u.username as userName,
         u.role as userRole,
         ii.scope_type as scopeType,
-        ii.scope_id as scopeName
+        ii.scope_id as scopeName,
+        b.name as branchName,
+        w.name as warehouseName
       FROM stock_reports it
       LEFT JOIN inventory_items ii ON it.inventory_item_id = ii.id
       LEFT JOIN users u ON it.user_id = u.id
+      LEFT JOIN companies c ON ii.supplier_id = c.id
+      LEFT JOIN branches b ON ii.scope_type = 'BRANCH' AND ii.scope_id = b.id
+      LEFT JOIN warehouses w ON ii.scope_type = 'WAREHOUSE' AND ii.scope_id = w.id
       ${whereClause}
       ORDER BY it.created_at DESC
       LIMIT ? OFFSET ?
@@ -166,19 +180,13 @@ const getStockReportSummary = async (req, res) => {
     let params = [];
     
     // Role-based filtering
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseName) {
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
       whereConditions.push('scope_type = ? AND scope_id = ?');
-      params.push('WAREHOUSE', user.warehouseName);
+      params.push('WAREHOUSE', user.warehouseId);
     } else if (user?.role === 'CASHIER' && user?.branchId) {
-      // For cashiers, get branch name for filtering
-      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [user.branchName]);
-      const branchName = branches[0]?.name || user.branchName;
-      console.log('[StockReportController] Cashier branch lookup (summary):', {
-        branchId: user.branchName,
-        branchName: branchName
-      });
+      // For cashiers, use branch ID directly (inventory_items stores numeric IDs)
       whereConditions.push('scope_type = ? AND scope_id = ?');
-      params.push('BRANCH', branchName);
+      params.push('BRANCH', user.branchId);
     }
     
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
@@ -256,44 +264,38 @@ const getStockReportStatistics = async (req, res) => {
     let params = [];
     
     // Role-based filtering
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseName) {
-      whereConditions.push('scope_type = ? AND scope_id = ?');
-      params.push('WAREHOUSE', user.warehouseName);
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+      whereConditions.push('it.scope_type = ? AND it.scope_id = ?');
+      params.push('WAREHOUSE', user.warehouseId);
     } else if (user?.role === 'CASHIER' && user?.branchId) {
-      // For cashiers, get branch name for filtering
-      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [user.branchName]);
-      const branchName = branches[0]?.name || user.branchName;
-      console.log('[StockReportController] Cashier branch lookup (statistics):', {
-        branchId: user.branchName,
-        branchName: branchName
-      });
-      whereConditions.push('scope_type = ? AND scope_id = ?');
-      params.push('BRANCH', branchName);
+      // For cashiers, use branch ID directly (inventory_items stores numeric IDs)
+      whereConditions.push('it.scope_type = ? AND it.scope_id = ?');
+      params.push('BRANCH', user.branchId);
     }
     
     // Additional filters
     if (scopeType && scopeType !== 'all') {
-      whereConditions.push('scope_type = ?');
+      whereConditions.push('it.scope_type = ?');
       params.push(scopeType);
     }
     
     if (scopeId && scopeId !== 'all') {
-      whereConditions.push('scope_id = ?');
+      whereConditions.push('it.scope_id = ?');
       params.push(scopeId);
     }
     
     if (category && category !== 'all') {
-      whereConditions.push('category = ?');
+      whereConditions.push('ii.category = ?');
       params.push(category);
     }
     
     if (startDate) {
-      whereConditions.push('created_at >= ?');
+      whereConditions.push('it.created_at >= ?');
       params.push(startDate);
     }
     
     if (endDate) {
-      whereConditions.push('created_at <= ?');
+      whereConditions.push('it.created_at <= ?');
       params.push(endDate);
     }
     
@@ -303,13 +305,14 @@ const getStockReportStatistics = async (req, res) => {
     const [overallResult] = await pool.execute(`
       SELECT 
         COUNT(*) as total_transactions,
-        SUM(CASE WHEN transaction_type = 'PURCHASE' THEN quantity_change ELSE 0 END) as total_purchased,
-        SUM(CASE WHEN transaction_type = 'SALE' THEN quantity_change ELSE 0 END) as total_sold,
-        SUM(CASE WHEN transaction_type = 'RETURN' THEN quantity_change ELSE 0 END) as total_returned,
-        SUM(CASE WHEN transaction_type = 'ADJUSTMENT' THEN quantity_change ELSE 0 END) as total_adjusted,
-        SUM(CASE WHEN transaction_type = 'TRANSFER_IN' THEN quantity_change ELSE 0 END) as total_transferred_in,
-        SUM(CASE WHEN transaction_type = 'TRANSFER_OUT' THEN quantity_change ELSE 0 END) as total_transferred_out
-      FROM stock_reports
+        SUM(CASE WHEN it.transaction_type = 'PURCHASE' THEN it.quantity_change ELSE 0 END) as total_purchased,
+        SUM(CASE WHEN it.transaction_type = 'SALE' THEN it.quantity_change ELSE 0 END) as total_sold,
+        SUM(CASE WHEN it.transaction_type = 'RETURN' THEN it.quantity_change ELSE 0 END) as total_returned,
+        SUM(CASE WHEN it.transaction_type = 'ADJUSTMENT' THEN it.quantity_change ELSE 0 END) as total_adjusted,
+        SUM(CASE WHEN it.transaction_type = 'TRANSFER_IN' THEN it.quantity_change ELSE 0 END) as total_transferred_in,
+        SUM(CASE WHEN it.transaction_type = 'TRANSFER_OUT' THEN it.quantity_change ELSE 0 END) as total_transferred_out
+      FROM stock_reports it
+      LEFT JOIN inventory_items ii ON it.inventory_item_id = ii.id
       ${whereClause}
     `, params);
     
@@ -326,12 +329,13 @@ const getStockReportStatistics = async (req, res) => {
     // Get transaction types breakdown
     const [transactionTypesResult] = await pool.execute(`
       SELECT 
-        transaction_type,
+        it.transaction_type,
         COUNT(*) as count,
-        SUM(quantity_change) as total_quantity
-      FROM stock_reports
+        SUM(it.quantity_change) as total_quantity
+      FROM stock_reports it
+      LEFT JOIN inventory_items ii ON it.inventory_item_id = ii.id
       ${whereClause}
-      GROUP BY transaction_type
+      GROUP BY it.transaction_type
       ORDER BY count DESC
     `, params);
     
@@ -370,15 +374,16 @@ const getStockReportStatistics = async (req, res) => {
     // Get daily activity (last 30 days)
     const [dailyActivityResult] = await pool.execute(`
       SELECT 
-        DATE(created_at) as date,
+        DATE(it.created_at) as date,
         COUNT(*) as transaction_count,
-        SUM(CASE WHEN transaction_type = 'PURCHASE' THEN quantity_change ELSE 0 END) as purchased,
-        SUM(CASE WHEN transaction_type = 'SALE' THEN quantity_change ELSE 0 END) as sold,
-        SUM(CASE WHEN transaction_type = 'RETURN' THEN quantity_change ELSE 0 END) as returned
-      FROM stock_reports
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+        SUM(CASE WHEN it.transaction_type = 'PURCHASE' THEN it.quantity_change ELSE 0 END) as purchased,
+        SUM(CASE WHEN it.transaction_type = 'SALE' THEN it.quantity_change ELSE 0 END) as sold,
+        SUM(CASE WHEN it.transaction_type = 'RETURN' THEN it.quantity_change ELSE 0 END) as returned
+      FROM stock_reports it
+      LEFT JOIN inventory_items ii ON it.inventory_item_id = ii.id
+      WHERE it.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
       ${whereConditions.length > 0 ? 'AND ' + whereConditions.join(' AND ') : ''}
-      GROUP BY DATE(created_at)
+      GROUP BY DATE(it.created_at)
       ORDER BY date DESC
       LIMIT 30
     `, params);
@@ -426,19 +431,13 @@ const getStockSummary = async (req, res) => {
     let params = [];
     
     // Role-based filtering
-    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseName) {
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
       whereConditions.push('ii.scope_type = ? AND ii.scope_id = ?');
-      params.push('WAREHOUSE', user.warehouseName);
+      params.push('WAREHOUSE', user.warehouseId);
     } else if (user?.role === 'CASHIER' && user?.branchId) {
-      // For cashiers, get branch name for filtering
-      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [user.branchName]);
-      const branchName = branches[0]?.name || user.branchName;
-      console.log('[StockReportController] Cashier branch lookup (stock summary):', {
-        branchId: user.branchName,
-        branchName: branchName
-      });
+      // For cashiers, use branch ID directly (inventory_items stores numeric IDs)
       whereConditions.push('ii.scope_type = ? AND ii.scope_id = ?');
-      params.push('BRANCH', branchName);
+      params.push('BRANCH', user.branchId);
     }
     
     // Additional filters
@@ -465,7 +464,7 @@ const getStockSummary = async (req, res) => {
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
     const offset = (page - 1) * limit;
     
-    // Get stock summary with transaction totals
+    // Get stock summary with transaction totals and supplier info
     const [summaryResult] = await pool.execute(`
       SELECT 
         ii.id,
@@ -477,6 +476,19 @@ const getStockSummary = async (req, res) => {
         ii.max_stock_level as maxStockLevel,
         ii.cost_price as costPrice,
         ii.selling_price as sellingPrice,
+        ii.supplier_id as supplierId,
+        ii.supplier_name as supplierName,
+        ii.purchase_date as purchaseDate,
+        ii.purchase_price as purchasePrice,
+        ii.created_at as itemCreatedAt,
+        c.name as supplierCompanyName,
+        c.contact_person as supplierContact,
+        c.phone as supplierPhone,
+        c.email as supplierEmail,
+        b.name as branchName,
+        w.name as warehouseName,
+        ii.scope_type as scopeType,
+        ii.scope_id as scopeId,
         (ii.current_stock * ii.cost_price) as currentStockValue,
         COALESCE(purchases.total_purchased, 0) as totalPurchased,
         COALESCE(sales.total_sold, 0) as totalSold,
@@ -485,6 +497,9 @@ const getStockSummary = async (req, res) => {
         COALESCE(transfers_in.total_transferred_in, 0) as totalTransferredIn,
         COALESCE(transfers_out.total_transferred_out, 0) as totalTransferredOut
       FROM inventory_items ii
+      LEFT JOIN companies c ON ii.supplier_id = c.id
+      LEFT JOIN branches b ON ii.scope_type = 'BRANCH' AND ii.scope_id = b.id
+      LEFT JOIN warehouses w ON ii.scope_type = 'WAREHOUSE' AND ii.scope_id = w.id
       LEFT JOIN (
         SELECT inventory_item_id, SUM(quantity_change) as total_purchased
         FROM stock_reports 
@@ -565,9 +580,21 @@ const getProductStockHistory = async (req, res) => {
     const { id } = req.params;
     const user = req.user;
     
-    // Get product details
+    // Get product details with supplier info
     const [productResult] = await pool.execute(`
-      SELECT * FROM inventory_items WHERE id = ?
+      SELECT 
+        ii.*,
+        c.name as supplierCompanyName,
+        c.contact_person as supplierContact,
+        c.phone as supplierPhone,
+        c.email as supplierEmail,
+        b.name as branchName,
+        w.name as warehouseName
+      FROM inventory_items ii
+      LEFT JOIN companies c ON ii.supplier_id = c.id
+      LEFT JOIN branches b ON ii.scope_type = 'BRANCH' AND ii.scope_id = b.id
+      LEFT JOIN warehouses w ON ii.scope_type = 'WAREHOUSE' AND ii.scope_id = w.id
+      WHERE ii.id = ?
     `, [id]);
     
     if (productResult.length === 0) {
@@ -713,18 +740,28 @@ const getStockReportsByScope = async (req, res) => {
       }
     }
     
-    // Get stock reports for the specific scope
+    // Get stock reports for the specific scope with supplier info
     const [reportsResult] = await pool.execute(`
       SELECT 
         it.*,
         ii.name as item_name,
         ii.sku as item_sku,
         ii.category as item_category,
+        ii.supplier_id as supplier_id,
+        ii.supplier_name as supplier_name,
+        ii.purchase_date as purchase_date,
+        ii.purchase_price as purchase_price,
+        ii.created_at as item_created_at,
+        c.name as supplier_company_name,
+        c.contact_person as supplier_contact,
+        c.phone as supplier_phone,
+        c.email as supplier_email,
         u.username as user_name,
         u.role as user_role
       FROM stock_reports it
       LEFT JOIN inventory_items ii ON it.inventory_item_id = ii.id
       LEFT JOIN users u ON it.user_id = u.id
+      LEFT JOIN companies c ON ii.supplier_id = c.id
       WHERE ii.scope_type = ? AND ii.scope_id = ?
       ORDER BY it.created_at DESC
       LIMIT 100

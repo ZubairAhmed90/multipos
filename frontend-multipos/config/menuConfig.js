@@ -52,7 +52,7 @@ export const menuConfig = [
     label: 'Company',
     icon: <BusinessCenter />,
     path: null,
-    roles: ['ADMIN', 'WAREHOUSE_KEEPER'],
+    roles: ['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'],
     order: 3,
     section: 'main',
     isGroup: true,
@@ -400,14 +400,6 @@ export const menuConfig = [
         icon: <AccountBalance />,
         path: '/dashboard/reports/ledger',
         roles: ['ADMIN'],
-        order: 6,
-      },
-      {
-        id: 'reports-daily',
-        label: 'Daily Reports',
-        icon: <Timeline />,
-        path: '/dashboard/reports/daily',
-        roles: ['CASHIER'],
         order: 6,
       },
       {

@@ -65,7 +65,7 @@ export const fetchFinancialVouchers = createAsyncThunk(
       // Transform the response data
       const transformedData = {
         success: response.data.success,
-        data: response.data.data.map(transformVoucherData),
+        data: Array.isArray(response.data.data) ? response.data.data.map(transformVoucherData) : [],
         pagination: response.data.pagination
       }
       
@@ -128,9 +128,10 @@ export const updateFinancialVoucher = createAsyncThunk(
 
 export const approveFinancialVoucher = createAsyncThunk(
   'financialVouchers/approveFinancialVoucher',
-  async (id, { rejectWithValue }) => {
+  async ({ id, notes }, { rejectWithValue }) => {
     try {
-      const response = await api.put(`/financial-vouchers/${id}/approve`)
+      const payload = notes ? { notes } : {}
+      const response = await api.put(`/financial-vouchers/${id}/approve`, payload)
       
       return {
         success: response.data.success,
@@ -145,9 +146,9 @@ export const approveFinancialVoucher = createAsyncThunk(
 
 export const rejectFinancialVoucher = createAsyncThunk(
   'financialVouchers/rejectFinancialVoucher',
-  async ({ id, notes }, { rejectWithValue }) => {
+  async ({ id, notes, rejectionReason }, { rejectWithValue }) => {
     try {
-      const response = await api.put(`/financial-vouchers/${id}/reject`, { notes })
+      const response = await api.put(`/financial-vouchers/${id}/reject`, { notes, rejectionReason })
       
       return {
         success: response.data.success,

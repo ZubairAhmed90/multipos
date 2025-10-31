@@ -160,12 +160,12 @@ const purchaseOrdersSlice = createSlice({
       })
       .addCase(fetchPurchaseOrders.fulfilled, (state, action) => {
         state.loading = false
-        state.data = action.payload.data || []
+        state.data = action.payload?.data || action.payload?.orders || []
         state.pagination = {
-          page: action.payload.page || 1,
-          limit: action.payload.limit || 20,
-          total: action.payload.total || 0,
-          totalPages: action.payload.totalPages || 0
+          page: action.payload?.page || action.payload?.pagination?.page || 1,
+          limit: action.payload?.limit || action.payload?.pagination?.limit || 20,
+          total: action.payload?.total || action.payload?.pagination?.total || 0,
+          totalPages: action.payload?.totalPages || action.payload?.pagination?.totalPages || 0
         }
       })
       .addCase(fetchPurchaseOrders.rejected, (state, action) => {
@@ -180,7 +180,7 @@ const purchaseOrdersSlice = createSlice({
       })
       .addCase(fetchPurchaseOrder.fulfilled, (state, action) => {
         state.loading = false
-        state.currentOrder = action.payload.data
+        state.currentOrder = action.payload?.data || action.payload
       })
       .addCase(fetchPurchaseOrder.rejected, (state, action) => {
         state.loading = false
@@ -194,7 +194,10 @@ const purchaseOrdersSlice = createSlice({
       })
       .addCase(createPurchaseOrder.fulfilled, (state, action) => {
         state.loading = false
-        state.data.unshift(action.payload.data)
+        const newOrder = action.payload?.data || action.payload
+        if (newOrder) {
+          state.data.unshift(newOrder)
+        }
       })
       .addCase(createPurchaseOrder.rejected, (state, action) => {
         state.loading = false
@@ -208,12 +211,15 @@ const purchaseOrdersSlice = createSlice({
       })
       .addCase(updatePurchaseOrderStatus.fulfilled, (state, action) => {
         state.loading = false
-        const index = state.data.findIndex(order => order.id === action.payload.data.id)
-        if (index !== -1) {
-          state.data[index] = action.payload.data
-        }
-        if (state.currentOrder && state.currentOrder.id === action.payload.data.id) {
-          state.currentOrder = action.payload.data
+        const updatedOrder = action.payload?.data || action.payload
+        if (updatedOrder) {
+          const index = state.data.findIndex(order => order.id === updatedOrder.id)
+          if (index !== -1) {
+            state.data[index] = updatedOrder
+          }
+          if (state.currentOrder && state.currentOrder.id === updatedOrder.id) {
+            state.currentOrder = updatedOrder
+          }
         }
       })
       .addCase(updatePurchaseOrderStatus.rejected, (state, action) => {
@@ -228,7 +234,10 @@ const purchaseOrdersSlice = createSlice({
       })
       .addCase(deletePurchaseOrder.fulfilled, (state, action) => {
         state.loading = false
-        state.data = state.data.filter(order => order.id !== action.payload.id)
+        const deletedId = action.payload?.data?.id || action.payload?.id || action.meta.arg
+        if (deletedId) {
+          state.data = state.data.filter(order => order.id !== deletedId)
+        }
       })
       .addCase(deletePurchaseOrder.rejected, (state, action) => {
         state.loading = false

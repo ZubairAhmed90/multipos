@@ -36,8 +36,11 @@ export const fetchInventoryReports = createAsyncThunk(
       if (filters.page) params.append('page', filters.page)
       if (filters.limit) params.append('limit', filters.limit)
       
-      const response = await api.get(`/reports/inventory?${params.toString()}`)
-      return response.data.data
+      const response = await api.get(`/stock-reports?${params.toString()}`)
+      return {
+        data: response.data.data,
+        pagination: response.data.pagination
+      }
     } catch (error) {
       return rejectWithValue(error.response?.data?.message || 'Failed to fetch inventory reports')
     }

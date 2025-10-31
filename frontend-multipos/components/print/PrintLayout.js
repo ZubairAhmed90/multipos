@@ -11,6 +11,7 @@ const PrintLayout = ({
   companyAddress = 'Shop no 42 unit no 2 latifabad near musarrat banquet Hyderabad',
   companyPhone = '03111100355',
   companyEmail = 'info@multipos.com',
+  logoUrl = '/petzonelogo.png',
   receiptNumber,
   date,
   time,
@@ -36,6 +37,21 @@ const PrintLayout = ({
   fontSize = '12px'
 }) => {
   const [logoError, setLogoError] = React.useState(false)
+  const effectiveLogoUrl = React.useMemo(() => {
+    if (!logoUrl) {
+      return '/petzonelogo.png'
+    }
+
+    // Ensure we always have a leading slash for public assets while allowing absolute URLs
+    if (logoUrl.startsWith('http://') || logoUrl.startsWith('https://') || logoUrl.startsWith('data:')) {
+      return logoUrl
+    }
+
+    return logoUrl.startsWith('/') ? logoUrl : `/${logoUrl}`
+  }, [logoUrl])
+  React.useEffect(() => {
+    setLogoError(false)
+  }, [effectiveLogoUrl])
   const formatCurrency = (amount) => {
     const num = Number(amount)
     return isNaN(num) ? '0.00' : num.toFixed(2)
@@ -85,8 +101,8 @@ const PrintLayout = ({
         <div style={{ marginBottom: layout === 'thermal' ? '4px' : '8px' }}>
           {!logoError ? (
             <Image 
-              src="/petzonelogo.png" 
-              alt="PetZone" 
+              src={effectiveLogoUrl} 
+              alt={companyName || 'Company Logo'} 
               width={layout === 'thermal' ? 100 : 150}
               height={layout === 'thermal' ? 70 : 105}
               style={{ 

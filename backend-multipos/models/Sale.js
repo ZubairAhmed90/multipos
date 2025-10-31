@@ -34,6 +34,7 @@ class Sale {
     this.paymentStatus = data.payment_status;
     this.paymentAmount = data.payment_amount;
     this.creditAmount = data.credit_amount;
+    this.runningBalance = data.running_balance || 0; // ADDED: Running balance field
     this.creditStatus = data.credit_status;
     this.creditDueDate = data.credit_due_date;
     this.customerId = data.customer_id;
@@ -53,7 +54,7 @@ class Sale {
       invoiceNo, scopeType, scopeId, userId, shiftId, items, 
       subtotal, tax, discount, total, paymentMethod, paymentType, paymentStatus, 
       customerInfo, notes, status = 'COMPLETED', customerName, customerPhone,
-      paymentAmount, creditAmount, creditStatus, creditDueDate, customerId
+      paymentAmount, creditAmount, runningBalance, creditStatus, creditDueDate, customerId
     } = saleData;
     
     
@@ -62,18 +63,18 @@ class Sale {
     try {
       await connection.beginTransaction();
       
-      // Insert sale (removed warehouse_sale_id column)
+      // Insert sale with running_balance column
       const [saleResult] = await connection.execute(
         `INSERT INTO sales (invoice_no, scope_type, scope_id, user_id, shift_id, 
          subtotal, tax, discount, total, payment_method, payment_type, payment_status, 
          customer_info, notes, status, customer_name, customer_phone, 
-         payment_amount, credit_amount, credit_status, credit_due_date, customer_id) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         payment_amount, credit_amount, running_balance, credit_status, credit_due_date, customer_id) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [invoiceNo || null, scopeType || null, scopeId || null, userId || null, shiftId || null, 
          subtotal || 0, tax || 0, discount || 0, total || 0, paymentMethod || null, 
          paymentType || null, paymentStatus || null, customerInfo || null, notes || null, status || null, 
          customerName || null, customerPhone || null, paymentAmount || 0, 
-         creditAmount || 0, creditStatus || 'NONE', creditDueDate || null, customerId || null]
+         creditAmount || 0, runningBalance || 0, creditStatus || 'NONE', creditDueDate || null, customerId || null]
       );
       
       const saleId = saleResult.insertId;
@@ -186,11 +187,13 @@ class Sale {
         await connection.execute(
           `UPDATE sales SET invoice_no = ?, scope_type = ?, scope_id = ?, user_id = ?, 
            shift_id = ?, subtotal = ?, tax = ?, discount = ?, total = ?, 
-           payment_method = ?, payment_status = ?, customer_info = ?, notes = ?, status = ? 
+           payment_method = ?, payment_status = ?, customer_info = ?, notes = ?, status = ?,
+           payment_amount = ?, credit_amount = ?, running_balance = ?, credit_status = ? 
            WHERE id = ?`,
           [this.invoiceNo, this.scopeType, this.scopeId, this.userId, this.shiftId,
            this.subtotal, this.tax, this.discount, this.total, this.paymentMethod,
-           this.paymentStatus, JSON.stringify(this.customerInfo), this.notes, this.status, this.id]
+           this.paymentStatus, JSON.stringify(this.customerInfo), this.notes, this.status,
+           this.paymentAmount, this.creditAmount, this.runningBalance, this.creditStatus, this.id]
         );
         
         // Update sale items if provided
@@ -214,11 +217,12 @@ class Sale {
         const result = await connection.execute(
           `INSERT INTO sales (invoice_no, scope_type, scope_id, user_id, shift_id, 
            subtotal, tax, discount, total, payment_method, payment_status, 
-           customer_info, notes, status) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           customer_info, notes, status, payment_amount, credit_amount, running_balance, credit_status) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [this.invoiceNo, this.scopeType, this.scopeId, this.userId, this.shiftId,
            this.subtotal, this.tax, this.discount, this.total, this.paymentMethod,
-           this.paymentStatus, JSON.stringify(this.customerInfo), this.notes, this.status]
+           this.paymentStatus, JSON.stringify(this.customerInfo), this.notes, this.status,
+           this.paymentAmount, this.creditAmount, this.runningBalance, this.creditStatus]
         );
         
         this.id = result[0].insertId;
@@ -433,6 +437,14 @@ class Sale {
             'userId': 'user_id',
             'shiftId': 'shift_id',
             'customerInfo': 'customer_info',
+            'paymentAmount': 'payment_amount',
+            'creditAmount': 'credit_amount',
+            'runningBalance': 'running_balance', // ADDED: running_balance mapping
+            'creditStatus': 'credit_status',
+            'creditDueDate': 'credit_due_date',
+            'customerId': 'customer_id',
+            'customerName': 'customer_name',
+            'customerPhone': 'customer_phone',
             'createdAt': 'created_at',
             'updatedAt': 'updated_at'
           };
@@ -512,6 +524,63 @@ class Sale {
     );
     
     return rows.map(item => new SaleItem(item));
+  }
+
+  // ADDED: Static method to get customer's latest running balance
+  static async getCustomerRunningBalance(customerName, customerPhone, scopeType, scopeName) {
+    try {
+      const [latestSale] = await pool.execute(`
+        SELECT running_balance 
+        FROM sales 
+        WHERE (customer_name = ? OR customer_phone = ?)
+          AND scope_type = ? 
+          AND scope_id = ?
+        ORDER BY created_at DESC 
+        LIMIT 1
+      `, [customerName, customerPhone, scopeType, scopeName]);
+      
+      if (latestSale.length > 0) {
+        return parseFloat(latestSale[0].running_balance) || 0;
+      }
+      return 0;
+    } catch (error) {
+      console.error('Error fetching customer running balance:', error);
+      return 0;
+    }
+  }
+
+  // ADDED: Static method to get sales by customer with running balances
+  static async findByCustomer(customerName, customerPhone, scopeType = null, scopeName = null) {
+    let query = `
+      SELECT * FROM sales 
+      WHERE (customer_name = ? OR customer_phone = ?)
+    `;
+    const params = [customerName, customerPhone];
+
+    if (scopeType && scopeName) {
+      query += ' AND scope_type = ? AND scope_id = ?';
+      params.push(scopeType, scopeName);
+    }
+
+    query += ' ORDER BY created_at ASC';
+
+    const [rows] = await pool.execute(query, params);
+    const sales = [];
+
+    for (const row of rows) {
+      const sale = new Sale(row);
+      
+      // Get sale items
+      const [itemRows] = await pool.execute(
+        'SELECT * FROM sale_items WHERE sale_id = ?',
+        [sale.id]
+      );
+      
+      sale.items = itemRows.map(item => new SaleItem(item));
+      sales.push(sale);
+    }
+
+    return sales;
   }
 }
 

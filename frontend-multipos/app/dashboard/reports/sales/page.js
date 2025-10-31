@@ -25,6 +25,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Menu,
 } from '@mui/material'
 import {
   Refresh,
@@ -44,22 +45,33 @@ const SalesReportsPage = () => {
   const dispatch = useDispatch()
   const { user } = useSelector((state) => state.auth)
   const { salesReports, isLoading, error } = useSelector((state) => state.reports)
+  const [exportMenuAnchor, setExportMenuAnchor] = useState(null)
   
   const [filters, setFilters] = useState({
     branch: 'all',
     cashier: 'all',
-    dateFrom: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
+    dateFrom: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000), // 1 year ago - wider range to show all sales
     dateTo: new Date(),
     reportType: 'daily',
     period: 'daily' // daily, weekly, monthly, quarterly, yearly
   })
 
   useEffect(() => {
-    // For warehouse keepers, only show their own warehouse data
-    const params = user?.role === 'WAREHOUSE_KEEPER' ? {
-      ...filters,
-      warehouseId: user.warehouseId
-    } : filters
+    // Prepare parameters for sales report with date range
+    const params = {
+      dateRange: {
+        start: filters.dateFrom.toISOString().split('T')[0],
+        end: filters.dateTo.toISOString().split('T')[0]
+      }
+    }
+    
+    // Add branch and cashier filters if provided
+    if (filters.branch && filters.branch !== 'all') {
+      params.branch = filters.branch
+    }
+    if (filters.cashier && filters.cashier !== 'all') {
+      params.cashier = filters.cashier
+    }
     
     dispatch(fetchSalesReports(params))
   }, [dispatch, filters, user])
@@ -97,73 +109,70 @@ const SalesReportsPage = () => {
   }
 
   const handleRefresh = () => {
-    // For warehouse keepers, only show their own warehouse data
-    const params = user?.role === 'WAREHOUSE_KEEPER' ? {
-      ...filters,
-      warehouseId: user.warehouseId
-    } : filters
+    // Prepare parameters for sales report with date range
+    const params = {
+      dateRange: {
+        start: filters.dateFrom.toISOString().split('T')[0],
+        end: filters.dateTo.toISOString().split('T')[0]
+      }
+    }
+    
+    // Add branch and cashier filters if provided
+    if (filters.branch && filters.branch !== 'all') {
+      params.branch = filters.branch
+    }
+    if (filters.cashier && filters.cashier !== 'all') {
+      params.cashier = filters.cashier
+    }
     
     dispatch(fetchSalesReports(params))
   }
 
   const handleExport = async () => {
     try {
-      const XLSX = await import('xlsx')
-      
-      // Prepare data for Excel
-      const excelData = [
+      // Prepare data for CSV
+      const exportData = [
         // Summary data
-        { 'Report Type': 'Sales Summary', 'Value': '' },
-        { 'Report Type': 'Total Sales', 'Value': salesReports?.summary?.totalSales || 0 },
-        { 'Report Type': 'Total Transactions', 'Value': salesReports?.summary?.totalTransactions || 0 },
-        { 'Report Type': 'Average Transaction', 'Value': salesReports?.summary?.averageTransaction || 0 },
-        { 'Report Type': '', 'Value': '' },
-        
+        { Category: 'Sales Summary', Value: '' },
+        { Category: 'Total Sales', Value: salesReports?.totalSales || 0 },
+        { Category: 'Total Transactions', Value: salesReports?.totalTransactions || 0 },
+        { Category: 'Average Ticket', Value: salesReports?.averageTicket || 0 },
+        { Category: '', Value: '' },
         // Sales by date
-        { 'Report Type': 'Sales by Date', 'Value': '' },
+        { Category: 'Sales by Date', Value: '' },
         ...salesData.map(item => ({
-          'Report Type': item.date || 'N/A',
-          'Value': item.sales || 0
+          Category: item.date || 'N/A',
+          Value: item.sales || 0
         })),
-        { 'Report Type': '', 'Value': '' },
-        
+        { Category: '', Value: '' },
         // Sales by branch
-        { 'Report Type': 'Sales by Branch', 'Value': '' },
+        { Category: 'Sales by Branch', Value: '' },
         ...branchData.map(item => ({
-          'Report Type': item.branch || 'N/A',
-          'Value': item.sales || 0
+          Category: item.branch || 'N/A',
+          Value: `${item.sales || 0} (${item.transactions || 0} transactions)`
         })),
-        { 'Report Type': '', 'Value': '' },
-        
+        { Category: '', Value: '' },
         // Sales by cashier
-        { 'Report Type': 'Sales by Cashier', 'Value': '' },
+        { Category: 'Sales by Cashier', Value: '' },
         ...cashierData.map(item => ({
-          'Report Type': item.cashier || 'N/A',
-          'Value': item.sales || 0
+          Category: item.cashier || 'N/A',
+          Value: `${item.sales || 0} (${item.transactions || 0} transactions)`
         }))
       ]
       
-      // Create workbook and worksheet
-      const workbook = XLSX.utils.book_new()
-      const worksheet = XLSX.utils.json_to_sheet(excelData)
-      
-      // Add worksheet to workbook
-      XLSX.utils.book_append_sheet(workbook, worksheet, 'Sales Report')
-      
-      // Generate Excel file buffer
-      const excelBuffer = XLSX.write(workbook, { 
-        type: 'array', 
-        bookType: 'xlsx' 
-      })
+      // Convert to CSV
+      const headers = ['Category', 'Value']
+      const csvContent = [
+        headers.join(','),
+        ...exportData.map(row => `${row.Category || ''},${row.Value || ''}`)
+      ].join('\n')
       
       // Create download link
-      const blob = new Blob([excelBuffer], { 
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
-      })
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `sales-report-${new Date().toISOString().split('T')[0]}.xlsx`
+      link.download = `sales-report-${new Date().toISOString().split('T')[0]}.csv`
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
@@ -174,21 +183,153 @@ const SalesReportsPage = () => {
     }
   }
 
+  const handleExportPDF = () => {
+    // Generate PDF content
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Sales Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 20px; }
+            h1 { text-align: center; }
+            .header { text-align: center; margin-bottom: 20px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            .summary { margin: 20px 0; }
+            .summary-row { display: flex; justify-content: space-between; padding: 5px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Sales Report</h1>
+            <p>Generated on: ${new Date().toLocaleString()}</p>
+            <p>Period: ${filters.period}</p>
+          </div>
+          
+          <div class="summary">
+            <h2>Summary</h2>
+            <div class="summary-row">
+              <strong>Total Sales:</strong> <span>${salesReports?.totalSales || 0}</span>
+            </div>
+            <div class="summary-row">
+              <strong>Total Transactions:</strong> <span>${salesReports?.totalTransactions || 0}</span>
+            </div>
+            <div class="summary-row">
+              <strong>Average Ticket:</strong> <span>${salesReports?.averageTicket || 0}</span>
+            </div>
+          </div>
+
+          ${salesData.length > 0 ? `
+          <h2>Sales by Date</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Sales</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${salesData.map(item => `
+                <tr>
+                  <td>${item.date}</td>
+                  <td>${item.sales}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          ` : ''}
+
+          ${branchData.length > 0 ? `
+          <h2>Sales by Branch</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Branch</th>
+                <th>Sales</th>
+                <th>Transactions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${branchData.map(item => `
+                <tr>
+                  <td>${item.branch}</td>
+                  <td>${item.sales}</td>
+                  <td>${item.transactions}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          ` : ''}
+
+          ${cashierData.length > 0 ? `
+          <h2>Sales by Cashier</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Cashier</th>
+                <th>Sales</th>
+                <th>Transactions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${cashierData.map(item => `
+                <tr>
+                  <td>${item.cashier}</td>
+                  <td>${item.sales}</td>
+                  <td>${item.transactions}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          ` : ''}
+          
+          <div class="header" style="margin-top: 40px;">
+            <p>MultiPOS Dashboard - Sales Report</p>
+          </div>
+        </body>
+      </html>
+    `
+    
+    // Open in new window for printing
+    const printWindow = window.open('', '_blank')
+    printWindow.document.write(htmlContent)
+    printWindow.document.close()
+    setTimeout(() => {
+      printWindow.print()
+    }, 500)
+  }
+
   // Use real data from API - ensure it's always an array
+  // The backend returns salesByDate as an array, not an object
   const salesData = Array.isArray(salesReports?.salesByDate) ? salesReports.salesByDate : []
-  const branchData = salesReports?.salesByBranch && typeof salesReports.salesByBranch === 'object' ? 
+  const branchData = salesReports?.salesByBranch && typeof salesReports.salesByBranch === 'object' && !Array.isArray(salesReports.salesByBranch) ? 
     Object.entries(salesReports.salesByBranch).map(([branch, data]) => ({
       branch,
       sales: data.sales || 0,
       transactions: data.transactions || 0
     })) : []
-  const cashierData = salesReports?.salesByCashier && typeof salesReports.salesByCashier === 'object' ? 
+  const cashierData = salesReports?.salesByCashier && typeof salesReports.salesByCashier === 'object' && !Array.isArray(salesReports.salesByCashier) ? 
     Object.entries(salesReports.salesByCashier).map(([cashier, data]) => ({
       cashier,
       sales: data.sales || 0,
       transactions: data.transactions || 0
     })) : []
   const recentSales = Array.isArray(salesReports?.recentSales) ? salesReports.recentSales : []
+  
+  // Debug logging
+  console.log('Sales Reports Debug:', {
+    salesReports,
+    salesData,
+    branchData,
+    cashierData,
+    recentSales,
+    totalSales: salesReports?.totalSales,
+    totalRevenue: salesReports?.totalRevenue,
+    totalTransactions: salesReports?.totalTransactions,
+    averageTicket: salesReports?.averageTicket
+  })
   
   // For warehouse keepers, show only their warehouse data
   const filteredBranchData = user?.role === 'WAREHOUSE_KEEPER' ? 
@@ -219,10 +360,24 @@ const SalesReportsPage = () => {
               <Button
                 variant="contained"
                 startIcon={<Download />}
-                onClick={handleExport}
+                onClick={(e) => setExportMenuAnchor(e.currentTarget)}
               >
                 Export
               </Button>
+              <Menu
+                anchorEl={exportMenuAnchor}
+                open={Boolean(exportMenuAnchor)}
+                onClose={() => setExportMenuAnchor(null)}
+              >
+                <MenuItem onClick={() => { setExportMenuAnchor(null); handleExport(); }}>
+                  <Download sx={{ mr: 1 }} />
+                  Export to Excel
+                </MenuItem>
+                <MenuItem onClick={() => { setExportMenuAnchor(null); handleExportPDF(); }}>
+                  <Download sx={{ mr: 1 }} />
+                  Export to PDF
+                </MenuItem>
+              </Menu>
             </Box>
           </Box>
 

@@ -22,6 +22,66 @@ export const fetchCompanies = createAsyncThunk(
   }
 )
 
+export const fetchCompanyDetails = createAsyncThunk(
+  'companies/fetchCompanyDetails',
+  async (companyId, { rejectWithValue }) => {
+    try {
+      const response = await api.get(`/companies/${companyId}/details`)
+      return response.data
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to fetch company details')
+    }
+  }
+)
+
+export const exportCompaniesReport = createAsyncThunk(
+  'companies/exportCompaniesReport',
+  async ({ format = 'excel', params = {} } = {}, { rejectWithValue }) => {
+    try {
+      const queryParams = new URLSearchParams()
+      if (params.scopeType) queryParams.append('scopeType', params.scopeType)
+      if (params.scopeId) queryParams.append('scopeId', params.scopeId)
+      if (params.status) queryParams.append('status', params.status)
+      if (params.transactionType) queryParams.append('transactionType', params.transactionType)
+      if (format) queryParams.append('format', format)
+
+      const url = `/companies/export?${queryParams.toString()}`
+
+      if (format === 'pdf') {
+        const response = await api.get(url, { responseType: 'text' })
+        return { format, data: response.data }
+      }
+
+      const response = await api.get(url)
+      return { format, data: response.data?.data || response.data }
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to export companies')
+    }
+  }
+)
+
+export const exportCompanyDetailsReport = createAsyncThunk(
+  'companies/exportCompanyDetailsReport',
+  async ({ companyId, format = 'excel' }, { rejectWithValue }) => {
+    try {
+      const queryParams = new URLSearchParams()
+      if (format) queryParams.append('format', format)
+
+      const url = `/companies/${companyId}/export?${queryParams.toString()}`
+
+      if (format === 'pdf') {
+        const response = await api.get(url, { responseType: 'text' })
+        return { format, data: response.data }
+      }
+
+      const response = await api.get(url)
+      return { format, data: response.data?.data || response.data }
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to export company details')
+    }
+  }
+)
+
 export const createCompany = createAsyncThunk(
   'companies/createCompany',
   async (companyData, { rejectWithValue }) => {
@@ -60,8 +120,13 @@ export const deleteCompany = createAsyncThunk(
 
 const initialState = {
   data: [],
+  summary: null,
   loading: false,
   error: null,
+  detail: null,
+  detailLoading: false,
+  exportLoading: false,
+  exportError: null,
 }
 
 const companiesSlice = createSlice({
@@ -81,11 +146,46 @@ const companiesSlice = createSlice({
       .addCase(fetchCompanies.fulfilled, (state, action) => {
         state.loading = false
         state.data = action.payload.data || action.payload
+        state.summary = action.payload.summary || null
         state.error = null
       })
       .addCase(fetchCompanies.rejected, (state, action) => {
         state.loading = false
         state.error = action.payload
+      })
+      .addCase(fetchCompanyDetails.pending, (state) => {
+        state.detailLoading = true
+        state.error = null
+      })
+      .addCase(fetchCompanyDetails.fulfilled, (state, action) => {
+        state.detailLoading = false
+        state.detail = action.payload.data || action.payload
+      })
+      .addCase(fetchCompanyDetails.rejected, (state, action) => {
+        state.detailLoading = false
+        state.error = action.payload
+      })
+      .addCase(exportCompaniesReport.pending, (state) => {
+        state.exportLoading = true
+        state.exportError = null
+      })
+      .addCase(exportCompaniesReport.fulfilled, (state) => {
+        state.exportLoading = false
+      })
+      .addCase(exportCompaniesReport.rejected, (state, action) => {
+        state.exportLoading = false
+        state.exportError = action.payload
+      })
+      .addCase(exportCompanyDetailsReport.pending, (state) => {
+        state.exportLoading = true
+        state.exportError = null
+      })
+      .addCase(exportCompanyDetailsReport.fulfilled, (state) => {
+        state.exportLoading = false
+      })
+      .addCase(exportCompanyDetailsReport.rejected, (state, action) => {
+        state.exportLoading = false
+        state.exportError = action.payload
       })
       .addCase(createCompany.pending, (state) => {
         state.loading = true

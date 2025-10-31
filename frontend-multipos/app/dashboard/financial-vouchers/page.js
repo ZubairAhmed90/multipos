@@ -82,7 +82,7 @@ const FinancialVouchersPage = () => {
   const theme = useTheme()
 
   // Helper function to safely format dates
-  const formatDate = (dateString, formatStr) => {
+  const formatDate = (dateString, formatStr = 'dd/MM/yyyy') => {
     if (!dateString) return 'N/A'
     try {
       const date = new Date(dateString)
@@ -350,7 +350,7 @@ const FinancialVouchersPage = () => {
   }
 
   const handleAction = (action, voucher) => {
-    setActionDialog({ open: true, action, voucher, notes: '' })
+    setActionDialog({ open: true, action, voucher, notes: '', rejectionReason: '' })
   }
 
   const validateForm = () => {
@@ -1604,7 +1604,7 @@ const FinancialVouchersPage = () => {
           {/* Action Confirmation Dialog */}
           <Dialog 
             open={actionDialog.open} 
-            onClose={() => setActionDialog({ open: false, action: '', voucher: null, notes: '' })}
+            onClose={() => setActionDialog({ open: false, action: '', voucher: null, notes: '', rejectionReason: '' })}
             maxWidth="sm"
             fullWidth
           >

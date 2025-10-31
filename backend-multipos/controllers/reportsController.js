@@ -114,12 +114,21 @@ const getSalesReports = async (req, res) => {
     const user = req.user;
     const { branch, cashier, startDate, endDate } = req.query;
     
+    console.log('[SalesReportsController] Request params:', {
+      branch, cashier, startDate, endDate
+    });
+    
     // Sales data structure
     const salesData = {
       totalSales: 0,
       totalRevenue: 0,
       totalTransactions: 0,
       averageTicket: 0,
+      cashSales: 0,
+      cardSales: 0,
+      refunds: 0,
+      discounts: 0,
+      taxCollected: 0,
       salesByBranch: {},
       salesByCashier: {},
       salesByDate: {},
@@ -129,56 +138,121 @@ const getSalesReports = async (req, res) => {
 
     // Get sales data from database if available
     try {
-      let query = 'SELECT * FROM sales WHERE 1=1';
+      // Join with users table to get cashier names
+      let query = `SELECT s.*, u.username, u.name as user_name 
+                   FROM sales s 
+                   LEFT JOIN users u ON s.user_id = u.id 
+                   WHERE 1=1`;
       const params = [];
       
-      // Filter by warehouse for warehouse keepers
-      if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
-        query += ' AND warehouse_id = ?';
-        params.push(user.warehouseId);
+      // Filter by warehouse for warehouse keepers - show all warehouse sales
+      if (user?.role === 'WAREHOUSE_KEEPER') {
+        query += ' AND s.scope_type = ?';
+        params.push('WAREHOUSE');
       }
+      
+      // Filter by branch for cashiers
+      if (user?.role === 'CASHIER') {
+        let userBranchName = user.branchName;
+        if (!userBranchName && user?.branchId) {
+          const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [user.branchId]);
+          userBranchName = branches[0]?.name || null;
+        }
+        
+        if (userBranchName) {
+          // Handle both string and number comparisons for scope_id
+          query += ' AND s.scope_type = ? AND (s.scope_id = ? OR s.scope_id = ?)';
+          params.push('BRANCH', userBranchName, String(userBranchName));
+        } else {
+          query += ' AND s.scope_type = ?';
+          params.push('BRANCH');
+        }
+      }
+      
+      console.log('[SalesReportsController] Filtering for role:', user?.role);
+      console.log('[SalesReportsController] Using branchName:', user?.branchName);
+      console.log('[SalesReportsController] Using branchId:', user?.branchId);
+      console.log('[SalesReportsController] Final query:', query);
+      console.log('[SalesReportsController] Final params:', params);
 
       if (branch) {
-        query += ' AND branch_id = ?';
+        query += ' AND s.scope_id = ?';
         params.push(branch);
       }
       if (cashier) {
-        query += ' AND cashier_id = ?';
+        query += ' AND s.user_id = ?';
         params.push(cashier);
       }
       if (startDate) {
-        query += ' AND created_at >= ?';
+        query += ' AND DATE(s.created_at) >= ?';
         params.push(startDate);
       }
       if (endDate) {
-        query += ' AND created_at <= ?';
+        query += ' AND DATE(s.created_at) <= ?';
         params.push(endDate);
       }
+      
+      // Order by created_at DESC to get recent sales first
+      query += ' ORDER BY s.created_at DESC';
 
       const [salesResult] = await pool.execute(query, params);
+      
+      // Debug logging
+      console.log('[SalesReportsController] Query result:', {
+        count: salesResult.length,
+        firstSale: salesResult.length > 0 ? salesResult[0] : null,
+        allFields: salesResult.length > 0 ? Object.keys(salesResult[0]) : [],
+        sampleDates: salesResult.slice(0, 5).map(s => s.created_at)
+      });
+      
       salesData.totalSales = salesResult.length;
       salesData.totalTransactions = salesResult.length;
-      salesData.totalRevenue = salesResult.reduce((sum, sale) => sum + (sale.total_amount || 0), 0);
+      // Use 'total' column instead of 'total_amount' based on Sale.js model
+      salesData.totalRevenue = salesResult.reduce((sum, sale) => sum + parseFloat(sale.total || sale.total_amount || 0), 0);
       salesData.averageTicket = salesResult.length > 0 ? salesData.totalRevenue / salesResult.length : 0;
       
-      // Process sales by branch
+      // Calculate payment method breakdowns
       salesResult.forEach(sale => {
-        const branchId = sale.branch_id || 'Unknown';
+        const paymentMethod = sale.payment_method || 'Cash';
+        const amount = parseFloat(sale.total || sale.total_amount || 0);
+        
+        if (paymentMethod === 'Cash' || paymentMethod === 'CASH') {
+          salesData.cashSales += amount;
+        } else if (paymentMethod === 'Card' || paymentMethod === 'Credit Card' || paymentMethod === 'CARD') {
+          salesData.cardSales += amount;
+        }
+        
+        // Calculate refunds and discounts if available in sale data
+        if (sale.refund_amount || sale.refund) {
+          salesData.refunds += parseFloat(sale.refund_amount || sale.refund || 0);
+        }
+        if (sale.discount_amount || sale.discount) {
+          salesData.discounts += parseFloat(sale.discount_amount || sale.discount || 0);
+        }
+        if (sale.tax_amount || sale.tax) {
+          salesData.taxCollected += parseFloat(sale.tax_amount || sale.tax || 0);
+        }
+      });
+      
+      // Process sales by branch (using scope_id and scope_type)
+      salesResult.forEach(sale => {
+        const branchId = sale.scope_id || sale.branch_id || 'Unknown';
         if (!salesData.salesByBranch[branchId]) {
           salesData.salesByBranch[branchId] = { sales: 0, transactions: 0 };
         }
-        salesData.salesByBranch[branchId].sales += sale.total_amount || 0;
+        salesData.salesByBranch[branchId].sales += parseFloat(sale.total || sale.total_amount || 0);
         salesData.salesByBranch[branchId].transactions += 1;
       });
       
-      // Process sales by cashier
+      // Process sales by cashier (using username/name instead of user_id)
       salesResult.forEach(sale => {
-        const cashierId = sale.cashier_id || 'Unknown';
-        if (!salesData.salesByCashier[cashierId]) {
-          salesData.salesByCashier[cashierId] = { sales: 0, transactions: 0 };
+        // Use user name if available, otherwise username, otherwise formatted user_id
+        const cashierName = sale.user_name || sale.username || (sale.user_id ? `User ${sale.user_id}` : 'Unknown');
+        if (!salesData.salesByCashier[cashierName]) {
+          salesData.salesByCashier[cashierName] = { sales: 0, transactions: 0 };
         }
-        salesData.salesByCashier[cashierId].sales += sale.total_amount || 0;
-        salesData.salesByCashier[cashierId].transactions += 1;
+        salesData.salesByCashier[cashierName].sales += parseFloat(sale.total || sale.total_amount || 0);
+        salesData.salesByCashier[cashierName].transactions += 1;
       });
       
       // Process sales by date
@@ -187,10 +261,12 @@ const getSalesReports = async (req, res) => {
         if (!salesData.salesByDate[date]) {
           salesData.salesByDate[date] = { sales: 0, transactions: 0, avgTicket: 0 };
         }
-        salesData.salesByDate[date].sales += sale.total_amount || 0;
+        salesData.salesByDate[date].sales += parseFloat(sale.total || sale.total_amount || 0);
         salesData.salesByDate[date].transactions += 1;
         salesData.salesByDate[date].avgTicket = salesData.salesByDate[date].sales / salesData.salesByDate[date].transactions;
       });
+      
+      console.log('[SalesReportsController] salesByDate (object):', salesData.salesByDate);
       
       // Convert salesByDate to array format for charts
       salesData.salesByDate = Object.entries(salesData.salesByDate).map(([date, data]) => ({
@@ -200,21 +276,33 @@ const getSalesReports = async (req, res) => {
         avgTicket: data.avgTicket
       }));
       
+      console.log('[SalesReportsController] salesByDate (array):', salesData.salesByDate);
+      
       // Ensure salesByDate is always an array
       if (!Array.isArray(salesData.salesByDate)) {
         salesData.salesByDate = [];
       }
       
-      // Recent sales with proper field mapping
-      salesData.recentSales = salesResult.slice(0, 10).map(sale => ({
-        date: sale.created_at ? sale.created_at.split('T')[0] : 'Unknown',
-        created_at: sale.created_at,
-        sales: sale.total_amount || 0,
-        total_amount: sale.total_amount || 0,
-        cashier: sale.cashier_id || 'Unknown',
-        cashier_name: sale.cashier_id || 'Unknown',
-        status: sale.status || 'Completed'
-      }));
+      // Recent sales with proper field mapping (use username/name instead of user_id)
+      salesData.recentSales = salesResult.slice(0, 10).map(sale => {
+        // Get cashier name: use user_name if available, otherwise username, otherwise formatted user_id
+        const cashierName = sale.user_name || sale.username || (sale.user_id ? `User ${sale.user_id}` : 'Unknown');
+        
+        return {
+          date: sale.created_at ? new Date(sale.created_at).toLocaleDateString() : 'Unknown',
+          created_at: sale.created_at,
+          sales: parseFloat(sale.total || sale.total_amount || 0),
+          total_amount: parseFloat(sale.total || sale.total_amount || 0),
+          cashier: cashierName,
+          cashier_name: cashierName,
+          cashier_id: sale.user_id, // Keep ID for reference if needed
+          status: sale.status || 'Completed',
+          customer_name: sale.customer_name || 'Walk-in Customer',
+          payment_method: sale.payment_method || 'Cash',
+          invoice_no: sale.invoice_no || sale.invoiceNumber || 'N/A',
+          items_count: 0 // Would need to join with sale_items to get actual count
+        };
+      });
       
       // Ensure recentSales is always an array
       if (!Array.isArray(salesData.recentSales)) {
@@ -230,6 +318,18 @@ const getSalesReports = async (req, res) => {
         salesData.recentSales = [];
       }
     }
+
+    // Debug logging
+    console.log('[SalesReportsController] Returning data:', {
+      totalSales: salesData.totalSales,
+      totalRevenue: salesData.totalRevenue,
+      totalTransactions: salesData.totalTransactions,
+      averageTicket: salesData.averageTicket,
+      salesByDateCount: Array.isArray(salesData.salesByDate) ? salesData.salesByDate.length : 0,
+      salesByBranchCount: Object.keys(salesData.salesByBranch).length,
+      salesByCashierCount: Object.keys(salesData.salesByCashier).length,
+      recentSalesCount: Array.isArray(salesData.recentSales) ? salesData.recentSales.length : 0
+    });
 
     res.json({
       success: true,

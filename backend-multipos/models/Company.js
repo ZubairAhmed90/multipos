@@ -14,6 +14,7 @@ class Company {
     this.scopeId = data.scope_id;
     this.transactionType = data.transaction_type;
     this.createdBy = data.created_by;
+    this.createdByUsername = data.created_by_username;
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
   }
@@ -104,36 +105,39 @@ class Company {
 
   // Static method to find companies with pagination
   static async find(conditions = {}, options = {}) {
-    let query = 'SELECT * FROM companies WHERE 1=1';
+    let query = `SELECT c.*, u.username as created_by_username 
+                 FROM companies c 
+                 LEFT JOIN users u ON c.created_by = u.id 
+                 WHERE 1=1`;
     const params = [];
 
     if (conditions.name) {
-      query += ' AND name LIKE ?';
+      query += ' AND c.name LIKE ?';
       params.push(`%${conditions.name}%`);
     }
 
     if (conditions.status) {
-      query += ' AND status = ?';
+      query += ' AND c.status = ?';
       params.push(conditions.status);
     }
 
     if (conditions.scopeType) {
-      query += ' AND scope_type = ?';
+      query += ' AND c.scope_type = ?';
       params.push(conditions.scopeType);
     }
 
     if (conditions.scopeId) {
-      query += ' AND scope_id = ?';
+      query += ' AND c.scope_id = ?';
       params.push(conditions.scopeId);
     }
 
     if (conditions.transactionType) {
-      query += ' AND transaction_type = ?';
+      query += ' AND c.transaction_type = ?';
       params.push(conditions.transactionType);
     }
 
     if (conditions.createdBy) {
-      query += ' AND created_by = ?';
+      query += ' AND c.created_by = ?';
       params.push(conditions.createdBy);
     }
 
@@ -141,9 +145,9 @@ class Company {
     if (options.sort) {
       const sortField = options.sort.replace(/^-/, ''); // Remove minus sign
       const sortOrder = options.sort.startsWith('-') ? 'DESC' : 'ASC';
-      query += ` ORDER BY ${sortField} ${sortOrder}`;
+      query += ` ORDER BY c.${sortField} ${sortOrder}`;
     } else {
-      query += ' ORDER BY created_at DESC';
+      query += ' ORDER BY c.created_at DESC';
     }
 
     // Add pagination

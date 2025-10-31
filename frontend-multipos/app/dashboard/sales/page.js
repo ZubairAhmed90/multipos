@@ -6,6 +6,9 @@ import api from '../../../utils/axios'
 import { Box, Typography, Chip, Button, Grid, Card, CardContent, FormControl, InputLabel, Select, MenuItem, Paper, Drawer, List, ListItem, ListItemText, Divider, IconButton, Badge, TextField, Menu, ListItemIcon, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Alert, CircularProgress, Tooltip, InputAdornment, Pagination, Dialog, DialogTitle, DialogContent } from '@mui/material'
 import { Close as CloseIcon, FilterList as FilterIcon, GetApp as ExportIcon, FileDownload as DownloadIcon, Delete as DeleteIcon, Search as SearchIcon, Clear as ClearIcon, Visibility as ViewIcon, Receipt as ReceiptIcon, Refresh as RefreshIcon } from '@mui/icons-material'
 import { DataGrid } from '@mui/x-data-grid'
+import { DatePicker } from '@mui/x-date-pickers/DatePicker'
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns'
 import withAuth from '../../../components/auth/withAuth'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
 import RouteGuard from '../../../components/auth/RouteGuard'
@@ -105,6 +108,43 @@ const columns = [
       return 'No Customer';
     }
   },
+  { 
+    field: 'salesperson', 
+    headerName: 'Salesperson', 
+    width: 150,
+    renderCell: (params) => {
+      if (!params || !params.row) {
+        return null; // Don't show anything for empty rows
+      }
+      
+      // Only show salesperson for warehouse sales (where salesperson is used)
+      const scopeType = params.row.scope_type || params.row.scopeType;
+      if (scopeType !== 'WAREHOUSE') {
+        return null; // Return null to hide for non-warehouse sales
+      }
+      
+      // Check for customerInfo with salesperson (parsed from JSON)
+      if (params.row.customerInfo && params.row.customerInfo.salesperson) {
+        const sp = params.row.customerInfo.salesperson;
+        return sp.name || (sp.id ? `Salesperson ${sp.id}` : null);
+      }
+      
+      // Check for customer_info (raw JSON string)
+      if (params.row.customer_info) {
+        try {
+          const customerInfo = JSON.parse(params.row.customer_info);
+          if (customerInfo.salesperson) {
+            const sp = customerInfo.salesperson;
+            return sp.name || (sp.id ? `Salesperson ${sp.id}` : null);
+          }
+        } catch (e) {
+          // Silent error
+        }
+      }
+      
+      return null; // Return null instead of 'N/A' for cleaner look
+    }
+  },
   { field: 'subtotal', headerName: 'Subtotal', width: 120, type: 'number', renderCell: (params) => {
     if (!params || params.value === undefined || params.value === null) {
       return '0.00';
@@ -140,6 +180,33 @@ const columns = [
         fontWeight="medium"
       >
         {parseFloat(params.value).toFixed(2)}
+      </Typography>
+    );
+  }},
+  { field: 'credit_amount', headerName: 'Credit', width: 120, type: 'number', renderCell: (params) => {
+    const creditAmount = params.row.creditAmount || params.row.credit_amount || 0;
+    const isPositive = parseFloat(creditAmount) >= 0;
+    return (
+      <Typography 
+        variant="body2"
+        color={isPositive ? 'error.main' : 'success.main'}
+        fontWeight="medium"
+      >
+        {parseFloat(creditAmount).toFixed(2)}
+      </Typography>
+    );
+  }},
+  { field: 'running_balance', headerName: 'Balance', width: 120, type: 'number', renderCell: (params) => {
+    const balance = params.row.runningBalance || params.row.running_balance || 0;
+    const balanceValue = parseFloat(balance);
+    const isPositive = balanceValue >= 0;
+    return (
+      <Typography 
+        variant="body2"
+        color={isPositive ? 'error.main' : 'success.main'}
+        fontWeight="bold"
+      >
+        {balanceValue.toFixed(2)}
       </Typography>
     );
   }},
@@ -521,7 +588,7 @@ const returnsColumns = [
   const { data: warehouses, warehouseSettings } = useSelector((state) => state.warehouses)
   const { data: companies } = useSelector((state) => state.companies)
   const { data: retailers } = useSelector((state) => state.retailers)
-    const { data: sales = [], loading: salesLoading, error: salesError } = useSelector((state) => state.sales || {})
+  const { data: sales = [], loading: salesLoading, error: salesError, returns: salesReturns = [] } = useSelector((state) => state.sales || {})
   
   // Filter state for admin and warehouse keepers
   const [filters, setFilters] = useState({
@@ -540,6 +607,10 @@ const returnsColumns = [
   const [scopeTypeFilter, setScopeTypeFilter] = useState('all')
   const [sortBy, setSortBy] = useState('created_at')
   const [sortOrder, setSortOrder] = useState('desc')
+  
+  // Date filter states
+  const [startDate, setStartDate] = useState(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)) // 30 days ago
+  const [endDate, setEndDate] = useState(new Date())
   
   // Pagination states
   const [page, setPage] = useState(1)
@@ -628,11 +699,12 @@ const returnsColumns = [
     if (user?.role === 'ADMIN' && filters.companyId !== 'all') {
       salesParams.companyId = filters.companyId
     }
-    if (filters.startDate) {
-      salesParams.startDate = filters.startDate
+    // Use new date filter states
+    if (startDate) {
+      salesParams.startDate = startDate.toISOString().split('T')[0]
     }
-    if (filters.endDate) {
-      salesParams.endDate = filters.endDate
+    if (endDate) {
+      salesParams.endDate = endDate.toISOString().split('T')[0]
     }
     dispatch(fetchSales(salesParams))
     dispatch(fetchSalesReturns())
@@ -670,7 +742,7 @@ const returnsColumns = [
       
       dispatch(fetchInventory(params))
     }
-  }, [dispatch, user, filters])
+  }, [dispatch, user, filters, startDate, endDate])
 
   // Debug: Log sales data when it changes
   useEffect(() => {
@@ -750,6 +822,25 @@ const returnsColumns = [
         if (scopeType !== scopeTypeFilter) return false
       }
 
+      // Date filter - Compare dates only (ignore time)
+      if (startDate || endDate) {
+        const saleDate = new Date(sale.created_at || sale.createdAt || 0)
+        
+        if (startDate) {
+          const start = new Date(startDate)
+          start.setHours(0, 0, 0, 0)
+          saleDate.setHours(0, 0, 0, 0)
+          if (saleDate < start) return false
+        }
+        
+        if (endDate) {
+          const end = new Date(endDate)
+          end.setHours(23, 59, 59, 999)
+          saleDate.setHours(23, 59, 59, 999)
+          if (saleDate > end) return false
+        }
+      }
+
       return true
     })
 
@@ -788,11 +879,31 @@ const returnsColumns = [
   }
 
   // Pagination logic
-  const totalItems = getFilteredAndSortedSales().length
-  const totalPages = Math.ceil(totalItems / rowsPerPage)
+  const allFilteredSales = getFilteredAndSortedSales()
+  const totalItems = allFilteredSales.length
+  const totalPages = Math.max(1, Math.ceil(totalItems / rowsPerPage))
   const startIndex = (page - 1) * rowsPerPage
   const endIndex = startIndex + rowsPerPage
-  const paginatedSales = getFilteredAndSortedSales().slice(startIndex, endIndex)
+  const paginatedSales = allFilteredSales.slice(startIndex, endIndex)
+  
+  // Debug: Log pagination info (only log when sales data changes significantly)
+  if (sales?.length > 0) {
+    console.log('[Sales] Pagination Debug:', {
+      totalSales: sales?.length || 0,
+      filteredSales: totalItems,
+      rowsPerPage,
+      totalPages,
+      currentPage: page,
+      startIndex,
+      endIndex,
+      paginatedCount: paginatedSales.length,
+      userRole: user?.role,
+      scopeTypeFilter,
+      warehouseSales: sales?.filter(s => (s.scope_type || s.scopeType) === 'WAREHOUSE').length || 0,
+      branchSales: sales?.filter(s => (s.scope_type || s.scopeType) === 'BRANCH').length || 0,
+      shouldShowPagination: totalItems > 0 && totalPages > 1
+    })
+  }
 
   // Handle page change
   const handlePageChange = (event, newPage) => {
@@ -958,15 +1069,46 @@ const returnsColumns = [
     setExportAnchorEl(null)
   }
 
+  const buildItemSummary = (salesData) => {
+    const summaryMap = new Map()
+
+    salesData.forEach((sale) => {
+      if (!sale?.items || !Array.isArray(sale.items)) return
+
+      sale.items.forEach((item) => {
+        const name = item?.itemName || item?.name || item?.productName || 'Unknown Item'
+        const sku = item?.sku || 'N/A'
+        const quantity = Number(item?.quantity) || 0
+        const lineTotal = Number(item?.total ?? (item?.unitPrice || 0) * quantity) || 0
+
+        const key = `${name}|||${sku}`
+        if (!summaryMap.has(key)) {
+          summaryMap.set(key, {
+            name,
+            sku,
+            totalQuantity: 0,
+            totalSales: 0
+          })
+        }
+
+        const entry = summaryMap.get(key)
+        entry.totalQuantity += quantity
+        entry.totalSales += lineTotal
+      })
+    })
+
+    return Array.from(summaryMap.values()).sort((a, b) => b.totalQuantity - a.totalQuantity)
+  }
+
   const exportToCSV = () => {
-    const salesToExport = filteredSales.length > 0 ? filteredSales : sales || []
+    const salesToExport = getFilteredAndSortedSales()
     const csvContent = generateCSV(salesToExport)
     downloadFile(csvContent, 'sales-data.csv', 'text/csv')
     handleExportClose()
   }
 
   const exportToExcel = async () => {
-    const salesToExport = filteredSales.length > 0 ? filteredSales : sales || []
+    const salesToExport = getFilteredAndSortedSales()
     const excelData = await generateExcel(salesToExport)
     
     // Determine if we got a buffer (proper Excel) or string (CSV fallback)
@@ -993,14 +1135,55 @@ const returnsColumns = [
   }
 
   const exportToPDF = () => {
-    const salesToExport = filteredSales.length > 0 ? filteredSales : sales || []
+    const salesToExport = getFilteredAndSortedSales()
     const pdfContent = generatePDF(salesToExport)
     downloadFile(pdfContent, 'sales-data.pdf', 'application/pdf')
     handleExportClose()
   }
 
   const generateCSV = (salesData) => {
-    const headers = ['ID', 'Date', 'Time', 'Invoice #', 'Customer', 'Subtotal', 'Tax', 'Discount', 'Total', 'Payment', 'Payment Method', 'Payment Type', 'Payment Status', 'Returns', 'Notes', 'Created By']
+    // Calculate summary statistics
+    const totalRevenue = salesData.reduce((sum, sale) => sum + parseFloat(sale.total || 0), 0)
+    const totalSubtotal = salesData.reduce((sum, sale) => sum + parseFloat(sale.subtotal || 0), 0)
+    const totalTax = salesData.reduce((sum, sale) => sum + parseFloat(sale.tax || 0), 0)
+    const totalDiscount = salesData.reduce((sum, sale) => sum + parseFloat(sale.discount || 0), 0)
+    const totalPayment = salesData.reduce((sum, sale) => sum + parseFloat(sale.payment_amount || 0), 0)
+    const transactionCount = salesData.length
+    
+    const itemSummary = buildItemSummary(salesData)
+
+    // Summary section
+    const summary = [
+      ['Sales Report Summary'],
+      ['Report Date Range', `${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`],
+      ['Total Transactions', transactionCount],
+      ['Total Subtotal', totalSubtotal.toFixed(2)],
+      ['Total Tax', totalTax.toFixed(2)],
+      ['Total Discount', totalDiscount.toFixed(2)],
+      ['Total Revenue', totalRevenue.toFixed(2)],
+      ['Total Payments Received', totalPayment.toFixed(2)],
+      [''] // Empty row separator
+    ]
+
+    if (itemSummary.length > 0) {
+      summary.push(['Product Summary'])
+      summary.push(['Product', 'SKU', 'Total Quantity', 'Total Sales'])
+      itemSummary.forEach((item) => {
+        summary.push([
+          item.name,
+          item.sku,
+          item.totalQuantity,
+          item.totalSales.toFixed(2)
+        ])
+      })
+      summary.push([''])
+    }
+    
+    // Conditionally include Salesperson in headers only if there are warehouse sales
+    const hasWarehouseSalesInExport = salesData.some(sale => (sale.scope_type || sale.scopeType) === 'WAREHOUSE')
+    const headers = hasWarehouseSalesInExport
+      ? ['ID', 'Date', 'Time', 'Invoice #', 'Customer', 'Salesperson', 'Subtotal', 'Tax', 'Discount', 'Total', 'Payment', 'Credit', 'Balance', 'Payment Method', 'Payment Type', 'Payment Status', 'Returns', 'Notes', 'Created By']
+      : ['ID', 'Date', 'Time', 'Invoice #', 'Customer', 'Subtotal', 'Tax', 'Discount', 'Total', 'Payment', 'Credit', 'Balance', 'Payment Method', 'Payment Type', 'Payment Status', 'Returns', 'Notes', 'Created By']
     const rows = salesData.map(sale => {
       // Calculate returns for this sale
       const returns = salesReturns?.filter(returnItem => returnItem.sale_id === sale.id) || [];
@@ -1015,12 +1198,42 @@ const returnsColumns = [
         saleDate.toLocaleDateString(),
         saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
         sale.invoice_no || 'N/A',
-        sale.customerInfo?.name || sale.customer_info?.name || 'N/A',
+        (() => {
+          if (sale.customerInfo && sale.customerInfo.name) return sale.customerInfo.name;
+          if (sale.customer_info) {
+            try {
+              const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+              return ci.name || 'Walk-in Customer';
+            } catch (e) { return 'Walk-in Customer'; }
+          }
+          return sale.customer_name || 'Walk-in Customer';
+        })(),
+        // Conditionally include Salesperson in CSV only if there are warehouse sales
+        ...(hasWarehouseSalesInExport ? [(() => {
+          // Only include salesperson data for warehouse sales
+          if (sale.scope_type !== 'WAREHOUSE' && sale.scopeType !== 'WAREHOUSE') {
+            return 'N/A'; // Empty for non-warehouse sales
+          }
+          if (sale.customerInfo && sale.customerInfo.salesperson) {
+            return sale.customerInfo.salesperson.name || (sale.customerInfo.salesperson.id ? `Salesperson ${sale.customerInfo.salesperson.id}` : 'N/A');
+          }
+          if (sale.customer_info) {
+            try {
+              const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+              if (ci.salesperson) {
+                return ci.salesperson.name || (ci.salesperson.id ? `Salesperson ${ci.salesperson.id}` : 'N/A');
+              }
+            } catch (e) {}
+          }
+          return 'N/A';
+        })()] : []),
         parseFloat(sale.subtotal || 0).toFixed(2),
         parseFloat(sale.tax || 0).toFixed(2),
         parseFloat(sale.discount || 0).toFixed(2),
         parseFloat(sale.total || 0).toFixed(2),
         parseFloat(sale.payment_amount || 0).toFixed(2),
+        parseFloat(sale.credit_amount || sale.creditAmount || 0).toFixed(2),
+        parseFloat(sale.running_balance || sale.runningBalance || 0).toFixed(2),
         sale.paymentMethod || sale.payment_method || 'N/A',
         sale.paymentType || sale.payment_type || 'N/A',
         sale.paymentStatus || sale.payment_status || 'N/A',
@@ -1030,7 +1243,7 @@ const returnsColumns = [
       ]
     })
     
-    return [headers, ...rows].map(row => row.join(',')).join('\n')
+    return [...summary, headers, ...rows].map(row => Array.isArray(row) ? row.join(',') : `${row}`).join('\n')
   }
 
   const generateExcel = async (salesData) => {
@@ -1053,12 +1266,44 @@ const returnsColumns = [
           'Date': saleDate.toLocaleDateString(),
           'Time': saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
           'Invoice #': sale.invoice_no || 'N/A',
-          'Customer': sale.customerInfo?.name || sale.customer_info?.name || 'N/A',
+          'Customer': (() => {
+            if (sale.customerInfo && sale.customerInfo.name) return sale.customerInfo.name;
+            if (sale.customer_info) {
+              try {
+                const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+                return ci.name || 'Walk-in Customer';
+              } catch (e) { return 'Walk-in Customer'; }
+            }
+            return sale.customer_name || 'Walk-in Customer';
+          })(),
+          // Conditionally include Salesperson only if there are warehouse sales
+          ...(salesData.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE') ? {
+            'Salesperson': (() => {
+              // Only include salesperson data for warehouse sales
+              if (sale.scope_type !== 'WAREHOUSE' && sale.scopeType !== 'WAREHOUSE') {
+                return 'N/A'; // Empty for non-warehouse sales
+              }
+              if (sale.customerInfo && sale.customerInfo.salesperson) {
+                return sale.customerInfo.salesperson.name || (sale.customerInfo.salesperson.id ? `Salesperson ${sale.customerInfo.salesperson.id}` : 'N/A');
+              }
+              if (sale.customer_info) {
+                try {
+                  const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+                  if (ci.salesperson) {
+                    return ci.salesperson.name || (ci.salesperson.id ? `Salesperson ${ci.salesperson.id}` : 'N/A');
+                  }
+                } catch (e) {}
+              }
+              return 'N/A';
+            })()
+          } : {}),
           'Subtotal': parseFloat(sale.subtotal || 0).toFixed(2),
           'Tax': parseFloat(sale.tax || 0).toFixed(2),
           'Discount': parseFloat(sale.discount || 0).toFixed(2),
           'Total': parseFloat(sale.total || 0).toFixed(2),
           'Payment': parseFloat(sale.payment_amount || 0).toFixed(2),
+          'Credit': parseFloat(sale.credit_amount || sale.creditAmount || 0).toFixed(2),
+          'Balance': parseFloat(sale.running_balance || sale.runningBalance || 0).toFixed(2),
           'Payment Method': sale.paymentMethod || sale.payment_method || 'N/A',
           'Payment Type': sale.paymentType || sale.payment_type || 'N/A',
           'Payment Status': sale.paymentStatus || sale.payment_status || 'N/A',
@@ -1068,12 +1313,31 @@ const returnsColumns = [
         };
       })
       
+      const itemSummary = buildItemSummary(salesData)
+
       // Create workbook and worksheet
       const workbook = XLSX.utils.book_new()
       const worksheet = XLSX.utils.json_to_sheet(excelData)
       
       // Add worksheet to workbook
       XLSX.utils.book_append_sheet(workbook, worksheet, 'Sales Data')
+
+      const itemSummarySheetData = itemSummary.length > 0
+        ? itemSummary.map(item => ({
+            'Product': item.name,
+            'SKU': item.sku === 'N/A' ? '' : item.sku,
+            'Total Quantity': item.totalQuantity,
+            'Total Sales': item.totalSales.toFixed(2)
+          }))
+        : [{
+            'Product': 'No item data for selected filters',
+            'SKU': '',
+            'Total Quantity': 0,
+            'Total Sales': '0.00'
+          }]
+
+      const itemSummarySheet = XLSX.utils.json_to_sheet(itemSummarySheetData)
+      XLSX.utils.book_append_sheet(workbook, itemSummarySheet, 'Item Summary')
       
       // Generate Excel file buffer
       const excelBuffer = XLSX.write(workbook, { 
@@ -1090,6 +1354,34 @@ const returnsColumns = [
   }
 
   const generatePDF = (salesData) => {
+    const itemSummary = buildItemSummary(salesData)
+
+    const itemSummaryHtml = itemSummary.length > 0 ? `
+      <div class="summary">
+        <h3>Item Summary</h3>
+        <table class="item-summary-table">
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>SKU</th>
+              <th>Total Quantity</th>
+              <th>Total Sales</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemSummary.map(item => `
+              <tr>
+                <td>${item.name}</td>
+                <td>${item.sku}</td>
+                <td>${item.totalQuantity}</td>
+                <td>${item.totalSales.toFixed(2)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : ''
+
     // Generate HTML content for PDF
     const htmlContent = `
       <!DOCTYPE html>
@@ -1107,22 +1399,31 @@ const returnsColumns = [
             .status-completed { color: #28a745; }
             .status-pending { color: #ffc107; }
             .status-cancelled { color: #dc3545; }
+            .item-summary-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            .item-summary-table th, .item-summary-table td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+            .item-summary-table th { background-color: #e9f5ff; }
           </style>
         </head>
         <body>
           <div class="header">
             <h1>Sales Report</h1>
             <p>Generated on: ${new Date().toLocaleDateString()}</p>
+            <p>Date Range: ${startDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}</p>
             <p>Total Records: ${salesData.length}</p>
           </div>
           
           <div class="summary">
-            <h3>Summary</h3>
-            <p>Total Sales: ${salesData.length}</p>
-            <p>Total Amount: $${salesData.reduce((sum, sale) => sum + parseFloat(sale.total || 0), 0).toFixed(2)}</p>
-            <p>Completed Payments: ${salesData.filter(sale => (sale.paymentStatus || sale.payment_status) === 'COMPLETED').length}</p>
-            <p>Pending Payments: ${salesData.filter(sale => (sale.paymentStatus || sale.payment_status) === 'PENDING').length}</p>
+            <h3>Summary Statistics</h3>
+            <p><strong>Total Transactions:</strong> ${salesData.length}</p>
+            <p><strong>Total Subtotal:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.subtotal || 0), 0).toFixed(2)}</p>
+            <p><strong>Total Tax:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.tax || 0), 0).toFixed(2)}</p>
+            <p><strong>Total Discount:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.discount || 0), 0).toFixed(2)}</p>
+            <p><strong>Total Revenue:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.total || 0), 0).toFixed(2)}</p>
+            <p><strong>Total Payments Received:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.payment_amount || 0), 0).toFixed(2)}</p>
+            <p><strong>Completed Payments:</strong> ${salesData.filter(sale => (sale.paymentStatus || sale.payment_status) === 'COMPLETED').length}</p>
+            <p><strong>Pending Payments:</strong> ${salesData.filter(sale => (sale.paymentStatus || sale.payment_status) === 'PENDING').length}</p>
           </div>
+          ${itemSummaryHtml}
           
           <table>
             <thead>
@@ -1131,11 +1432,14 @@ const returnsColumns = [
                 <th>Time</th>
                 <th>Invoice #</th>
                 <th>Customer</th>
+                ${salesData.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE') ? '<th>Salesperson</th>' : ''}
                 <th>Subtotal</th>
                 <th>Tax</th>
                 <th>Discount</th>
                 <th>Total</th>
                 <th>Payment</th>
+                <th>Credit</th>
+                <th>Balance</th>
                 <th>Payment Method</th>
                 <th>Payment Type</th>
                 <th>Payment Status</th>
@@ -1159,12 +1463,43 @@ const returnsColumns = [
                   <td>${saleDate.toLocaleDateString()}</td>
                   <td>${saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}</td>
                   <td>${sale.invoice_no || 'N/A'}</td>
-                  <td>${sale.customerInfo?.name || sale.customer_info?.name || 'Walk-in Customer'}</td>
-                  <td>$${parseFloat(sale.subtotal || 0).toFixed(2)}</td>
-                  <td>$${parseFloat(sale.tax || 0).toFixed(2)}</td>
-                  <td>$${parseFloat(sale.discount || 0).toFixed(2)}</td>
-                  <td>$${parseFloat(sale.total || 0).toFixed(2)}</td>
-                  <td>$${parseFloat(sale.payment_amount || 0).toFixed(2)}</td>
+                  <td>${(() => {
+                    if (sale.customerInfo && sale.customerInfo.name) return sale.customerInfo.name;
+                    if (sale.customer_info) {
+                      try {
+                        const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+                        return ci.name || 'Walk-in Customer';
+                      } catch (e) { return 'Walk-in Customer'; }
+                    }
+                    return sale.customer_name || 'Walk-in Customer';
+                  })()}</td>
+                  ${salesData.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE') ? `<td>${
+                    (() => {
+                      // Only show salesperson for warehouse sales
+                      if (sale.scope_type !== 'WAREHOUSE' && sale.scopeType !== 'WAREHOUSE') {
+                        return 'N/A'; // Empty for non-warehouse sales
+                      }
+                      if (sale.customerInfo && sale.customerInfo.salesperson) {
+                        return sale.customerInfo.salesperson.name || (sale.customerInfo.salesperson.id ? `Salesperson ${sale.customerInfo.salesperson.id}` : 'N/A');
+                      }
+                      if (sale.customer_info) {
+                        try {
+                          const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+                          if (ci.salesperson) {
+                            return ci.salesperson.name || (ci.salesperson.id ? `Salesperson ${ci.salesperson.id}` : 'N/A');
+                          }
+                        } catch (e) {}
+                      }
+                      return 'N/A';
+                    })()
+                  }</td>` : ''}
+                  <td>${parseFloat(sale.subtotal || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.tax || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.discount || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.total || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.payment_amount || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.credit_amount || sale.creditAmount || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.running_balance || sale.runningBalance || 0).toFixed(2)}</td>
                   <td>${sale.paymentMethod || sale.payment_method || 'N/A'}</td>
                   <td>${sale.paymentType || sale.payment_type || 'N/A'}</td>
                   <td class="status-${(sale.paymentStatus || sale.payment_status)?.toLowerCase() || 'unknown'}">${sale.paymentStatus || sale.payment_status || 'N/A'}</td>
@@ -1232,6 +1567,20 @@ const returnsColumns = [
       completedSales: completedSales.length
     }
   }, [sales])
+
+  // Check if there are any warehouse sales (to conditionally show Salesperson column)
+  const hasWarehouseSales = useMemo(() => {
+    if (!sales || sales.length === 0) return false
+    // Check all sales, not just filtered ones, to determine if column should be visible
+    return sales.some(sale => (sale.scope_type || sale.scopeType) === 'WAREHOUSE')
+  }, [sales])
+
+  // Create filtered columns array - conditionally include salesperson column
+  const visibleColumns = useMemo(() => {
+    return hasWarehouseSales 
+      ? columns // Include salesperson column
+      : columns.filter(col => col.field !== 'salesperson') // Exclude salesperson column
+  }, [hasWarehouseSales])
 
   return (
     <DashboardLayout>
@@ -1382,6 +1731,40 @@ const returnsColumns = [
                         />
                       </Grid>
 
+                      {/* Start Date Filter */}
+                      <Grid item xs={12} md={2}>
+                        <LocalizationProvider dateAdapter={AdapterDateFns}>
+                          <DatePicker
+                            label="Start Date"
+                            value={startDate}
+                            onChange={(newValue) => setStartDate(newValue)}
+                            slotProps={{
+                              textField: {
+                                size: 'small',
+                                fullWidth: true
+                              }
+                            }}
+                          />
+                        </LocalizationProvider>
+                      </Grid>
+
+                      {/* End Date Filter */}
+                      <Grid item xs={12} md={2}>
+                        <LocalizationProvider dateAdapter={AdapterDateFns}>
+                          <DatePicker
+                            label="End Date"
+                            value={endDate}
+                            onChange={(newValue) => setEndDate(newValue)}
+                            slotProps={{
+                              textField: {
+                                size: 'small',
+                                fullWidth: true
+                              }
+                            }}
+                          />
+                        </LocalizationProvider>
+                      </Grid>
+
                       {/* Payment Method Filter */}
                       <Grid item xs={12} md={2}>
                         <FormControl fullWidth size="small">
@@ -1527,6 +1910,11 @@ const returnsColumns = [
                             <TableCell>Invoice #</TableCell>
                             <TableCell>Type</TableCell>
                             <TableCell>Customer</TableCell>
+                            {(() => {
+                              // Only show Salesperson header if there are warehouse sales
+                              const hasWarehouseSales = paginatedSales.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE');
+                              return hasWarehouseSales ? <TableCell>Salesperson</TableCell> : null;
+                            })()}
                             <TableCell align="right">Subtotal</TableCell>
                             <TableCell align="right">Tax</TableCell>
                             <TableCell align="right">Discount</TableCell>
@@ -1592,6 +1980,43 @@ const returnsColumns = [
                                   return 'No Customer';
                                 })()}
                               </TableCell>
+                              {/* Only show Salesperson column if there are warehouse sales */}
+                              {(() => {
+                                const hasWarehouseSales = paginatedSales.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE');
+                                if (!hasWarehouseSales) return null;
+                                
+                                return (
+                                  <TableCell>
+                                    {(() => {
+                                      // Only show salesperson for warehouse sales
+                                      if (sale.scope_type !== 'WAREHOUSE' && sale.scopeType !== 'WAREHOUSE') {
+                                        return null; // Empty cell for branch sales
+                                      }
+                                      
+                                      // Check for customerInfo with salesperson (parsed from JSON)
+                                      if (sale.customerInfo && sale.customerInfo.salesperson) {
+                                        const sp = sale.customerInfo.salesperson;
+                                        return sp.name || (sp.id ? `Salesperson ${sp.id}` : null);
+                                      }
+                                      
+                                      // Check for customer_info (raw JSON string)
+                                      if (sale.customer_info) {
+                                        try {
+                                          const customerInfo = JSON.parse(sale.customer_info);
+                                          if (customerInfo.salesperson) {
+                                            const sp = customerInfo.salesperson;
+                                            return sp.name || (sp.id ? `Salesperson ${sp.id}` : null);
+                                          }
+                                        } catch (e) {
+                                          // Silent error
+                                        }
+                                      }
+                                      
+                                      return null; // Return null for warehouse sales without salesperson
+                                    })()}
+                                  </TableCell>
+                                );
+                              })()}
                               <TableCell align="right">{parseFloat(sale.subtotal || 0).toFixed(2)}</TableCell>
                               <TableCell align="right">{parseFloat(sale.tax || 0).toFixed(2)}</TableCell>
                               <TableCell align="right">{parseFloat(sale.discount || 0).toFixed(2)}</TableCell>
@@ -1786,8 +2211,8 @@ const returnsColumns = [
                     </TableContainer>
                   )}
 
-                  {/* Pagination Controls */}
-                  {totalPages > 1 && (
+                  {/* Pagination Controls - Show if there are items and more than one page, OR if there are items (always show for better UX) */}
+                  {totalItems > 0 && (
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                         <Typography variant="body2" color="text.secondary">
@@ -1819,6 +2244,7 @@ const returnsColumns = [
                           size="small"
                           showFirstButton
                           showLastButton
+                          disabled={totalPages <= 1}
                         />
                       </Box>
               </Box>

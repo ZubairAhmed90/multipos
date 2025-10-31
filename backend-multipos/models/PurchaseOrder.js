@@ -51,49 +51,158 @@ class PurchaseOrder {
 
   // Static method to find purchase order by ID
   static async findById(id) {
-    const rows = await executeQuery(`
-      SELECT 
-        po.*,
-        c.name as supplier_name,
-        c.contact_person as supplier_contact,
-        c.phone as supplier_phone,
-        c.email as supplier_email,
-        COALESCE(b.name, w.name) as scope_name,
-        u.username as created_by_name
-      FROM purchase_orders po
-      LEFT JOIN companies c ON po.supplier_id = c.id
-      LEFT JOIN branches b ON po.scope_type = 'BRANCH' AND po.scope_id = b.id
-      LEFT JOIN warehouses w ON po.scope_type = 'WAREHOUSE' AND po.scope_id = w.id
-      LEFT JOIN users u ON po.created_by = u.id
-      WHERE po.id = ?
-    `, [id]);
+    try {
+      // First, get the basic purchase order data
+      const [baseRows] = await pool.execute(
+        'SELECT * FROM purchase_orders WHERE id = ?',
+        [id]
+      );
+      
+      if (baseRows.length === 0) return null;
+      
+      const poData = baseRows[0];
+      
+      // Get supplier info if supplier_id exists
+      let supplierName = null;
+      let supplierContact = null;
+      let supplierPhone = null;
+      let supplierEmail = null;
+      
+      if (poData.supplier_id) {
+        try {
+          const [suppliers] = await pool.execute(
+            'SELECT name, contact_person, phone, email FROM companies WHERE id = ?',
+            [poData.supplier_id]
+          );
+          if (suppliers.length > 0) {
+            supplierName = suppliers[0].name;
+            supplierContact = suppliers[0].contact_person;
+            supplierPhone = suppliers[0].phone;
+            supplierEmail = suppliers[0].email;
+          }
+        } catch (err) {
+          console.error('[PurchaseOrder.findById] Error fetching supplier:', err);
+        }
+      }
+      
+      // Get scope name (branch or warehouse) - use scope_id as default
+      let scopeName = poData.scope_id;
+      if (poData.scope_type === 'BRANCH' && poData.scope_id) {
+        try {
+          // Try to get branch name by ID first
+          const [branchesById] = await pool.execute(
+            'SELECT name FROM branches WHERE id = ? LIMIT 1',
+            [poData.scope_id]
+          );
+          if (branchesById && branchesById.length > 0 && branchesById[0]?.name) {
+            scopeName = branchesById[0].name;
+          } else {
+            // Try by name if ID didn't work
+            const [branchesByName] = await pool.execute(
+              'SELECT name FROM branches WHERE name = ? LIMIT 1',
+              [String(poData.scope_id)]
+            );
+            if (branchesByName && branchesByName.length > 0 && branchesByName[0]?.name) {
+              scopeName = branchesByName[0].name;
+            }
+          }
+        } catch (branchErr) {
+          // Silently fail - use scope_id as fallback
+          console.warn('[PurchaseOrder.findById] Branch lookup failed, using scope_id:', branchErr.message);
+        }
+      } else if (poData.scope_type === 'WAREHOUSE' && poData.scope_id) {
+        try {
+          // Try to get warehouse name by ID first
+          const [warehousesById] = await pool.execute(
+            'SELECT name FROM warehouses WHERE id = ? LIMIT 1',
+            [poData.scope_id]
+          );
+          if (warehousesById && warehousesById.length > 0 && warehousesById[0]?.name) {
+            scopeName = warehousesById[0].name;
+          } else {
+            // Try by name if ID didn't work
+            const [warehousesByName] = await pool.execute(
+              'SELECT name FROM warehouses WHERE name = ? LIMIT 1',
+              [String(poData.scope_id)]
+            );
+            if (warehousesByName && warehousesByName.length > 0 && warehousesByName[0]?.name) {
+              scopeName = warehousesByName[0].name;
+            }
+          }
+        } catch (warehouseErr) {
+          // Silently fail - use scope_id as fallback
+          console.warn('[PurchaseOrder.findById] Warehouse lookup failed, using scope_id:', warehouseErr.message);
+        }
+      }
+      
+      // Get created by username
+      let createdByName = null;
+      if (poData.created_by) {
+        try {
+          const [users] = await pool.execute(
+            'SELECT username FROM users WHERE id = ?',
+            [poData.created_by]
+          );
+          if (users.length > 0) {
+            createdByName = users[0].username;
+          }
+        } catch (err) {
+          console.error('[PurchaseOrder.findById] Error fetching user:', err);
+        }
+      }
+      
+      // Combine all data
+      const rows = [{
+        ...poData,
+        supplier_name: supplierName,
+        supplier_contact: supplierContact,
+        supplier_phone: supplierPhone,
+        supplier_email: supplierEmail,
+        scope_name: scopeName,
+        created_by_name: createdByName
+      }];
 
-    if (rows.length === 0) return null;
-    
-    const order = new PurchaseOrder(rows[0]);
-    
-    // Load order items
-    order.items = await PurchaseOrderItem.findByOrderId(id);
-    
-    return order;
+      const order = new PurchaseOrder(rows[0]);
+      
+      // Load order items
+      order.items = await PurchaseOrderItem.findByOrderId(id);
+      
+      return order;
+    } catch (error) {
+      console.error('[PurchaseOrder.findById] Error:', error);
+      // Fallback: return basic purchase order without related data
+      const [baseRows] = await pool.execute(
+        'SELECT * FROM purchase_orders WHERE id = ?',
+        [id]
+      );
+      
+      if (baseRows.length === 0) return null;
+      
+      const order = new PurchaseOrder({
+        ...baseRows[0],
+        supplier_name: null,
+        scope_name: baseRows[0].scope_id,
+        created_by_name: null
+      });
+      order.items = await PurchaseOrderItem.findByOrderId(id);
+      return order;
+    }
   }
 
   // Static method to find purchase orders with filters
   static async find(conditions = {}, options = {}) {
+    // Use simple query without JOINs to avoid column resolution issues
+    // We'll enrich the data with separate queries afterward
     let query = `
       SELECT 
         po.*,
-        c.name as supplier_name,
-        c.contact_person as supplier_contact,
-        c.phone as supplier_phone,
-        c.email as supplier_email,
-        COALESCE(b.name, w.name) as scope_name,
-        u.username as created_by_name
+        NULL as supplier_name,
+        NULL as supplier_contact,
+        NULL as supplier_phone,
+        NULL as supplier_email,
+        po.scope_id as scope_name,
+        NULL as created_by_name
       FROM purchase_orders po
-      LEFT JOIN companies c ON po.supplier_id = c.id
-      LEFT JOIN branches b ON po.scope_type = 'BRANCH' AND po.scope_id = b.id
-      LEFT JOIN warehouses w ON po.scope_type = 'WAREHOUSE' AND po.scope_id = w.id
-      LEFT JOIN users u ON po.created_by = u.id
       WHERE 1=1
     `;
     const params = [];
@@ -154,7 +263,77 @@ class PurchaseOrder {
     }
 
     const rows = await executeQuery(query, params);
-    return rows.map(row => new PurchaseOrder(row));
+    const orders = rows.map(row => new PurchaseOrder(row));
+    
+    // Enrich orders with supplier info and scope names using separate queries
+    // This avoids JOIN complexity and column resolution issues
+    for (const order of orders) {
+      // Enrich supplier info
+      if (order.supplierId) {
+        try {
+          const [suppliers] = await pool.execute(
+            'SELECT name, contact_person, phone, email FROM companies WHERE id = ? LIMIT 1',
+            [order.supplierId]
+          );
+          if (suppliers && suppliers.length > 0) {
+            order.supplierName = suppliers[0].name || null;
+            order.supplierContact = suppliers[0].contact_person || null;
+            order.supplierPhone = suppliers[0].phone || null;
+            order.supplierEmail = suppliers[0].email || null;
+          }
+        } catch (supplierErr) {
+          // Silently fail
+          console.warn('[PurchaseOrder.find] Supplier lookup failed for order', order.id);
+        }
+      }
+      
+      // Enrich scope names (branch/warehouse)
+      if (order.scopeType === 'BRANCH' && order.scopeId) {
+        try {
+          const [branches] = await pool.execute(
+            'SELECT name FROM branches WHERE id = ? LIMIT 1',
+            [order.scopeId]
+          );
+          if (branches && branches.length > 0 && branches[0]?.name) {
+            order.scopeName = branches[0].name;
+          }
+        } catch (branchErr) {
+          // Silently fail
+          console.warn('[PurchaseOrder.find] Branch lookup failed for order', order.id);
+        }
+      } else if (order.scopeType === 'WAREHOUSE' && order.scopeId) {
+        try {
+          const [warehouses] = await pool.execute(
+            'SELECT name FROM warehouses WHERE id = ? LIMIT 1',
+            [order.scopeId]
+          );
+          if (warehouses && warehouses.length > 0 && warehouses[0]?.name) {
+            order.scopeName = warehouses[0].name;
+          }
+        } catch (warehouseErr) {
+          // Silently fail
+          console.warn('[PurchaseOrder.find] Warehouse lookup failed for order', order.id);
+        }
+      }
+      
+      // Enrich created by name
+      if (order.createdBy) {
+        try {
+          const [users] = await pool.execute(
+            'SELECT username FROM users WHERE id = ? LIMIT 1',
+            [order.createdBy]
+          );
+          if (users && users.length > 0 && users[0]?.username) {
+            order.createdByName = users[0].username;
+          }
+        } catch (userErr) {
+          // Silently fail
+          console.warn('[PurchaseOrder.find] User lookup failed for order', order.id);
+        }
+      }
+    }
+    
+    return orders;
   }
 
   // Static method to count purchase orders
@@ -291,6 +470,7 @@ class PurchaseOrderItem {
     this.inventoryItemId = data.inventory_item_id;
     this.itemName = data.item_name;
     this.itemSku = data.item_sku;
+    this.itemCategory = data.item_category || 'General';
     this.itemDescription = data.item_description;
     this.quantityOrdered = data.quantity_ordered;
     this.quantityReceived = data.quantity_received;
@@ -304,17 +484,18 @@ class PurchaseOrderItem {
   // Static method to create purchase order item
   static async create(itemData) {
     const {
-      purchaseOrderId, inventoryItemId, itemName, itemSku, itemDescription,
+      purchaseOrderId, inventoryItemId, itemName, itemSku, itemCategory, itemDescription,
       quantityOrdered, quantityReceived, unitPrice, totalPrice, notes
     } = itemData;
 
+    // Check if item_category column exists, if not, use NULL
     const result = await executeQuery(
       `INSERT INTO purchase_order_items (
-        purchase_order_id, inventory_item_id, item_name, item_sku, item_description,
+        purchase_order_id, inventory_item_id, item_name, item_sku, item_category, item_description,
         quantity_ordered, quantity_received, unit_price, total_price, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        purchaseOrderId, inventoryItemId || null, itemName, itemSku || null,
+        purchaseOrderId, inventoryItemId || null, itemName, itemSku || null, itemCategory || 'General',
         itemDescription || null, quantityOrdered, quantityReceived || 0,
         unitPrice, totalPrice, notes || null
       ]
@@ -351,12 +532,12 @@ class PurchaseOrderItem {
       await executeQuery(
         `UPDATE purchase_order_items SET 
          purchase_order_id = ?, inventory_item_id = ?, item_name = ?, item_sku = ?, 
-         item_description = ?, quantity_ordered = ?, quantity_received = ?, 
+         item_category = ?, item_description = ?, quantity_ordered = ?, quantity_received = ?, 
          unit_price = ?, total_price = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         [
           this.purchaseOrderId, this.inventoryItemId, this.itemName, this.itemSku,
-          this.itemDescription, this.quantityOrdered, this.quantityReceived,
+          this.itemCategory || 'General', this.itemDescription, this.quantityOrdered, this.quantityReceived,
           this.unitPrice, this.totalPrice, this.notes, this.id
         ]
       );
@@ -364,12 +545,12 @@ class PurchaseOrderItem {
       // Create new item
       const result = await executeQuery(
         `INSERT INTO purchase_order_items (
-          purchase_order_id, inventory_item_id, item_name, item_sku, item_description,
+          purchase_order_id, inventory_item_id, item_name, item_sku, item_category, item_description,
           quantity_ordered, quantity_received, unit_price, total_price, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           this.purchaseOrderId, this.inventoryItemId, this.itemName, this.itemSku,
-          this.itemDescription, this.quantityOrdered, this.quantityReceived,
+          this.itemCategory || 'General', this.itemDescription, this.quantityOrdered, this.quantityReceived,
           this.unitPrice, this.totalPrice, this.notes
         ]
       );
