@@ -114,7 +114,7 @@ class Transfer {
         }
 
         // Return the created transfer
-        return await this.findById(transferId);
+        return await this.findById(transferId, dbConnection);
       } catch (error) {
         if (shouldManageTransaction) {
           await dbConnection.execute('ROLLBACK');
@@ -128,9 +128,9 @@ class Transfer {
   }
 
   // Find transfer by ID with full details
-  static async findById(id) {
+  static async findById(id, dbConnection = pool) {
     try {
-      const [transfers] = await pool.execute(`
+      const [transfers] = await dbConnection.execute(`
         SELECT 
           t.*,
           u1.username as created_by_name,
@@ -156,7 +156,7 @@ class Transfer {
       const transfer = transfers[0];
 
       // Get transfer items
-      const [items] = await pool.execute(`
+      const [items] = await dbConnection.execute(`
         SELECT 
           ti.*,
           ii.name as item_name,

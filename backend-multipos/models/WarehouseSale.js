@@ -25,283 +25,360 @@ class WarehouseSale {
   static async create(saleData, customerName = 'Company', paymentMethod = 'CASH', paymentTerms = null) {
     const connection = await pool.getConnection();
 
+    const parseNumber = (value, fallback = 0) => {
+      if (value === undefined || value === null || value === '') {
+        return fallback;
+      }
+      const parsed = parseFloat(value);
+      return Number.isNaN(parsed) ? fallback : parsed;
+    };
+
+    const normalizeId = (value) => {
+      if (value === undefined || value === null || value === '') {
+        return null;
+      }
+      const parsed = Number(value);
+      return Number.isNaN(parsed) ? value : parsed;
+    };
+
     try {
       await connection.beginTransaction();
 
       const {
         retailerId,
         warehouseKeeperId,
-        salespersonId, // New field for salesperson who brought the sale
-        salespersonName, // New field for salesperson name
-        salespersonPhone, // New field for salesperson phone
-        items,
-        totalAmount,
-        taxAmount,
-        discountAmount,
-        finalAmount,
-        paymentMethod,
-        paymentAmount = 0, // New field for partial payment amount
-        creditAmount = 0, // New field for credit amount
-        outstandingPayments = [], // New field for outstanding payments
+        salespersonId,
+        salespersonName,
+        salespersonPhone,
+        items = [],
+        subtotal = 0,
+        taxAmount = 0,
+        discountAmount = 0,
+        billAmount: providedBillAmount,
+        totalWithOutstanding: providedTotalWithOutstanding,
+        paymentMethod: incomingPaymentMethod,
+        paymentType,
+        paymentStatus,
+        paymentAmount = 0,
+        creditAmount = 0,
+        outstandingPayments = [],
         notes,
-        customerInfo: incomingCustomerInfo // Customer info from controller
+        customerInfo: incomingCustomerInfo,
+        scopeWarehouseId = null,
+        outstandingPortion = null
       } = saleData;
 
-      // Get warehouse information from warehouse keeper
-      // First, get the warehouse_id from the user, then get warehouse details
-      let warehouseId = null;
+      if (!warehouseKeeperId) {
+        throw new Error('Warehouse keeper ID is required to create a warehouse sale');
+      }
+
+      const subtotalAmount = parseNumber(subtotal);
+      const taxAmountValue = parseNumber(taxAmount);
+      const discountAmountValue = parseNumber(discountAmount);
+      const billAmount = parseNumber(providedBillAmount, subtotalAmount + taxAmountValue - discountAmountValue);
+      const totalWithOutstanding = parseNumber(providedTotalWithOutstanding, billAmount);
+
+      const paymentMethodValue = (incomingPaymentMethod || paymentMethod || 'CASH').toUpperCase();
+      let paymentTypeValue = paymentType || null;
+      const paymentAmountValue = parseNumber(paymentAmount, 0);
+      const creditAmountValue = parseNumber(creditAmount, 0);
+
+      if (!paymentTypeValue) {
+        if (paymentMethodValue === 'FULLY_CREDIT') {
+          paymentTypeValue = 'FULLY_CREDIT';
+        } else if (creditAmountValue > 0 && paymentAmountValue > 0) {
+          paymentTypeValue = 'PARTIAL_PAYMENT';
+        } else if (creditAmountValue > 0) {
+          paymentTypeValue = 'PARTIAL_PAYMENT';
+        } else {
+          paymentTypeValue = 'FULL_PAYMENT';
+        }
+      }
+
+      let paymentStatusValue = paymentStatus || null;
+      if (!paymentStatusValue) {
+        if (paymentTypeValue === 'BALANCE_PAYMENT') {
+          paymentStatusValue = 'COMPLETED';
+        } else if (paymentMethodValue === 'FULLY_CREDIT') {
+          paymentStatusValue = 'PENDING';
+        } else if (creditAmountValue > 0) {
+          paymentStatusValue = 'PENDING';
+        } else {
+          paymentStatusValue = 'COMPLETED';
+        }
+      }
+
+      const normalizedItems = items.map((item) => {
+        const inventoryItemId = normalizeId(item.itemId || item.inventoryItemId || item.id || null);
+        const quantity = parseNumber(item.quantity, 0);
+        const unitPrice = parseNumber(
+          item.unitPrice !== undefined ? item.unitPrice : (item.customPrice !== undefined ? item.customPrice : item.price),
+          0
+        );
+        const discountValue = parseNumber(item.discount, 0);
+        const lineTotal = parseNumber(
+          item.totalPrice !== undefined ? item.totalPrice : item.total,
+          (unitPrice * quantity) - discountValue
+        );
+
+        return {
+          itemId: inventoryItemId,
+          inventoryItemId,
+          sku: item.sku || '',
+          name: item.name || '',
+          quantity,
+          unitPrice,
+          discount: discountValue,
+          totalPrice: lineTotal
+        };
+      });
+
+      let warehouseId = normalizeId(scopeWarehouseId);
       let warehouseName = null;
       let warehouseCode = null;
-      
+
       try {
-        const [users] = await connection.execute(
-          'SELECT warehouse_id FROM users WHERE id = ?',
-          [warehouseKeeperId]
-        );
-        
-        if (users.length > 0 && users[0].warehouse_id) {
-          warehouseId = users[0].warehouse_id;
-          
-          // Now get warehouse details
+        if (warehouseId) {
           const [warehouses] = await connection.execute(
             'SELECT id, name, code FROM warehouses WHERE id = ?',
             [warehouseId]
           );
-          
           if (warehouses.length > 0) {
             warehouseName = warehouses[0].name;
             warehouseCode = warehouses[0].code;
           }
         }
-      } catch (error) {
-        console.error('[WarehouseSale] Error fetching warehouse info:', error);
+
+        if (!warehouseName) {
+          const [users] = await connection.execute(
+            'SELECT warehouse_id FROM users WHERE id = ?',
+            [warehouseKeeperId]
+          );
+
+          if (users.length > 0 && users[0].warehouse_id) {
+            warehouseId = users[0].warehouse_id;
+
+            const [warehouses] = await connection.execute(
+              'SELECT id, name, code FROM warehouses WHERE id = ?',
+              [warehouseId]
+            );
+
+            if (warehouses.length > 0) {
+              warehouseName = warehouses[0].name;
+              warehouseCode = warehouses[0].code;
+            }
+          }
+        }
+      } catch (warehouseError) {
+        console.error('[WarehouseSale] Error fetching warehouse info:', warehouseError);
       }
 
-      // Generate invoice number using warehouse code
       let invoiceNumber;
       try {
         if (warehouseCode) {
-          
-          // Get the highest existing invoice number for this warehouse
           const [maxRows] = await connection.execute(
             'SELECT invoice_no FROM sales WHERE invoice_no LIKE ? ORDER BY invoice_no DESC LIMIT 1',
             [`${warehouseCode}-%`]
           );
-          
+
           let nextNumber = 1;
           if (maxRows.length > 0) {
             const lastInvoice = maxRows[0].invoice_no;
-            // Extract the number part after the code and hyphen
             const match = lastInvoice.match(new RegExp(`^${warehouseCode}-(\\d+)$`));
             if (match) {
-              nextNumber = parseInt(match[1]) + 1;
+              nextNumber = parseInt(match[1], 10) + 1;
             }
           }
-          
+
           invoiceNumber = `${warehouseCode}-${nextNumber.toString().padStart(6, '0')}`;
-          console.log('[WarehouseSale] Generated sequential warehouse invoice number:', invoiceNumber);
         } else {
           throw new Error('Warehouse code not found');
         }
       } catch (invoiceError) {
         console.error('[WarehouseSale] Error generating invoice number:', invoiceError);
-        // Use regular warehouse invoice numbering as fallback
         try {
           invoiceNumber = await InvoiceNumberService.generateInvoiceNumber('WAREHOUSE', warehouseId || warehouseKeeperId);
-          console.log('[WarehouseSale] Using fallback warehouse invoice number:', invoiceNumber);
         } catch (fallbackError) {
           console.error('[WarehouseSale] Error with fallback invoice number:', fallbackError);
-          // Last resort: sequential based on warehouse
           const timestamp = Date.now().toString().slice(-6);
           invoiceNumber = `WH${warehouseId || warehouseKeeperId}-${timestamp}`;
-          console.log('[WarehouseSale] Using emergency invoice number:', invoiceNumber);
         }
       }
-      
-      // Use warehouse name as scope_id (consistent with branch sales which use branch name)
-      // If warehouse name not found, fall back to warehouse keeper ID for backward compatibility
-      const scopeIdForSale = warehouseName || String(warehouseKeeperId);
-      
-      console.log('[WarehouseSale] Using scope_id:', scopeIdForSale, 'for warehouse:', warehouseName, 'ID:', warehouseId);
 
-      // Prepare customer info with salesperson data
-      // Merge incoming customerInfo with our local data, preserving phone and other fields
-      const customerInfo = {
+      const scopeIdForSale = warehouseName || (warehouseId !== null ? String(warehouseId) : String(warehouseKeeperId));
+
+      const customerInfoPayload = {
         id: incomingCustomerInfo?.id || retailerId,
         name: incomingCustomerInfo?.name || customerName,
-        phone: incomingCustomerInfo?.phone || '', // Preserve phone from frontend
-        paymentTerms: paymentMethod === 'CREDIT' ? paymentTerms : null,
-        paymentMethod: paymentMethod,
+        phone: incomingCustomerInfo?.phone || '',
+        paymentTerms: paymentMethodValue === 'CREDIT' ? paymentTerms : incomingCustomerInfo?.paymentTerms || null,
+        paymentMethod: paymentMethodValue,
         salesperson: {
           id: salespersonId || null,
           name: salespersonName || null,
           phone: salespersonPhone || null
         },
-        // Include any other fields from incoming customerInfo
         ...(incomingCustomerInfo || {})
       };
-      // Make sure name and id are set correctly
-      customerInfo.name = customerInfo.name || customerName;
-      customerInfo.id = customerInfo.id || retailerId;
+      customerInfoPayload.name = customerInfoPayload.name || customerName;
+      customerInfoPayload.id = customerInfoPayload.id || retailerId;
 
-      // Get retailer's previous running balance
       let previousRunningBalance = 0;
       try {
-        // Only fetch running balance if retailerId is provided
         if (retailerId) {
-          // Use warehouse name for scope_id matching (consistent with how we store it)
-          const [latestSale] = await connection.execute(`
-            SELECT running_balance 
-            FROM sales 
-            WHERE JSON_EXTRACT(customer_info, "$.id") = ?
-              AND scope_type = 'WAREHOUSE'
-              AND (scope_id = ? OR scope_id = ?)
-            ORDER BY created_at DESC 
-            LIMIT 1
-          `, [retailerId, scopeIdForSale, String(warehouseKeeperId)]);
-          
+          const [latestSale] = await connection.execute(
+            `SELECT running_balance
+             FROM sales
+             WHERE JSON_EXTRACT(customer_info, "$.id") = ?
+               AND scope_type = 'WAREHOUSE'
+               AND (scope_id = ? OR scope_id = ?)
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [retailerId, scopeIdForSale, String(warehouseKeeperId)]
+          );
+
           if (latestSale.length > 0) {
-            previousRunningBalance = parseFloat(latestSale[0].running_balance) || 0;
+            previousRunningBalance = parseNumber(latestSale[0].running_balance, 0);
           }
         }
-      } catch (error) {
-        console.error('[WarehouseSale] Error fetching previous running balance:', error);
+      } catch (balanceError) {
+        console.error('[WarehouseSale] Error fetching previous running balance:', balanceError);
         previousRunningBalance = 0;
       }
 
-      // Calculate running balance: running_balance = previous_balance + (bill_amount - payment_amount)
-      const newCreditAmount = finalAmount - paymentAmount;
-      const runningBalance = previousRunningBalance + newCreditAmount;
+      const newCreditAmount = billAmount - paymentAmountValue;
+      const oldBalance = previousRunningBalance; // old_balance = previous row's running_balance
+      const runningBalance = oldBalance + billAmount - paymentAmountValue; // running_balance = old_balance + amount - payment
+      const creditStatus = creditAmountValue !== 0 ? 'PENDING' : 'NONE';
 
-      console.log('[WarehouseSale] Running balance calculation:', {
-        previousRunningBalance,
-        finalAmount,
-        paymentAmount,
-        newCreditAmount,
-        runningBalance
-      });
+      const finalCustomerName = customerInfoPayload?.name || customerName || 'Walk-in Customer';
+      const customerPhone = customerInfoPayload?.phone || '';
 
-      // Determine payment status and type based on payment method
-      // Note: paymentStatus should come from controller if provided
-      let paymentStatusForInsert = 'COMPLETED';
-      let paymentType = 'FULL_PAYMENT';
-      
-      if (paymentMethod === 'FULLY_CREDIT') {
-        paymentStatusForInsert = 'PENDING';
-        paymentType = 'FULLY_CREDIT';
-      } else if (creditAmount > 0) {
-        paymentStatusForInsert = 'PENDING';
-        paymentType = 'PARTIAL_PAYMENT';
-      }
-
-      // Extract customer name and phone from customerInfo for database storage
-      // Use customerInfo name if provided, otherwise fall back to the customerName parameter, then default
-      const finalCustomerName = customerInfo?.name || customerName || 'Walk-in Customer';
-      const customerPhone = customerInfo?.phone || '';
-      
-      // Create warehouse sale record using existing sales table
-      // Use warehouse name as scope_id (consistent with branch sales which use branch name)
       const [saleResult] = await connection.execute(
-        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_type, payment_status, payment_amount, credit_amount, running_balance, status, customer_info, customer_name, customer_phone, notes, created_at, updated_at)
-         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, NOW(), NOW())`,
-        [warehouseKeeperId, scopeIdForSale, invoiceNumber, totalAmount, taxAmount, discountAmount, finalAmount, paymentMethod, paymentType, paymentStatusForInsert, paymentAmount, creditAmount, runningBalance, JSON.stringify(customerInfo), finalCustomerName, customerPhone, notes]
+        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_type, payment_status, payment_amount, credit_amount, old_balance, running_balance, status, customer_info, customer_name, customer_phone, notes, created_at, updated_at)
+         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, NOW(), NOW())`,
+        [
+          warehouseKeeperId,
+          scopeIdForSale,
+          invoiceNumber,
+          subtotalAmount,
+          taxAmountValue,
+          discountAmountValue,
+          billAmount,
+          paymentMethodValue,
+          paymentTypeValue,
+          paymentStatusValue,
+          paymentAmountValue,
+          creditAmountValue,
+          oldBalance, // ✅ Save old_balance
+          runningBalance, // ✅ Save running_balance
+          JSON.stringify({
+            ...customerInfoPayload,
+            creditStatus,
+            runningBalance,
+            outstandingPortion: outstandingPortion ?? (totalWithOutstanding - billAmount)
+          }),
+          finalCustomerName,
+          customerPhone,
+          notes
+        ]
       );
 
       const saleId = saleResult.insertId;
 
-      // Create sale items using existing sales_items table and track stock
-      for (const item of items) {
+      for (const item of normalizedItems) {
         await connection.execute(
           `INSERT INTO sale_items (sale_id, inventory_item_id, sku, name, quantity, unit_price, discount, total)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [saleId, item.itemId, item.sku || '', item.name || '', item.quantity, item.unitPrice, item.discount || 0, item.totalPrice]
-        );
-
-        // Update inventory quantity
-        await connection.execute(
-          'UPDATE inventory_items SET current_stock = current_stock - ? WHERE id = ?',
-          [item.quantity, item.itemId]
-        );
-
-        // Create stock transaction record for inventory tracking (sold items count)
-        try {
-          // Get warehouse keeper info for the transaction record
-          const [warehouseKeeperInfo] = await connection.execute(
-            'SELECT username, name FROM users WHERE id = ?',
-            [warehouseKeeperId]
-          );
-          
-          const userName = warehouseKeeperInfo.length > 0 
-            ? (warehouseKeeperInfo[0].name || warehouseKeeperInfo[0].username)
-            : 'Warehouse Keeper';
-
-          await createSaleTransaction(
+          [
+            saleId,
             item.itemId,
+            item.sku || '',
+            item.name || '',
             item.quantity,
             item.unitPrice,
-            warehouseKeeperId,
-            userName,
-            'WAREHOUSE_KEEPER',
-            saleId
+            item.discount || 0,
+            item.totalPrice
+          ]
+        );
+
+        if (item.itemId) {
+          await connection.execute(
+            'UPDATE inventory_items SET current_stock = current_stock - ? WHERE id = ?',
+            [item.quantity, item.itemId]
           );
-          
-          console.log(`[WarehouseSale] Created stock transaction for item ${item.itemId}, quantity: ${item.quantity}`);
-        } catch (stockError) {
-          console.error(`[WarehouseSale] Error creating stock transaction for item ${item.itemId}:`, stockError);
-          // Don't fail the sale if stock tracking fails
+
+          try {
+            const [warehouseKeeperInfo] = await connection.execute(
+              'SELECT username FROM users WHERE id = ?',
+              [warehouseKeeperId]
+            );
+
+            const userName = warehouseKeeperInfo.length > 0
+              ? warehouseKeeperInfo[0].username
+              : 'Warehouse Keeper';
+
+            // Pass the connection to ensure transaction consistency
+            await createSaleTransaction(
+              item.itemId,
+              item.quantity,
+              item.unitPrice,
+              warehouseKeeperId,
+              userName,
+              'WAREHOUSE_KEEPER',
+              saleId,
+              connection
+            );
+          } catch (stockError) {
+            console.error(`[WarehouseSale] Error creating stock transaction for item ${item.itemId}:`, stockError);
+            console.error(`[WarehouseSale] Stock error stack:`, stockError.stack);
+            throw stockError; // Re-throw to ensure transaction rollback
+          }
         }
       }
 
       await connection.commit();
-      
-      // Clear outstanding payments if any are selected
+
       if (outstandingPayments && outstandingPayments.length > 0) {
         try {
-          console.log('[WarehouseSale] Clearing outstanding payments:', outstandingPayments);
-          // Call the clear outstanding payments API
           const clearResponse = await fetch(`${process.env.API_BASE_URL || 'http://localhost:5000'}/api/sales/clear-outstanding`, {
             method: 'POST',
             headers: {
-              'Content-Type': 'application/json',
+              'Content-Type': 'application/json'
             },
             body: JSON.stringify({
               outstandingPaymentIds: outstandingPayments,
-              paymentAmount: paymentAmount,
+              paymentAmount: paymentAmountValue,
               notes: `Cleared via warehouse sale ${invoiceNumber}`
             })
           });
-          
-          if (clearResponse.ok) {
-            console.log('[WarehouseSale] Outstanding payments cleared successfully');
-          } else {
+
+          if (!clearResponse.ok) {
             console.error('[WarehouseSale] Failed to clear outstanding payments');
           }
         } catch (clearError) {
           console.error('[WarehouseSale] Error clearing outstanding payments:', clearError);
-          // Don't fail the sale if clearing outstanding payments fails
         }
       }
-      
-      // Record sale in ledger with proper debit/credit entries
+
       try {
         await LedgerService.recordSaleTransaction({
-          saleId: saleId,
+          saleId,
           invoiceNo: invoiceNumber,
           scopeType: 'WAREHOUSE',
-          scopeId: warehouseKeeperId,
-          totalAmount: finalAmount,
-          paymentAmount: paymentAmount, // Use actual payment amount
-          creditAmount: creditAmount, // Use actual credit amount
-          paymentMethod: paymentMethod,
-          customerInfo: customerInfo,
+          scopeId: scopeIdForSale,
+          totalAmount: billAmount,
+          paymentAmount: paymentAmountValue,
+          creditAmount: creditAmountValue,
+          paymentMethod: paymentMethodValue,
+          customerInfo: customerInfoPayload,
           userId: warehouseKeeperId,
-          items: items
+          items: normalizedItems
         });
-        console.log('[WarehouseSale] Sale recorded in ledger successfully');
       } catch (ledgerError) {
         console.error('[WarehouseSale] Error recording sale in ledger:', ledgerError);
-        // Don't fail the sale if ledger recording fails
       }
+
       return await WarehouseSale.findById(saleId);
     } catch (error) {
       await connection.rollback();

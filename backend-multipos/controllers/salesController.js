@@ -12,21 +12,37 @@ const LedgerService = require('../services/ledgerService');
 
 
 // Helper function to get customer's current running balance
+// Returns the latest running_balance from the most recent transaction (sale or return)
 const getCustomerRunningBalance = async (customerName, customerPhone, scopeType, scopeName) => {
   try {
+    // Use case-insensitive matching like the ledger query
     const [latestSale] = await pool.execute(`
-      SELECT running_balance 
+      SELECT running_balance, invoice_no, payment_method, payment_type, created_at
       FROM sales 
-      WHERE (customer_name = ? OR customer_phone = ?)
+      WHERE (LOWER(TRIM(customer_name)) = LOWER(TRIM(?)) OR customer_phone = ? OR LOWER(TRIM(JSON_EXTRACT(customer_info, "$.name"))) = LOWER(TRIM(?)) OR JSON_EXTRACT(customer_info, "$.phone") = ?)
         AND scope_type = ? 
         AND scope_id = ?
-      ORDER BY created_at DESC 
+      ORDER BY created_at DESC, id DESC 
       LIMIT 1
-    `, [customerName, customerPhone, scopeType, scopeName]);
+    `, [customerName || '', customerPhone || '', customerName || '', customerPhone || '', scopeType, scopeName]);
     
     if (latestSale.length > 0) {
-      return parseFloat(latestSale[0].running_balance) || 0;
+      const balance = parseFloat(latestSale[0].running_balance) || 0;
+      console.log('💰 getCustomerRunningBalance - Latest balance found:', {
+        customerName,
+        customerPhone,
+        scopeType,
+        scopeName,
+        runningBalance: balance,
+        invoiceNo: latestSale[0].invoice_no,
+        paymentMethod: latestSale[0].payment_method,
+        paymentType: latestSale[0].payment_type,
+        createdAt: latestSale[0].created_at
+      });
+      return balance;
     }
+    
+    console.log('💰 getCustomerRunningBalance - No previous transactions found, returning 0');
     return 0;
   } catch (error) {
     console.error('Error fetching customer running balance:', error);
@@ -47,7 +63,7 @@ const createSale = async (req, res, next) => {
       });
     }
 
-    const { items, scopeType, scopeId, paymentMethod, paymentType, customerInfo, notes, subtotal, tax, discount, total, paymentStatus, status, paymentAmount, creditAmount, creditStatus } = req.body;
+    const { items, scopeType, scopeId, paymentMethod, paymentType, customerInfo, notes, subtotal, tax, discount, total, paymentStatus, status, paymentAmount, creditAmount, creditStatus, outstandingPayments, selectedOutstandingPayments } = req.body;
 
     // Debug: Log the received payment method
     console.log('[SalesController] Received paymentMethod:', paymentMethod, 'Type:', typeof paymentMethod);
@@ -206,9 +222,101 @@ const createSale = async (req, res, next) => {
       scopeName = scopeId || '';
     }
     
+    // ✅ FIXED: Check if outstanding payments are included in the sale and clear them FIRST
+    // Calculate outstanding amount: finalTotal includes outstanding, billAmount is just the sale
+    const outstandingAmount = finalTotal - billAmount;
+    let settlementCreated = false;
+    let settlementAmount = 0;
+    
+    if (outstandingAmount > 0.01 && customerName && customerPhone && paymentMethod !== 'FULLY_CREDIT') {
+        console.log('[SalesController] Outstanding payment detected in sale, creating settlement FIRST:', {
+            outstandingAmount,
+            customerName,
+            customerPhone,
+            billAmount,
+            finalTotal
+        });
+        
+        try {
+            // Get customer's latest running balance BEFORE settlement
+            const balanceBeforeSettlement = await getCustomerRunningBalance(
+                customerName,
+                customerPhone,
+                scopeType,
+                scopeName
+            );
+            
+            // The outstanding amount should be cleared
+            settlementAmount = Math.min(outstandingAmount, balanceBeforeSettlement);
+            
+            if (settlementAmount > 0.01) {
+                const settlementOldBalance = balanceBeforeSettlement;
+                const settlementNewRunningBalance = settlementOldBalance - settlementAmount;
+                const settlementPaymentStatus = Math.abs(settlementNewRunningBalance) <= 0.01 ? 'COMPLETED' : 'PARTIAL';
+                
+                // Generate settlement invoice number
+                let settlementInvoiceNo;
+                try {
+                    const numericScopeId = typeof scopeName === 'string' ? (scopeName.match(/^\d+$/) ? parseInt(scopeName) : scopeName) : scopeName;
+                    settlementInvoiceNo = await InvoiceNumberService.generateInvoiceNumber(scopeType, numericScopeId);
+                } catch (invoiceError) {
+                    console.error('Error generating settlement invoice number:', invoiceError);
+                    settlementInvoiceNo = `SETTLE-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+                }
+                
+                // Create settlement record BEFORE the sale
+                const [settlementResult] = await pool.execute(`
+                    INSERT INTO sales (
+                        invoice_no, scope_type, scope_id, user_id, subtotal, tax, discount, total,
+                        payment_method, payment_type, payment_status, customer_info, customer_name, 
+                        customer_phone, payment_amount, credit_amount, old_balance, running_balance, credit_status,
+                        notes, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                `, [
+                    settlementInvoiceNo,
+                    scopeType,
+                    scopeName,
+                    req.user.id,
+                    0, // subtotal
+                    0, // tax
+                    0, // discount
+                    settlementAmount, // total = payment amount
+                    paymentMethod, // Use same payment method as sale
+                    'OUTSTANDING_SETTLEMENT',
+                    settlementPaymentStatus,
+                    JSON.stringify({ name: customerName, phone: customerPhone }),
+                    customerName,
+                    customerPhone,
+                    settlementAmount, // payment_amount
+                    0, // credit_amount
+                    settlementOldBalance, // old_balance
+                    settlementNewRunningBalance, // running_balance
+                    'NONE', // credit_status
+                    `Outstanding payment settlement (will be followed by sale): Customer paid ${settlementAmount.toFixed(2)}`,
+                    'COMPLETED',
+                ]);
+                
+                settlementCreated = true;
+                console.log('[SalesController] ✅ Settlement created BEFORE sale:', {
+                    settlementId: settlementResult.insertId,
+                    invoiceNo: settlementInvoiceNo,
+                    amount: settlementAmount,
+                    oldBalance: settlementOldBalance,
+                    newRunningBalance: settlementNewRunningBalance
+                });
+            }
+        } catch (settlementError) {
+            console.error('[SalesController] ❌ Error creating automatic settlement:', settlementError);
+            // Don't fail the sale if settlement creation fails, but log it
+        }
+    }
+    
     // Get customer's current running balance from previous transactions
+    // This will be used as old_balance for the new sale
+    // If settlement was created, this will include the settlement's running_balance
     const previousRunningBalance = await getCustomerRunningBalance(customerName, customerPhone, scopeType, scopeName);
-    console.log('💰 Customer previous running balance:', previousRunningBalance);
+    const oldBalance = previousRunningBalance; // old_balance = previous row's running_balance
+    console.log('💰 Customer previous running balance (old_balance):', oldBalance, settlementCreated ? '(after settlement)' : '');
 
     // ✅ CORRECTED: Payment calculation for different scenarios
     let finalPaymentAmount, finalCreditAmount;
@@ -321,22 +429,50 @@ const createSale = async (req, res, next) => {
     finalPaymentAmount = adjustedPaymentAmount;
     finalCreditAmount = adjustedCreditAmount;
 
+    // ✅ FIX: When customer has negative balance (credit) and makes a purchase,
+    // we need to use the credit to reduce the bill amount
+    // Example: Customer has -200 credit, buys 700, pays 500
+    // Credit used: 200, Net bill: 500, Payment: 500, New credit: 0, New balance: 0
+    
+    let creditUsedFromPreviousBalance = 0;
+    let adjustedBillAmount = billAmount;
+    
+    // If customer has credit (negative balance), use it to reduce the bill
+    if (previousRunningBalance < 0) {
+        const availableCredit = Math.abs(previousRunningBalance);
+        creditUsedFromPreviousBalance = Math.min(availableCredit, billAmount);
+        adjustedBillAmount = billAmount - creditUsedFromPreviousBalance;
+        
+        console.log('💰 Using customer credit from previous balance:', {
+            previousBalance: previousRunningBalance,
+            availableCredit,
+            billAmount,
+            creditUsed: creditUsedFromPreviousBalance,
+            adjustedBillAmount,
+            paymentAmount: finalPaymentAmount
+        });
+    }
+    
     // Calculate running balance for this transaction
     // running_balance = previous_balance + (bill_amount - payment_amount)
     // This means: balance increases by unpaid amount (credit given)
     // OR: balance decreases by payment amount (debt paid)
-    const newCreditAmount = billAmount - finalPaymentAmount;
-    const runningBalance = previousRunningBalance + newCreditAmount;
+    // BUT: If we used credit, we need to account for that
+    const newCreditAmount = adjustedBillAmount - finalPaymentAmount;
+    const runningBalance = previousRunningBalance + creditUsedFromPreviousBalance + newCreditAmount;
 
     console.log('💰 FINAL Payment calculation:', {
         scenario: getPaymentScenario(finalPaymentAmount, finalCreditAmount, billAmount),
+        oldBalance, // Previous row's running_balance
         previousRunningBalance,
         billAmount,
+        adjustedBillAmount,
+        creditUsedFromPreviousBalance,
         finalPaymentAmount,
         finalCreditAmount,
         newCreditAmount,
-        runningBalance,
-        calculation: `${previousRunningBalance} + ${newCreditAmount} = ${runningBalance}`
+        runningBalance, // New running_balance = old_balance + amount - payment
+        calculation: `${oldBalance} (old_balance) + ${billAmount} (amount) - ${finalPaymentAmount} (payment) = ${runningBalance}`
     });
 
     // Helper function to identify payment scenario
@@ -616,7 +752,8 @@ const createSale = async (req, res, next) => {
         customerId: customerId,
         paymentAmount: finalPaymentAmount || 0,
         creditAmount: finalCreditAmount || 0,
-        runningBalance: runningBalance || 0, // ADD THIS LINE - crucial for tracking balance
+        oldBalance: oldBalance || 0, // ✅ Save old_balance (previous row's running_balance)
+        runningBalance: runningBalance || 0, // ✅ Save running_balance (old_balance + amount - payment)
         creditStatus: finalCreditStatus || 'NONE',
         creditDueDate: finalCreditAmount > 0 ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : null,
         notes: notes || null,
@@ -761,6 +898,105 @@ const createSale = async (req, res, next) => {
         // Don't fail the sale if ledger recording fails, but log it properly
     }
 
+    // ✅ FIX: Clear/reduce old credit balance in previous sales when credit is used
+    if (creditUsedFromPreviousBalance > 0 && (customerName || customerPhone)) {
+        try {
+            console.log('💰 Clearing old credit balance from previous sales:', {
+                creditUsed: creditUsedFromPreviousBalance,
+                customerName,
+                customerPhone,
+                scopeType,
+                scopeName
+            });
+            
+            // Get connection for transaction
+            const connection = await pool.getConnection();
+            try {
+                await connection.beginTransaction();
+                
+                // Find sales with negative running balance (credit) for this customer
+                let query = `
+                    SELECT id, invoice_no, credit_amount, running_balance, payment_status, scope_type, scope_id
+                    FROM sales 
+                    WHERE (customer_name = ? OR customer_phone = ?)
+                      AND running_balance < 0
+                `;
+                
+                const queryParams = [customerName, customerPhone];
+                
+                // Add scope filtering for non-admin users
+                if (req.user.role !== 'ADMIN' && scopeName && scopeType) {
+                    query += ' AND scope_type = ? AND (scope_id = ? OR scope_id = CAST(? AS CHAR))';
+                    queryParams.push(scopeType, scopeName, scopeName);
+                }
+                
+                query += ' ORDER BY created_at ASC';
+                
+                const [creditSales] = await connection.execute(query, queryParams);
+                
+                let remainingCreditToClear = creditUsedFromPreviousBalance;
+                const processedSales = [];
+                
+                // Process each credit sale to clear the credit
+                for (const creditSale of creditSales) {
+                    if (remainingCreditToClear <= 0) break;
+                    
+                    const currentCredit = Math.abs(parseFloat(creditSale.running_balance));
+                    const creditToClear = Math.min(remainingCreditToClear, currentCredit);
+                    
+                    // Update the sale's running balance and credit amount
+                    const newRunningBalance = parseFloat(creditSale.running_balance) + creditToClear;
+                    const newCreditAmount = parseFloat(creditSale.credit_amount) + creditToClear;
+                    const newPaymentStatus = newRunningBalance >= 0 ? 'COMPLETED' : creditSale.payment_status;
+                    
+                    await connection.execute(
+                        `UPDATE sales 
+                         SET credit_amount = ?, 
+                             running_balance = ?,
+                             payment_status = ?,
+                             updated_at = NOW()
+                         WHERE id = ?`,
+                        [newCreditAmount, newRunningBalance, newPaymentStatus, creditSale.id]
+                    );
+                    
+                    processedSales.push({
+                        saleId: creditSale.id,
+                        invoiceNo: creditSale.invoice_no,
+                        creditCleared: creditToClear,
+                        remainingRunningBalance: newRunningBalance,
+                        newStatus: newPaymentStatus
+                    });
+                    
+                    remainingCreditToClear -= creditToClear;
+                    
+                    console.log('💰 Cleared credit from sale:', {
+                        invoiceNo: creditSale.invoice_no,
+                        creditCleared: creditToClear,
+                        oldBalance: creditSale.running_balance,
+                        newBalance: newRunningBalance
+                    });
+                }
+                
+                await connection.commit();
+                
+                console.log('💰 Successfully cleared credit from previous sales:', {
+                    totalCreditCleared: creditUsedFromPreviousBalance - remainingCreditToClear,
+                    processedSales: processedSales.length,
+                    details: processedSales
+                });
+            } catch (clearError) {
+                await connection.rollback();
+                console.error('❌ Error clearing credit from previous sales:', clearError);
+                // Don't fail the sale if credit clearing fails, but log it
+            } finally {
+                connection.release();
+            }
+        } catch (error) {
+            console.error('❌ Error in credit clearing process:', error);
+            // Don't fail the sale if credit clearing fails
+        }
+    }
+
     // Create financial voucher for the sale
     try {
         const voucherNo = `VCH-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
@@ -825,44 +1061,204 @@ const createSale = async (req, res, next) => {
 // @access  Private (Admin, Cashier)
 const getSales = async (req, res, next) => {
   try {
-    const { scopeType, scopeId, startDate, endDate, paymentMethod, status, retailerId, customerPhone, customerName, creditStatus, paymentStatus } = req.query;
+    const {
+      scopeType,
+      scopeId,
+      startDate,
+      endDate,
+      paymentMethod,
+      status,
+      retailerId,
+      customerPhone,
+      customerName,
+      creditStatus,
+      paymentStatus,
+      scopeSearch,
+      page = 1,
+      limit = 50
+    } = req.query;
+
+    // Basic pagination guardrails
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const offset = (parsedPage - 1) * parsedLimit;
     let whereConditions = [];
     let params = [];
 
     // Apply role-based filtering
     if (req.user.role === 'CASHIER') {
       // Cashiers can always view sales (read-only access)
-      // Get branch name if not already available
+      // Get branch name and ID if not already available
       let userBranchName = req.user.branchName;
-      if (!userBranchName && req.user.branchId) {
-        const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [req.user.branchId]);
-        userBranchName = branches[0]?.name || null;
+      let userBranchId = req.user.branchId;
+      
+      if (!userBranchName && userBranchId) {
+        const [branches] = await pool.execute('SELECT id, name FROM branches WHERE id = ?', [userBranchId]);
+        if (branches.length > 0) {
+          userBranchName = branches[0].name;
+          userBranchId = branches[0].id;
+        }
       }
       
-      if (userBranchName) {
-        // Handle both string and number comparisons for scope_id
-        whereConditions.push('s.scope_type = ? AND (s.scope_id = ? OR s.scope_id = ?)');
-        params.push('BRANCH', userBranchName, String(userBranchName));
+      if (userBranchName && userBranchId) {
+        // Handle both string (branch name) and number (branch ID) comparisons for scope_id
+        // Sales table might have scope_id as either branch name (string) or branch ID (number)
+        whereConditions.push(`(
+          s.scope_type = 'BRANCH' AND (
+            CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin OR 
+            CAST(s.scope_id AS UNSIGNED) = ? OR
+            CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+          )
+        )`);
+        params.push(userBranchName, userBranchId, String(userBranchId));
+        
+        console.log('[SalesController] CASHIER scope filter:', {
+          userBranchName,
+          userBranchId,
+          whereCondition: whereConditions[whereConditions.length - 1],
+          params: params.slice(-3)
+        });
+      } else if (userBranchName) {
+        // Fallback: only branch name available
+        whereConditions.push(`(
+          s.scope_type = 'BRANCH' AND (
+            CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+          )
+        )`);
+        params.push(userBranchName);
+        
+        console.log('[SalesController] CASHIER scope filter (name only):', {
+          userBranchName,
+          whereCondition: whereConditions[whereConditions.length - 1]
+        });
       } else {
         whereConditions.push('s.scope_type = ?');
         params.push('BRANCH');
+        
+        console.log('[SalesController] CASHIER scope filter (no branch info):', {
+          whereCondition: whereConditions[whereConditions.length - 1]
+        });
       }
     } else if (req.user.role === 'WAREHOUSE_KEEPER') {
-      // For testing: Show all warehouse sales, not just current warehouse
-      whereConditions.push('s.scope_type = ?');
-      params.push('WAREHOUSE');
-      // whereConditions.push('s.scope_type = ? AND s.scope_id = ?');
-      // params.push('WAREHOUSE', req.user.warehouseName);
+      // Filter by warehouse - get warehouse name if not already available
+      let userWarehouseName = req.user.warehouseName;
+      let userWarehouseId = req.user.warehouseId;
+      
+      if (!userWarehouseName && userWarehouseId) {
+        const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [userWarehouseId]);
+        if (warehouses.length > 0) {
+          userWarehouseName = warehouses[0].name;
+        }
+      }
+      
+      if (userWarehouseName) {
+        // Filter by warehouse name and ID (handle both string and number comparisons)
+        whereConditions.push(`(
+          s.scope_type = 'WAREHOUSE' AND (
+            CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+            OR s.scope_id = ?
+            OR s.scope_id = ?
+          )
+        )`);
+        params.push(userWarehouseName, String(userWarehouseId || ''), userWarehouseId);
+        
+        console.log('[SalesController] WAREHOUSE_KEEPER scope filter:', {
+          userWarehouseName,
+          userWarehouseId,
+          whereCondition: whereConditions[whereConditions.length - 1]
+        });
+      } else if (userWarehouseId) {
+        // Fallback: only warehouse ID available
+        whereConditions.push(`(
+          s.scope_type = 'WAREHOUSE' AND (
+            s.scope_id = ?
+            OR s.scope_id = ?
+          )
+        )`);
+        params.push(String(userWarehouseId), userWarehouseId);
+        
+        console.log('[SalesController] WAREHOUSE_KEEPER scope filter (ID only):', {
+          userWarehouseId,
+          whereCondition: whereConditions[whereConditions.length - 1]
+        });
+      } else {
+        // No warehouse info available, only filter by type
+        whereConditions.push('s.scope_type = ?');
+        params.push('WAREHOUSE');
+        
+        console.log('[SalesController] WAREHOUSE_KEEPER scope filter (no warehouse info):', {
+          whereCondition: whereConditions[whereConditions.length - 1]
+        });
+      }
     } else if (req.user.role === 'ADMIN') {
       // Admin can filter by scopeType and/or scopeId
       if (scopeType && scopeType !== 'all') {
         whereConditions.push('s.scope_type = ?');
         params.push(scopeType);
+        
+        // If scopeId is also provided, handle both name (string) and ID (number) matching
+        if (scopeId && scopeId !== 'all') {
+          // Check if scopeId is numeric (branch/warehouse ID) or string (name)
+          const isNumeric = /^\d+$/.test(String(scopeId));
+          
+          if (scopeType === 'BRANCH' && isNumeric) {
+            // If scopeId is numeric, get branch name to match against sales.scope_id
+            const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [parseInt(scopeId)]);
+            if (branches.length > 0) {
+              whereConditions.push('(s.scope_id = ? OR s.scope_id = ?)');
+              params.push(branches[0].name, String(scopeId));
+            } else {
+              // Branch not found, match by ID as string
+              whereConditions.push('s.scope_id = ?');
+              params.push(String(scopeId));
+            }
+          } else if (scopeType === 'WAREHOUSE' && isNumeric) {
+            // If scopeId is numeric, get warehouse name to match against sales.scope_id
+            const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [parseInt(scopeId)]);
+            if (warehouses.length > 0) {
+              whereConditions.push('(s.scope_id = ? OR s.scope_id = ?)');
+              params.push(warehouses[0].name, String(scopeId));
+            } else {
+              // Warehouse not found, match by ID as string
+              whereConditions.push('s.scope_id = ?');
+              params.push(String(scopeId));
+            }
+          } else {
+            // scopeId is a string (name), match directly
+            whereConditions.push('(s.scope_id = ? OR s.scope_id = ?)');
+            params.push(scopeId, String(scopeId));
+          }
+        }
+      } else if (scopeId && scopeId !== 'all') {
+        // If only scopeId is provided without scopeType, try to match by both BRANCH and WAREHOUSE
+        const isNumeric = /^\d+$/.test(String(scopeId));
+        
+        if (isNumeric) {
+          // Try to find branch or warehouse with this ID
+          const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [parseInt(scopeId)]);
+          const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [parseInt(scopeId)]);
+          
+          if (branches.length > 0) {
+            whereConditions.push('(s.scope_type = ? AND (s.scope_id = ? OR s.scope_id = ?))');
+            params.push('BRANCH', branches[0].name, String(scopeId));
+          }
+          if (warehouses.length > 0) {
+            if (branches.length > 0) {
+              // Add OR condition for warehouse
+              whereConditions[whereConditions.length - 1] = whereConditions[whereConditions.length - 1].replace(')', '') + ' OR (s.scope_type = ? AND (s.scope_id = ? OR s.scope_id = ?)))';
+              params.push('WAREHOUSE', warehouses[0].name, String(scopeId));
+            } else {
+              whereConditions.push('(s.scope_type = ? AND (s.scope_id = ? OR s.scope_id = ?))');
+              params.push('WAREHOUSE', warehouses[0].name, String(scopeId));
+            }
+          }
+        } else {
+          // scopeId is a string, match by name for both BRANCH and WAREHOUSE
+          whereConditions.push('((s.scope_type = ? AND s.scope_id = ?) OR (s.scope_type = ? AND s.scope_id = ?))');
+          params.push('BRANCH', scopeId, 'WAREHOUSE', scopeId);
+        }
       }
-      if (scopeId && scopeId !== 'all') {
-        whereConditions.push('s.scope_id = ?');
-        params.push(scopeId);
-      }
+      // If neither scopeType nor scopeId is provided, show all sales (no scope filtering)
     }
 
     if (startDate) {
@@ -910,8 +1306,71 @@ const getSales = async (req, res, next) => {
       params.push(paymentStatus);
     }
 
+    // Admin scope search by branch/warehouse name or id
+    if (scopeSearch && req.user.role === 'ADMIN') {
+      const term = `%${scopeSearch}%`;
+      whereConditions.push(`
+        (
+          s.scope_id LIKE ?
+          OR (
+            s.scope_type = 'BRANCH' AND EXISTS (
+              SELECT 1 FROM branches b
+              WHERE b.id = s.scope_id OR b.name LIKE ?
+            )
+          )
+          OR (
+            s.scope_type = 'WAREHOUSE' AND EXISTS (
+              SELECT 1 FROM warehouses w
+              WHERE w.id = s.scope_id OR w.name LIKE ?
+            )
+          )
+        )
+      `);
+      params.push(term, term, term);
+    }
+
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
+    console.log('[SalesController] getSales - Query params:', {
+      role: req.user.role,
+      scopeType,
+      scopeId,
+      scopeSearch,
+      whereClause,
+      params,
+      whereConditions,
+      page: parsedPage,
+      limit: parsedLimit
+    });
+
+    // Total count for pagination
+    const [countRows] = await pool.execute(`
+      SELECT COUNT(*) as total
+      FROM sales s
+      ${whereClause}
+    `, params);
+    const totalCount = countRows?.[0]?.total || 0;
+
+    // Summary aggregates across all matching rows (not limited by pagination)
+    const [summaryRows] = await pool.execute(`
+      SELECT 
+        COUNT(*) as totalTransactions,
+        COALESCE(SUM(s.total), 0) as totalSales,
+        SUM(CASE WHEN s.payment_status = 'COMPLETED' THEN 1 ELSE 0 END) as completedSales,
+        COALESCE(SUM(CASE WHEN s.payment_status = 'COMPLETED' THEN s.total ELSE 0 END), 0) as completedSalesAmount
+      FROM sales s
+      ${whereClause}
+    `, params);
+
+    const summaryRow = summaryRows?.[0] || {};
+    const summary = {
+      totalSales: Math.abs(Number(summaryRow.totalSales || 0)),
+      totalTransactions: Number(summaryRow.totalTransactions || 0),
+      completedSales: Number(summaryRow.completedSales || 0),
+      averageOrderValue: summaryRow.completedSales
+        ? Math.abs(Number(summaryRow.completedSalesAmount || 0)) / Number(summaryRow.completedSales || 1)
+        : 0
+    };
 
     const [sales] = await pool.execute(`
       SELECT 
@@ -922,11 +1381,35 @@ const getSales = async (req, res, next) => {
         w.name as warehouse_name
       FROM sales s
       LEFT JOIN users u ON s.user_id = u.id
-      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
-      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
+      LEFT JOIN branches b ON (
+        s.scope_type = 'BRANCH' AND (
+          CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(b.name AS CHAR) COLLATE utf8mb4_bin OR 
+          CAST(s.scope_id AS UNSIGNED) = b.id OR
+          CAST(b.id AS CHAR) COLLATE utf8mb4_bin = CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin
+        )
+      )
+      LEFT JOIN warehouses w ON (
+        s.scope_type = 'WAREHOUSE' AND (
+          CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(w.name AS CHAR) COLLATE utf8mb4_bin OR 
+          CAST(s.scope_id AS UNSIGNED) = w.id OR
+          CAST(w.id AS CHAR) COLLATE utf8mb4_bin = CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin
+        )
+      )
       ${whereClause}
       ORDER BY s.created_at DESC
-    `, params);
+      LIMIT ? OFFSET ?
+    `, [...params, parsedLimit, offset]);
+
+    console.log('[SalesController] getSales - Found', sales.length, 'sales');
+    if (sales.length > 0) {
+      console.log('[SalesController] Sample sales:', sales.slice(0, 3).map(s => ({
+        id: s.id,
+        invoice_no: s.invoice_no,
+        scope_type: s.scope_type,
+        scope_id: s.scope_id,
+        created_at: s.created_at
+      })));
+    }
 
     // Debug: Log payment method values
     console.log('[SalesController] Debug - Payment methods in database:', 
@@ -995,14 +1478,32 @@ const getSales = async (req, res, next) => {
 
     res.json({
       success: true,
-      count: salesWithItems.length,
+      count: totalCount,
+      page: parsedPage,
+      limit: parsedLimit,
+      totalPages: Math.max(1, Math.ceil(totalCount / parsedLimit)),
+      summary,
       data: salesWithItems
     });
   } catch (error) {
+    console.error('[SalesController] getSales - Error:', {
+      message: error.message,
+      stack: error.stack,
+      sqlMessage: error.sqlMessage,
+      code: error.code,
+      errno: error.errno,
+      sqlState: error.sqlState,
+      whereClause,
+      params,
+      whereConditions,
+      page,
+      limit
+    });
     res.status(500).json({
       success: false,
       message: 'Error retrieving sales',
-      error: error.message
+      error: error.message,
+      sqlError: error.sqlMessage || null
     });
   }
 };
@@ -1091,27 +1592,21 @@ const getSale = async (req, res, next) => {
   }
 };
 
-// @desc    Update sale with inventory changes
+// @desc    Update sale with inventory changes (FIXED VERSION)
+// @route   PUT /api/sales/:id
+// @access  Private (Admin, Cashier)
+// @desc    Update sale with inventory changes (FIXED RUNNING BALANCE VERSION)
 // @route   PUT /api/sales/:id
 // @access  Private (Admin, Cashier)
 const updateSale = async (req, res, next) => {
-  // Set a timeout for the entire operation
-  const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000);
-  });
+  let connection;
   
-  const updatePromise = async () => {
-    const connection = await pool.getConnection();
-    
-    try {
-      console.log('[SalesController] Starting updateSale for sale ID:', req.params.id);
-      console.log('[SalesController] User:', req.user.role, req.user.branchName || req.user.warehouseName);
-      
-      await connection.beginTransaction();
-    
+  try {
+    console.log('[SalesController] Starting updateSale for sale ID:', req.params.id);
+    console.log('[SalesController] Request body:', JSON.stringify(req.body, null, 2));
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      await connection.rollback();
       return res.status(400).json({
         success: false,
         message: 'Validation error',
@@ -1121,12 +1616,49 @@ const updateSale = async (req, res, next) => {
 
     const { id } = req.params;
     const updateData = req.body;
-    const { items, inventoryChanges } = updateData;
+    const { 
+      items, 
+      inventoryChanges, 
+      paymentMethod, 
+      paymentAmount, 
+      creditAmount, 
+      total, 
+      subtotal, 
+      tax, 
+      discount,
+      notes, 
+      status, 
+      paymentStatus,
+      customerInfo,
+      customerName,
+      customerPhone
+    } = updateData;
 
-    // Get sale with items
-    const [saleRows] = await connection.execute('SELECT * FROM sales WHERE id = ?', [id]);
+    // Get connection
+    connection = await pool.getConnection();
+    
+    // Get sale with all details
+    const [saleRows] = await connection.execute(`
+      SELECT s.*, 
+        s.customer_name, 
+        s.customer_phone, 
+        s.scope_type, 
+        s.scope_id,
+        s.payment_method,
+        s.payment_amount,
+        s.credit_amount,
+        s.old_balance,
+        s.running_balance,
+        s.total as sale_total,
+        s.subtotal as sale_subtotal,
+        s.tax as sale_tax,
+        s.discount as sale_discount
+      FROM sales s WHERE id = ?`, 
+      [id]
+    );
+    
     if (saleRows.length === 0) {
-      await connection.rollback();
+      connection.release();
       return res.status(404).json({
         success: false,
         message: 'Sale not found'
@@ -1134,342 +1666,318 @@ const updateSale = async (req, res, next) => {
     }
 
     const sale = saleRows[0];
+    
+    console.log('[SalesController] DEBUG - Original sale before update:', {
+      id: sale.id,
+      invoice_no: sale.invoice_no,
+      old_balance: sale.old_balance,
+      running_balance: sale.running_balance,
+      total: sale.sale_total,
+      subtotal: sale.sale_subtotal,
+      credit_amount: sale.credit_amount,
+      payment_amount: sale.payment_amount,
+      payment_method: sale.payment_method
+    });
 
-    // Check permissions
-    if (req.user.role !== 'ADMIN') {
-      // For cashiers, get branch name if not already available
-      let userBranchName = req.user.branchName;
-      if (req.user.role === 'CASHIER' && !userBranchName && req.user.branchId) {
-        const [branches] = await connection.execute('SELECT name FROM branches WHERE id = ?', [req.user.branchId]);
-        userBranchName = branches[0]?.name || null;
+    // Start transaction
+    await connection.beginTransaction();
+
+    try {
+      // 1. Handle inventory changes if provided
+      if (inventoryChanges && inventoryChanges.modified && inventoryChanges.modified.length > 0) {
+        console.log('[SalesController] Processing inventory changes:', inventoryChanges.modified.length, 'items');
+        
+        for (const change of inventoryChanges.modified) {
+          if (!change.inventoryItemId) continue;
+          
+          console.log(`[SalesController] Updating inventory for item ${change.inventoryItemId}:`, change.quantityChange);
+          
+          await connection.execute(
+            'UPDATE inventory_items SET current_stock = current_stock + ? WHERE id = ?',
+            [change.quantityChange, change.inventoryItemId]
+          );
+        }
+      }
+
+      // 2. Update sale items if provided
+      let finalSubtotal = parseFloat(subtotal) || parseFloat(sale.sale_subtotal) || 0;
+      let finalTotal = parseFloat(total) || parseFloat(sale.sale_total) || 0;
+      
+      if (items && Array.isArray(items) && items.length > 0) {
+        console.log('[SalesController] Updating sale items:', items.length, 'items');
+        
+        // Delete existing items
+        await connection.execute('DELETE FROM sale_items WHERE sale_id = ?', [id]);
+        
+        // Calculate new subtotal from items
+        finalSubtotal = 0;
+        for (const item of items) {
+          const itemQuantity = parseFloat(item.quantity) || 0;
+          const itemUnitPrice = parseFloat(item.unitPrice) || parseFloat(item.unit_price) || 0;
+          const itemDiscount = parseFloat(item.discount) || 0;
+          const itemTotal = (itemQuantity * itemUnitPrice) - itemDiscount;
+          
+          await connection.execute(`
+            INSERT INTO sale_items (
+              sale_id, inventory_item_id, sku, name, quantity, 
+              unit_price, discount, discount_type, total, original_price, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+          `, [
+            id,
+            item.inventoryItemId || item.inventory_item_id,
+            item.sku,
+            item.name || item.itemName,
+            itemQuantity,
+            itemUnitPrice,
+            itemDiscount,
+            item.discountType || 'amount',
+            itemTotal,
+            item.originalPrice || itemUnitPrice
+          ]);
+          
+          finalSubtotal += itemTotal;
+        }
+        
+        // Calculate final total (tax and discount are 0 in your case)
+        finalTotal = finalSubtotal + (parseFloat(tax) || 0) - (parseFloat(discount) || 0);
+        
+        console.log('[SalesController] Recalculated from items:', {
+          finalSubtotal,
+          finalTotal,
+          tax: parseFloat(tax) || 0,
+          discount: parseFloat(discount) || 0
+        });
+      }
+
+      // 3. Calculate payment amounts
+      let finalPaymentAmount = parseFloat(paymentAmount);
+      let finalCreditAmount = parseFloat(creditAmount);
+      
+      if (isNaN(finalPaymentAmount)) {
+        finalPaymentAmount = parseFloat(sale.payment_amount) || 0;
       }
       
-      if (req.user.role === 'CASHIER' && 
-          (sale.scope_type !== 'BRANCH' || sale.scope_id !== userBranchName)) {
-        console.log('[SalesController] Update permission check failed for cashier:', {
-          userRole: req.user.role,
-          userBranchId: req.user.branchId,
-          userBranchName: userBranchName,
-          saleScopeType: sale.scope_type,
-          saleScopeId: sale.scope_id,
-          comparison: sale.scope_id !== userBranchName
-        });
-        await connection.rollback();
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied'
-        });
+      if (isNaN(finalCreditAmount)) {
+        finalCreditAmount = parseFloat(sale.credit_amount) || 0;
       }
       
-      // Check if cashier has permission to edit sales
-      if (req.user.role === 'CASHIER') {
-        const Branch = require('../models/Branch');
-        const branchSettings = await Branch.getSettings(sale.scope_id);
-        if (!branchSettings?.allowCashierSalesEdit) {
-          await connection.rollback();
-          return res.status(403).json({
-            success: false,
-            message: 'You do not have permission to edit sales. Contact your administrator.'
+      // If payment method is FULLY_CREDIT, adjust amounts
+      const finalPaymentMethod = paymentMethod || sale.payment_method;
+      if (finalPaymentMethod === 'FULLY_CREDIT') {
+        finalPaymentAmount = 0;
+        finalCreditAmount = finalTotal;
+      }
+      
+      console.log('[SalesController] Payment amounts:', {
+        finalPaymentMethod,
+        finalPaymentAmount,
+        finalCreditAmount,
+        finalTotal
+      });
+
+      // ✅ CRITICAL FIX: Calculate running balance PROPERLY
+      // running_balance = old_balance + credit_amount - payment_amount
+      const oldBalance = parseFloat(sale.old_balance) || 0;
+      const runningBalance = oldBalance + finalCreditAmount - finalPaymentAmount;
+      
+      console.log('[SalesController] RUNNING BALANCE CALCULATION:', {
+        old_balance: oldBalance,
+        credit_amount: finalCreditAmount,
+        payment_amount: finalPaymentAmount,
+        running_balance: runningBalance,
+        calculation: `${oldBalance} + ${finalCreditAmount} - ${finalPaymentAmount} = ${runningBalance}`
+      });
+
+      // 4. Determine payment status
+      let finalPaymentStatus = paymentStatus;
+      if (!finalPaymentStatus) {
+        finalPaymentStatus = finalCreditAmount > 0 ? 'PENDING' : 'COMPLETED';
+      }
+      
+      const finalCreditStatus = finalCreditAmount > 0 ? 'PENDING' : 'NONE';
+
+      // 5. Update the sale
+      const updateQuery = `
+        UPDATE sales SET
+          subtotal = ?,
+          total = ?,
+          tax = ?,
+          discount = ?,
+          payment_method = ?,
+          payment_amount = ?,
+          credit_amount = ?,
+          running_balance = ?,
+          payment_status = ?,
+          credit_status = ?,
+          notes = ?,
+          customer_name = ?,
+          customer_phone = ?,
+          customer_info = ?,
+          updated_at = NOW()
+        WHERE id = ?
+      `;
+      
+      const updateParams = [
+        finalSubtotal,
+        finalTotal,
+        parseFloat(tax) || 0,
+        parseFloat(discount) || 0,
+        finalPaymentMethod,
+        finalPaymentAmount,
+        finalCreditAmount,
+        runningBalance,  // ✅ This is the key fix!
+        finalPaymentStatus,
+        finalCreditStatus,
+        notes || sale.notes,
+        customerName || sale.customer_name,
+        customerPhone || sale.customer_phone,
+        customerInfo ? JSON.stringify(customerInfo) : sale.customer_info,
+        id
+      ];
+      
+      console.log('[SalesController] Executing update query with running_balance:', runningBalance);
+      
+      const [updateResult] = await connection.execute(updateQuery, updateParams);
+      console.log('[SalesController] Sale updated. Affected rows:', updateResult.affectedRows);
+
+      // 6. Update subsequent transactions
+      const customerIdentifier = customerName || sale.customer_name;
+      const customerPhoneIdentifier = customerPhone || sale.customer_phone;
+      
+      if (customerIdentifier && customerPhoneIdentifier) {
+        // Get all transactions after this one
+        const [subsequentTransactions] = await connection.execute(`
+          SELECT id, old_balance, running_balance, credit_amount, payment_amount
+          FROM sales 
+          WHERE (customer_name = ? OR customer_phone = ?)
+            AND scope_type = ? 
+            AND scope_id = ?
+            AND (created_at > ? OR (created_at = ? AND id > ?))
+          ORDER BY created_at ASC, id ASC
+        `, [
+          customerIdentifier,
+          customerPhoneIdentifier,
+          sale.scope_type,
+          sale.scope_id,
+          sale.created_at,
+          sale.created_at,
+          id
+        ]);
+        
+        console.log(`[SalesController] Found ${subsequentTransactions.length} subsequent transactions to update`);
+        
+        let currentBalance = runningBalance;
+        
+        for (const transaction of subsequentTransactions) {
+          const transactionId = transaction.id;
+          const transactionCreditAmount = parseFloat(transaction.credit_amount) || 0;
+          const transactionPaymentAmount = parseFloat(transaction.payment_amount) || 0;
+          
+          const transactionNewRunningBalance = currentBalance + transactionCreditAmount - transactionPaymentAmount;
+          
+          await connection.execute(
+            'UPDATE sales SET old_balance = ?, running_balance = ?, updated_at = NOW() WHERE id = ?',
+            [currentBalance, transactionNewRunningBalance, transactionId]
+          );
+          
+          currentBalance = transactionNewRunningBalance;
+        }
+      }
+
+      // 7. Update customer balance
+      if (customerIdentifier && customerPhoneIdentifier) {
+        const [customerRows] = await connection.execute(
+          'SELECT id FROM customers WHERE (name = ? OR phone = ?) LIMIT 1',
+          [customerIdentifier, customerPhoneIdentifier]
+        );
+        
+        if (customerRows.length > 0) {
+          const customerId = customerRows[0].id;
+          await connection.execute(
+            'UPDATE customers SET current_balance = ?, updated_at = NOW() WHERE id = ?',
+            [runningBalance, customerId]
+          );
+          
+          console.log('[SalesController] Updated customer balance:', {
+            customerId,
+            customerName: customerIdentifier,
+            newCurrentBalance: runningBalance
           });
         }
       }
-    }
 
-    // Get current sale items
-    const [currentItems] = await connection.execute(
-      'SELECT * FROM sale_items WHERE sale_id = ?',
-      [id]
-    );
+      await connection.commit();
+      console.log('[SalesController] Transaction committed successfully');
 
-    // Handle inventory changes if provided
-    if (inventoryChanges) {
-      console.log('[SalesController] Processing inventory changes:', inventoryChanges);
-      
-      // Process added items (reduce stock)
-      for (const change of inventoryChanges.added || []) {
-        try {
-          // Skip manual items (they don't have inventoryItemId)
-          if (!change.inventoryItemId) {
-            console.log(`[SalesController] Skipping manual item: ${change.itemName}`);
-            continue;
-          }
-          
-          console.log(`[SalesController] Adding item ${change.inventoryItemId}, reducing stock by ${Math.abs(change.quantityChange)}`);
-          
-          // Update inventory stock
-          await connection.execute(
-            'UPDATE inventory_items SET current_stock = current_stock - ? WHERE id = ?',
-            [Math.abs(change.quantityChange), change.inventoryItemId]
-          );
-          
-          // Create stock transaction record
-          await createSaleTransaction(
-            change.inventoryItemId,
-            Math.abs(change.quantityChange),
-            0, // Price will be updated when sale items are saved
-            req.user.id,
-            req.user.name || req.user.username,
-            req.user.role,
-            id
-          );
-          
-        } catch (error) {
-          console.error(`[SalesController] Error processing added item ${change.inventoryItemId}:`, error);
-          throw error;
-        }
-      }
-      
-      // Process removed items (restore stock)
-      for (const change of inventoryChanges.removed || []) {
-        try {
-          // Skip manual items (they don't have inventoryItemId)
-          if (!change.inventoryItemId) {
-            console.log(`[SalesController] Skipping manual item removal: ${change.itemName}`);
-            continue;
-          }
-          
-          console.log(`[SalesController] Removing item ${change.inventoryItemId}, restoring stock by ${change.quantityChange}`);
-          
-          // Update inventory stock
-          await connection.execute(
-            'UPDATE inventory_items SET current_stock = current_stock + ? WHERE id = ?',
-            [change.quantityChange, change.inventoryItemId]
-          );
-          
-          // Create return transaction record
-          await createReturnTransaction(
-            change.inventoryItemId,
-            change.quantityChange,
-            0, // Price will be updated when sale items are saved
-            req.user.id,
-            req.user.name || req.user.username,
-            req.user.role,
-            null // No return ID for sale modifications
-          );
-          
-        } catch (error) {
-          console.error(`[SalesController] Error processing removed item ${change.inventoryItemId}:`, error);
-          throw error;
-        }
-      }
-      
-      // Process modified items (adjust stock based on quantity difference)
-      for (const change of inventoryChanges.modified || []) {
-        try {
-          // Skip manual items (they don't have inventoryItemId)
-          if (!change.inventoryItemId) {
-            console.log(`[SalesController] Skipping manual item modification: ${change.itemName}`);
-            continue;
-          }
-          
-          console.log(`[SalesController] Modifying item ${change.inventoryItemId}, quantity change: ${change.quantityChange}`);
-          
-          // Update inventory stock
-          await connection.execute(
-            'UPDATE inventory_items SET current_stock = current_stock + ? WHERE id = ?',
-            [change.quantityChange, change.inventoryItemId]
-          );
-          
-          // Create adjustment transaction record
-          // Get current stock for previousQuantity
-          const [stockRows] = await connection.execute(
-            'SELECT current_stock FROM inventory_items WHERE id = ?',
-            [change.inventoryItemId]
-          );
-          const currentStock = stockRows[0]?.current_stock || 0;
-          const newStock = currentStock + change.quantityChange;
-          
-          await createAdjustmentTransaction(
-            change.inventoryItemId,
-            currentStock,
-            newStock,
-            req.user.id,
-            req.user.name || req.user.username,
-            req.user.role,
-            `Sale modification by ${req.user.name || req.user.username}`
-          );
-          
-        } catch (error) {
-          console.error(`[SalesController] Error processing modified item ${change.inventoryItemId}:`, error);
-          throw error;
-        }
-      }
-    }
-
-    // Update sale items if provided
-    if (items && Array.isArray(items) && items.length > 0) {
-      console.log('[SalesController] Processing items array with', items.length, 'items');
-      
-      // Delete existing sale items
-      await connection.execute('DELETE FROM sale_items WHERE sale_id = ?', [id]);
-      
-      // Insert new sale items
-      for (const item of items) {
-        console.log('[SalesController] Processing item for INSERT:', item)
-        console.log('[SalesController] Item properties:', {
-          inventoryItemId: item.inventoryItemId,
-          sku: item.sku,
-          name: item.name,
-          itemName: item.itemName,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          discount: item.discount,
-          total: item.total
-        })
-        
-        // Helper function to safely parse numeric values
-        const safeParseFloat = (value) => {
-          if (value === undefined || value === null || value === '') return 0;
-          const parsed = parseFloat(value);
-          return isNaN(parsed) ? 0 : parsed;
-        };
-        
-        // Prepare values with comprehensive null checks
-        const values = [
-          id,
-          item.inventoryItemId !== undefined && item.inventoryItemId !== null ? item.inventoryItemId : null, // Use null for manual items (database now supports it)
-          item.sku !== undefined && item.sku !== null ? item.sku : null,
-          (item.name || item.itemName) !== undefined && (item.name || item.itemName) !== null ? (item.name || item.itemName) : null,
-          safeParseFloat(item.quantity),
-          safeParseFloat(item.unitPrice),
-          safeParseFloat(item.discount),
-          safeParseFloat(item.total)
-        ]
-        
-        console.log('[SalesController] Prepared values for INSERT:', values)
-        console.log('[SalesController] Value types:', values.map(v => typeof v))
-        
-        // Check for undefined values before SQL execution
-        const hasUndefined = values.some(val => val === undefined);
-        if (hasUndefined) {
-          console.error('[SalesController] ERROR: Found undefined values in INSERT:', values);
-          throw new Error('Cannot insert sale item with undefined values');
-        }
-        
-        await connection.execute(
-          `INSERT INTO sale_items (
-            sale_id, inventory_item_id, sku, name, quantity, 
-            unit_price, discount, total, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-          values
-        );
-      }
-    } else if (items && Array.isArray(items) && items.length === 0) {
-      console.log('[SalesController] Items array is empty, skipping item processing');
-    }
-
-    // Update sale details
-    const allowedUpdates = [
-      'subtotal', 'tax', 'discount', 'total', 
-      'paymentMethod', 'paymentStatus', 'status', 'notes',
-      'customerName', 'customerEmail', 'customerPhone', 'customerAddress',
-      'creditStatus', 'creditAmount', 'paymentAmount'
-    ];
-    
-    const updateFields = [];
-    const updateValues = [];
-    
-    // Handle customer info
-    if (updateData.customerName || updateData.customerPhone || updateData.customerEmail || updateData.customerAddress) {
-      const customerInfo = {
-        name: updateData.customerName || sale.customer_info?.name || 'Walk-in Customer',
-        phone: updateData.customerPhone || sale.customer_info?.phone || '',
-        email: updateData.customerEmail || sale.customer_info?.email || '',
-        address: updateData.customerAddress || sale.customer_info?.address || ''
-      };
-      
-      updateFields.push('customer_info = ?');
-      updateValues.push(JSON.stringify(customerInfo));
-    }
-    
-    // Handle other fields
-    console.log('[SalesController] Processing updateData:', updateData)
-    Object.keys(updateData).forEach(key => {
-      if (allowedUpdates.includes(key) && !key.startsWith('customer')) {
-        const value = updateData[key];
-        console.log(`[SalesController] Processing field ${key}:`, value, 'type:', typeof value)
-        // Skip undefined values to avoid SQL parameter errors
-        if (value !== undefined && value !== null) {
-          const dbKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
-          updateFields.push(`${dbKey} = ?`);
-          
-          // Handle different value types properly
-          let sqlValue = value;
-          if (typeof value === 'boolean') {
-            sqlValue = value ? 1 : 0;
-          } else if (typeof value === 'string' && value === '') {
-            sqlValue = null;
-          }
-          
-          updateValues.push(sqlValue);
-          console.log(`[SalesController] Added field ${dbKey} = ${sqlValue} (original: ${value})`)
-        } else {
-          console.log(`[SalesController] Skipping undefined/null field: ${key}`)
-        }
-      }
-    });
-    
-    if (updateFields.length > 0) {
-      updateValues.push(id);
-      
-      // Check for undefined values before SQL execution
-      const hasUndefined = updateValues.some(val => val === undefined);
-      if (hasUndefined) {
-        console.error('[SalesController] ERROR: Found undefined values in UPDATE:', updateValues);
-        console.error('[SalesController] Update fields:', updateFields);
-        throw new Error('Cannot update sale with undefined values');
-      }
-      
-      console.log('[SalesController] Executing UPDATE with values:', updateValues);
-      await connection.execute(
-        `UPDATE sales SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`,
-        updateValues
+      // 8. Get updated sale
+      const [updatedSaleRows] = await connection.execute(`
+        SELECT s.*, u.username as user_name
+        FROM sales s
+        LEFT JOIN users u ON s.user_id = u.id
+        WHERE s.id = ?`, 
+        [id]
       );
+      
+      const [updatedItems] = await connection.execute(`
+        SELECT si.*, ii.name as item_name, ii.sku
+        FROM sale_items si
+        LEFT JOIN inventory_items ii ON si.inventory_item_id = ii.id
+        WHERE si.sale_id = ?`, 
+        [id]
+      );
+
+      console.log('[SalesController] UPDATE COMPLETE - Final values:', {
+        id: updatedSaleRows[0]?.id,
+        invoice_no: updatedSaleRows[0]?.invoice_no,
+        total: updatedSaleRows[0]?.total,
+        credit_amount: updatedSaleRows[0]?.credit_amount,
+        payment_amount: updatedSaleRows[0]?.payment_amount,
+        old_balance: updatedSaleRows[0]?.old_balance,
+        running_balance: updatedSaleRows[0]?.running_balance,
+        expected_running_balance: runningBalance,
+        items_count: updatedItems.length
+      });
+      
+      connection.release();
+      
+      res.json({
+        success: true,
+        message: 'Sale updated successfully',
+        data: {
+          ...updatedSaleRows[0],
+          items: updatedItems.map(item => ({
+            ...item,
+            itemName: item.item_name,
+            unitPrice: item.unit_price,
+            originalPrice: item.original_price
+          }))
+        }
+      });
+      
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     }
-
-    await connection.commit();
-
-    // Get updated sale data
-    const [updatedSaleRows] = await connection.execute('SELECT * FROM sales WHERE id = ?', [id]);
-    const [updatedItems] = await connection.execute('SELECT * FROM sale_items WHERE sale_id = ?', [id]);
-
-    res.json({
-      success: true,
-      message: 'Sale updated successfully',
-      data: {
-        ...updatedSaleRows[0],
-        items: updatedItems
+    
+  } catch (error) {
+    console.error('[SalesController] ERROR in updateSale:', error);
+    
+    if (connection) {
+      try {
+        connection.release();
+      } catch (releaseError) {
+        console.error('[SalesController] Connection release error:', releaseError);
       }
-    });
-  } catch (error) {
-    await connection.rollback();
-    console.error('[SalesController] Error updating sale:', error);
-    res.status(500).json({
+    }
+    
+    res.status(400).json({
       success: false,
-      message: 'Error updating sale',
-      error: error.message
-    });
-  } finally {
-    connection.release();
-  }
-  };
-  
-  // Race between the update operation and timeout
-  try {
-    await Promise.race([updatePromise(), timeoutPromise]);
-  } catch (error) {
-    console.error('[SalesController] UpdateSale timeout or error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message.includes('timeout') ? 'Request timeout. Please try again.' : 'Error updating sale',
+      message: error.message || 'Error updating sale',
       error: error.message
     });
   }
 };
 
-// @desc    Delete sale
-// @route   DELETE /api/sales/:id
-// @access  Private (Admin)
 const deleteSale = async (req, res, next) => {
   const connection = await pool.getConnection();
   
@@ -1601,6 +2109,31 @@ const createSalesReturn = async (req, res, next) => {
         message: 'Original sale not found'
       });
     }
+    
+    console.log('[SalesController] Original sale customer info:', {
+      saleId: saleId,
+      invoiceNo: originalSale.invoiceNo || originalSale.invoice_no,
+      customerName: originalSale.customerName,
+      customer_name: originalSale.customer_name,
+      customerPhone: originalSale.customerPhone,
+      customer_phone: originalSale.customer_phone,
+      customerInfo: originalSale.customerInfo || originalSale.customer_info
+    });
+    
+    // Get original sale items to get the actual unit prices from the sale
+    const [originalSaleItems] = await pool.execute(
+      'SELECT * FROM sale_items WHERE sale_id = ?',
+      [saleId]
+    );
+    
+    console.log('[SalesController] Original sale items:', originalSaleItems.map(item => ({
+      id: item.id,
+      inventory_item_id: item.inventory_item_id,
+      item_name: item.item_name,
+      unit_price: item.unit_price,
+      quantity: item.quantity,
+      total: item.total
+    })));
 
     // Check permissions
     if (req.user.role !== 'ADMIN') {
@@ -1641,11 +2174,86 @@ const createSalesReturn = async (req, res, next) => {
       totalRefund += parseFloat(item.refundAmount) || 0;
     }
 
-    // Enrich items with product details
+    // Enrich items with product details (including cost prices for ledger)
+    // IMPORTANT: Use unit price from original sale item, not current inventory price
+    // CRITICAL: Always use inventory_item_id from original sale item to avoid scope conflicts
     const enrichedItems = [];
+    console.log('[SalesController] Processing return items:', {
+      itemsCount: items.length,
+      originalSaleItemsCount: originalSaleItems.length,
+      items: items.map(i => ({
+        inventoryItemId: i.inventoryItemId,
+        productName: i.productName,
+        quantity: i.quantity,
+        refundAmount: i.refundAmount
+      })),
+      originalSaleItems: originalSaleItems.map(si => ({
+        id: si.id,
+        inventory_item_id: si.inventory_item_id,
+        item_name: si.item_name,
+        quantity: si.quantity
+      }))
+    });
+    
     for (const item of items) {
+      // Find matching original sale item by inventory_item_id or item name
+      let originalSaleItem = null;
+      if (item.inventoryItemId) {
+        originalSaleItem = originalSaleItems.find(si => 
+          si.inventory_item_id === item.inventoryItemId || 
+          si.inventory_item_id === parseInt(item.inventoryItemId)
+        );
+      } else if (item.productName) {
+        originalSaleItem = originalSaleItems.find(si => 
+          si.item_name === item.productName || 
+          si.item_name?.toLowerCase() === item.productName?.toLowerCase()
+        );
+      }
+      
+      // CRITICAL FIX: Always use inventory_item_id from original sale item to ensure correct scope
+      // This prevents conflicts when same SKU/name exists in multiple branches
+      // IMPORTANT: originalSaleItem.inventory_item_id might be NULL for manual items in the original sale
+      const correctInventoryItemId = originalSaleItem?.inventory_item_id ?? item.inventoryItemId ?? null;
+      
+      console.log('[SalesController] Return item matching:', {
+        providedInventoryItemId: item.inventoryItemId,
+        providedProductName: item.productName,
+        originalSaleItemFound: !!originalSaleItem,
+        originalSaleItemId: originalSaleItem?.inventory_item_id,
+        originalSaleItemName: originalSaleItem?.item_name,
+        usingInventoryItemId: correctInventoryItemId,
+        isNull: correctInventoryItemId === null,
+        isUndefined: correctInventoryItemId === undefined,
+        originalSaleScope: {
+          scopeType: originalSale.scopeType,
+          scopeId: originalSale.scopeId
+        }
+      });
+      
+      // Get unit price from original sale item if found, otherwise use refundAmount / quantity
+      let unitPrice = 0;
+      if (originalSaleItem) {
+        unitPrice = parseFloat(originalSaleItem.unit_price) || 0;
+        console.log('[SalesController] Using original sale unit price:', {
+          itemName: originalSaleItem.item_name,
+          originalUnitPrice: unitPrice,
+          refundAmount: item.refundAmount,
+          quantity: item.quantity
+        });
+      } else if (item.refundAmount && item.quantity) {
+        // Fallback: calculate from refund amount
+        unitPrice = parseFloat(item.refundAmount) / parseFloat(item.quantity);
+        console.log('[SalesController] Original sale item not found, calculating unit price from refund:', {
+          refundAmount: item.refundAmount,
+          quantity: item.quantity,
+          calculatedUnitPrice: unitPrice
+        });
+      } else {
+        unitPrice = parseFloat(item.unitPrice) || 0;
+      }
+      
       // Handle manual items (no inventory validation needed)
-      if (!item.inventoryItemId && !item.productName) {
+      if (!correctInventoryItemId && !item.productName && !item.inventoryItemId) {
         console.log(`[SalesController] Processing manual item return: ${item.name || item.itemName}`);
         enrichedItems.push({
           inventoryItemId: null, // Manual items don't have inventory ID
@@ -1654,22 +2262,38 @@ const createSalesReturn = async (req, res, next) => {
           barcode: item.barcode || null,
           category: item.category || null,
           quantity: item.quantity,
-          originalQuantity: item.quantity, // For manual items, assume original equals returned
-          unitPrice: parseFloat(item.unitPrice) || 0,
+          originalQuantity: originalSaleItem ? parseFloat(originalSaleItem.quantity) : item.quantity,
+          unitPrice: unitPrice, // Use original sale price or calculated
+          costPrice: parseFloat(item.costPrice) || 0, // Add cost price for ledger
           refundAmount: item.refundAmount
         });
         continue;
       }
       
-      // If productName is provided, find the inventory item
-      if (item.productName) {
+      // CRITICAL FIX: Always use inventory_item_id from original sale item
+      // This ensures we update the correct inventory item in the correct scope
+      if (correctInventoryItemId) {
+        // Get the inventory item details using the ID from the original sale
         const [inventoryItems] = await pool.execute(
-          'SELECT * FROM inventory_items WHERE name LIKE ? OR sku LIKE ? LIMIT 1',
-          [`%${item.productName}%`, `%${item.productName}%`]
+          'SELECT * FROM inventory_items WHERE id = ?',
+          [correctInventoryItemId]
         );
         
         if (inventoryItems.length > 0) {
           const inventoryItem = inventoryItems[0];
+          
+          // Verify the inventory item belongs to the correct scope (for security)
+          // Note: This is a warning, not an error, as the original sale might have been from a different scope
+          if (inventoryItem.scope_type !== originalSale.scopeType || 
+              String(inventoryItem.scope_id) !== String(originalSale.scopeId)) {
+            console.warn('[SalesController] Scope mismatch warning:', {
+              inventoryItemId: inventoryItem.id,
+              inventoryItemScope: { type: inventoryItem.scope_type, id: inventoryItem.scope_id },
+              originalSaleScope: { type: originalSale.scopeType, id: originalSale.scopeId },
+              message: 'Inventory item scope does not match original sale scope, but using original sale scope for return transaction'
+            });
+          }
+          
           enrichedItems.push({
             inventoryItemId: inventoryItem.id,
             itemName: inventoryItem.name,
@@ -1677,55 +2301,122 @@ const createSalesReturn = async (req, res, next) => {
             barcode: inventoryItem.barcode || null,
             category: inventoryItem.category || null,
             quantity: item.quantity,
-            originalQuantity: item.quantity, // Will be updated with actual original quantity
-            unitPrice: parseFloat(inventoryItem.selling_price) || 0,
+            originalQuantity: originalSaleItem ? parseFloat(originalSaleItem.quantity) : item.quantity,
+            unitPrice: unitPrice, // Use original sale price, not current inventory price
+            costPrice: parseFloat(inventoryItem.cost_price) || 0, // Add cost price for ledger
+            refundAmount: item.refundAmount
+          });
+          
+          console.log('[SalesController] Using inventory item from original sale:', {
+            inventoryItemId: inventoryItem.id,
+            itemName: inventoryItem.name,
+            sku: inventoryItem.sku,
+            scope: { type: inventoryItem.scope_type, id: inventoryItem.scope_id },
+            returnScope: { type: originalSale.scopeType, id: originalSale.scopeId }
+          });
+        } else {
+          console.error('[SalesController] Inventory item not found:', {
+            correctInventoryItemId,
+            originalSaleItemId: originalSaleItem?.inventory_item_id,
+            providedInventoryItemId: item.inventoryItemId,
+            productName: item.productName
+          });
+          return res.status(400).json({
+            success: false,
+            message: `Inventory item with ID ${correctInventoryItemId} from original sale not found`
+          });
+        }
+      } else if (item.productName || originalSaleItem?.item_name) {
+        // If no inventory_item_id found but we have a product name, try to find it in the correct scope
+        // This handles cases where the original sale item was a manual item but the product now exists in inventory
+        const searchName = item.productName || originalSaleItem?.item_name;
+        console.log('[SalesController] No inventory_item_id found, searching by name in scope:', {
+          searchName,
+          scopeType: originalSale.scopeType,
+          scopeId: originalSale.scopeId
+        });
+        
+        // Try to find inventory item by name/SKU in the original sale's scope
+        let scopeFilter = '';
+        let scopeParams = [];
+        
+        if (originalSale.scopeType === 'BRANCH') {
+          // Get branch ID or name
+          const [branches] = await pool.execute(
+            'SELECT id, name FROM branches WHERE id = ? OR name = ? LIMIT 1',
+            [originalSale.scopeId, originalSale.scopeId]
+          );
+          if (branches.length > 0) {
+            scopeFilter = 'AND (scope_type = ? AND (scope_id = ? OR scope_id = ?))';
+            scopeParams = ['BRANCH', branches[0].id, branches[0].name];
+          }
+        } else if (originalSale.scopeType === 'WAREHOUSE') {
+          const [warehouses] = await pool.execute(
+            'SELECT id, name FROM warehouses WHERE id = ? OR name = ? LIMIT 1',
+            [originalSale.scopeId, originalSale.scopeId]
+          );
+          if (warehouses.length > 0) {
+            scopeFilter = 'AND (scope_type = ? AND (scope_id = ? OR scope_id = ?))';
+            scopeParams = ['WAREHOUSE', warehouses[0].id, warehouses[0].name];
+          }
+        }
+        
+        const [inventoryItems] = await pool.execute(
+          `SELECT * FROM inventory_items WHERE (name LIKE ? OR sku LIKE ?) ${scopeFilter} LIMIT 1`,
+          [`%${searchName}%`, `%${searchName}%`, ...scopeParams]
+        );
+        
+        if (inventoryItems.length > 0) {
+          const inventoryItem = inventoryItems[0];
+          console.log('[SalesController] Found inventory item by name in scope:', {
+            inventoryItemId: inventoryItem.id,
+            itemName: inventoryItem.name,
+            sku: inventoryItem.sku,
+            scope: { type: inventoryItem.scope_type, id: inventoryItem.scope_id }
+          });
+          
+          enrichedItems.push({
+            inventoryItemId: inventoryItem.id,
+            itemName: inventoryItem.name,
+            sku: inventoryItem.sku,
+            barcode: inventoryItem.barcode || null,
+            category: inventoryItem.category || null,
+            quantity: item.quantity,
+            originalQuantity: originalSaleItem ? parseFloat(originalSaleItem.quantity) : item.quantity,
+            unitPrice: unitPrice,
+            costPrice: parseFloat(inventoryItem.cost_price) || 0,
             refundAmount: item.refundAmount
           });
         } else {
-          // If product not found in inventory, treat as manual item
-          console.log(`[SalesController] Product "${item.productName}" not found in inventory, treating as manual item`);
+          // If still not found, treat as manual item
+          console.log(`[SalesController] No inventory item found by name "${searchName}" in scope, treating as manual item`);
           enrichedItems.push({
             inventoryItemId: null,
-            itemName: item.productName,
+            itemName: searchName,
             sku: `MANUAL-${Date.now()}`,
             barcode: item.barcode || null,
             category: item.category || null,
             quantity: item.quantity,
-            originalQuantity: item.quantity, // For manual items, assume original equals returned
-            unitPrice: parseFloat(item.unitPrice) || 0,
+            originalQuantity: originalSaleItem ? parseFloat(originalSaleItem.quantity) : item.quantity,
+            unitPrice: unitPrice,
+            costPrice: parseFloat(item.costPrice) || 0,
             refundAmount: item.refundAmount
-          });
-        }
-      } else if (item.inventoryItemId) {
-        // If inventoryItemId is provided, get the item details
-        const [inventoryItems] = await pool.execute(
-          'SELECT * FROM inventory_items WHERE id = ?',
-          [item.inventoryItemId]
-        );
-        
-        if (inventoryItems.length > 0) {
-          const inventoryItem = inventoryItems[0];
-          enrichedItems.push({
-            inventoryItemId: inventoryItem.id,
-            itemName: inventoryItem.name,
-            sku: inventoryItem.sku,
-            barcode: inventoryItem.barcode || null,
-            category: inventoryItem.category || null,
-            quantity: item.quantity,
-            originalQuantity: item.quantity, // Will be updated with actual original quantity
-            unitPrice: parseFloat(inventoryItem.selling_price) || 0,
-            refundAmount: item.refundAmount
-          });
-        } else {
-          return res.status(400).json({
-            success: false,
-            message: `Inventory item with ID ${item.inventoryItemId} not found`
           });
         }
       } else {
-        return res.status(400).json({
-          success: false,
-          message: 'Either productName or inventoryItemId is required for each item'
+        // If no inventory_item_id found in original sale and not provided, treat as manual item
+        console.log(`[SalesController] No inventory item ID found and no product name, treating as manual item`);
+        enrichedItems.push({
+          inventoryItemId: null,
+          itemName: item.productName || item.name || item.itemName || 'Unknown Item',
+          sku: `MANUAL-${Date.now()}`,
+          barcode: item.barcode || null,
+          category: item.category || null,
+          quantity: item.quantity,
+          originalQuantity: originalSaleItem ? parseFloat(originalSaleItem.quantity) : item.quantity,
+          unitPrice: unitPrice, // Use original sale price or calculated
+          costPrice: parseFloat(item.costPrice) || 0, // Add cost price for ledger
+          refundAmount: item.refundAmount
         });
       }
     }
@@ -1744,6 +2435,29 @@ const createSalesReturn = async (req, res, next) => {
     }
 
     // Create sales return
+    console.log('[SalesController] Creating return with enriched items:', {
+      enrichedItemsCount: enrichedItems.length,
+      itemsWithInventoryId: enrichedItems.filter(i => i.inventoryItemId).length,
+      itemsWithoutInventoryId: enrichedItems.filter(i => !i.inventoryItemId).length,
+      enrichedItems: enrichedItems.map(i => ({
+        inventoryItemId: i.inventoryItemId,
+        itemName: i.itemName,
+        sku: i.sku,
+        quantity: i.quantity,
+        refundAmount: i.refundAmount,
+        unitPrice: i.unitPrice
+      })),
+      originalSaleScope: {
+        scopeType: originalSale.scopeType,
+        scopeId: originalSale.scopeId
+      },
+      originalSaleItems: originalSaleItems.map(si => ({
+        id: si.id,
+        inventory_item_id: si.inventory_item_id,
+        item_name: si.item_name
+      }))
+    });
+    
     const returnData = {
       originalSaleId: saleId,
       userId: req.user.id,
@@ -1755,23 +2469,79 @@ const createSalesReturn = async (req, res, next) => {
     };
 
     const salesReturn = await SalesReturn.create(returnData);
+    
+    console.log('[SalesController] Return created successfully:', {
+      returnId: salesReturn.id,
+      returnNo: salesReturn.returnNo,
+      itemsCount: enrichedItems.length,
+      itemsWithInventoryId: enrichedItems.filter(i => i.inventoryItemId).length
+    });
 
     const actingUserName = req.user.name || req.user.username || req.user.email || 'System';
     const actingUserRole = req.user.role || 'ADMIN';
 
     // Restore inventory stock and create transaction records
-    for (const item of enrichedItems) {
+    // Only process items with inventoryItemId (skip manual items)
+    const itemsWithInventory = enrichedItems.filter(item => item.inventoryItemId !== null && item.inventoryItemId !== undefined);
+    const manualItems = enrichedItems.filter(item => !item.inventoryItemId);
+    
+    if (manualItems.length > 0) {
+      console.log(`[SalesController] Skipping ${manualItems.length} manual item(s) in return stock update`);
+    }
+    
+    for (const item of itemsWithInventory) {
       try {
-        // Skip manual items (they don't have inventoryItemId)
+        // Validate inventoryItemId is not null (should already be filtered, but double-check)
         if (!item.inventoryItemId) {
-          console.log(`[SalesController] Skipping manual item in return: ${item.name}`);
+          console.warn(`[SalesController] Skipping item with null inventoryItemId: ${item.itemName}`);
           continue;
         }
         
-        // Update stock first
-        await InventoryItem.updateStock(item.inventoryItemId, item.quantity);
+        // Verify the inventory item belongs to the correct scope before updating stock
+        const [inventoryItems] = await pool.execute(
+          'SELECT id, scope_type, scope_id, current_stock, name, sku FROM inventory_items WHERE id = ?',
+          [item.inventoryItemId]
+        );
         
-        // Create transaction record for stock report
+        if (inventoryItems.length === 0) {
+          console.error(`[SalesController] Inventory item ${item.inventoryItemId} not found`);
+          throw new Error(`Inventory item ${item.inventoryItemId} not found`);
+        }
+        
+        const inventoryItem = inventoryItems[0];
+        
+        // Verify scope matches (important for multi-scope inventory)
+        const scopeMatches = (
+          inventoryItem.scope_type === originalSale.scopeType &&
+          String(inventoryItem.scope_id) === String(originalSale.scopeId)
+        );
+        
+        if (!scopeMatches) {
+          console.warn(`[SalesController] Scope mismatch detected for inventory item ${item.inventoryItemId}:`, {
+            inventoryScope: { type: inventoryItem.scope_type, id: inventoryItem.scope_id },
+            originalSaleScope: { type: originalSale.scopeType, id: originalSale.scopeId },
+            message: 'Updating stock anyway using inventory_item_id from original sale'
+          });
+          // Note: We continue because the inventory_item_id from the original sale should be correct
+          // This warning is just for logging purposes
+        }
+        
+        console.log('[SalesController] Logging return (no stock change here; restock will add back):', {
+          inventoryItemId: item.inventoryItemId,
+          itemName: inventoryItem.name,
+          itemSku: inventoryItem.sku,
+          currentStock: inventoryItem.current_stock,
+          returnQuantity: item.quantity,
+          scope: { type: inventoryItem.scope_type, id: inventoryItem.scope_id }
+        });
+        
+        // Create transaction record for stock report with original sale's scope (no stock mutation on return)
+        console.log('[SalesController] Creating return transaction with scope:', {
+          inventoryItemId: item.inventoryItemId,
+          scopeType: originalSale.scopeType,
+          scopeId: originalSale.scopeId,
+          scopeIdType: typeof originalSale.scopeId
+        });
         await createReturnTransaction(
           item.inventoryItemId,
           item.quantity,
@@ -1779,7 +2549,11 @@ const createSalesReturn = async (req, res, next) => {
           req.user.id,
           actingUserName,
           actingUserRole,
-          salesReturn.id
+          salesReturn.id,
+          null, // connection (not using transaction here)
+          originalSale.scopeType, // Pass original sale's scope type
+          originalSale.scopeId,    // Pass original sale's scope ID
+          false // do not affect stock on return creation; restock will adjust stock
         );
         
       } catch (stockError) {
@@ -1788,10 +2562,261 @@ const createSalesReturn = async (req, res, next) => {
       }
     }
 
+    // ✅ CRITICAL FIX: DO NOT update original sale's running_balance
+    // This preserves historical integrity - old rows must never be modified
+    // Instead, create a sale record for the return with old_balance and running_balance
+    
+    // Extract customer info properly - check both direct fields and JSON
+    const returnInvoiceNo = salesReturn.returnNo;
+    const returnScopeType = originalSale.scopeType || originalSale.scope_type || 'BRANCH';
+    const returnScopeId = originalSale.scopeId || originalSale.scope_id || '';
+    let returnCustomerInfo = originalSale.customerInfo || originalSale.customer_info || null;
+    let returnCustomerName = originalSale.customerName || originalSale.customer_name || null;
+    let returnCustomerPhone = originalSale.customerPhone || originalSale.customer_phone || null;
+    
+    // If customer info is in JSON format, try to extract from there
+    if (!returnCustomerName && returnCustomerInfo) {
+      try {
+        const customerInfoObj = typeof returnCustomerInfo === 'string' 
+          ? JSON.parse(returnCustomerInfo) 
+          : returnCustomerInfo;
+        if (customerInfoObj && typeof customerInfoObj === 'object') {
+          returnCustomerName = returnCustomerName || customerInfoObj.name || customerInfoObj.customerName || null;
+          returnCustomerPhone = returnCustomerPhone || customerInfoObj.phone || customerInfoObj.customerPhone || null;
+        }
+      } catch (e) {
+        console.error('[SalesController] Error parsing customer_info JSON:', e);
+      }
+    }
+    
+    // If still no customer name, try to get from the original sale's database row
+    if (!returnCustomerName) {
+      const [saleRows] = await pool.execute('SELECT customer_name, customer_phone FROM sales WHERE id = ?', [saleId]);
+      if (saleRows.length > 0) {
+        returnCustomerName = returnCustomerName || saleRows[0].customer_name || null;
+        returnCustomerPhone = returnCustomerPhone || saleRows[0].customer_phone || null;
+      }
+    }
+    
+    console.log('[SalesController] 🔍 Getting customer running balance for return:', {
+      returnCustomerName,
+      returnCustomerPhone,
+      returnScopeType,
+      returnScopeId,
+      saleId
+    });
+    
+    // Get the customer's latest running balance (before this return)
+    const previousRunningBalance = await getCustomerRunningBalance(
+      returnCustomerName || '',
+      returnCustomerPhone || '',
+      returnScopeType,
+      returnScopeId
+    );
+    
+    // Calculate old_balance and running_balance for the return
+    const returnOldBalance = previousRunningBalance;
+    const returnRunningBalance = returnOldBalance - totalRefund; // Return reduces balance (negative amount)
+    
+    console.log('[SalesController] 💰 Creating return sale record with ledger balances:', {
+      returnId: salesReturn.id,
+      returnNo: salesReturn.returnNo,
+      returnCustomerName,
+      returnCustomerPhone,
+      previousRunningBalance,
+      returnOldBalance,
+      totalRefund,
+      returnRunningBalance,
+      calculation: `${returnOldBalance} - ${totalRefund} = ${returnRunningBalance}`
+    });
+    
+    // Create a sale record for the return (with negative amounts)
+    // This ensures returns are treated like sales in the ledger with stored old_balance and running_balance
+    // We insert directly instead of using Sale.create() because we need to use our calculated old_balance and running_balance
+    try {
+      const returnNotes = `Return for sale ${originalSale.invoiceNo || originalSale.invoice_no || saleId}. Reason: ${reason || 'N/A'}`;
+      
+      console.log('[SalesController] Return sale record - Customer info:', {
+        returnCustomerName,
+        returnCustomerPhone,
+        originalSaleCustomerName: originalSale.customerName,
+        originalSaleCustomer_name: originalSale.customer_name,
+        originalSaleCustomerPhone: originalSale.customerPhone,
+        originalSaleCustomer_phone: originalSale.customer_phone,
+        returnInvoiceNo: returnInvoiceNo
+      });
+      
+      // Insert sale record directly with our calculated balances
+      const [returnSaleResult] = await pool.execute(
+        `
+        INSERT INTO sales (
+          invoice_no, scope_type, scope_id, user_id, shift_id,
+          subtotal, tax, discount, total,
+          payment_method, payment_type, payment_status,
+          customer_info, notes, status,
+          customer_name, customer_phone,
+          payment_amount, credit_amount,
+          old_balance, running_balance,
+          credit_status, credit_due_date, customer_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          returnInvoiceNo,
+          returnScopeType,
+          returnScopeId,
+          req.user.id,
+          null, // shift_id
+          -totalRefund, // subtotal (negative for return)
+          0, // tax
+          0, // discount
+          -totalRefund, // total (negative for return)
+          'REFUND', // payment_method
+          'REFUND', // payment_type
+          'COMPLETED', // payment_status
+          returnCustomerInfo ? JSON.stringify(returnCustomerInfo) : null, // customer_info
+          returnNotes, // notes
+          'COMPLETED', // status
+          returnCustomerName, // customer_name
+          returnCustomerPhone, // customer_phone
+          -totalRefund, // payment_amount (negative for refund)
+          0, // credit_amount
+          returnOldBalance, // old_balance (our calculated value)
+          returnRunningBalance, // running_balance (our calculated value)
+          'NONE', // credit_status
+          null, // credit_due_date
+          originalSale.customerId || originalSale.customer_id || null // customer_id
+        ]
+      );
+      
+      const returnSaleId = returnSaleResult.insertId;
+      console.log('[SalesController] ✅ Return sale record created successfully:', {
+        returnSaleId: returnSaleId,
+        invoiceNo: returnInvoiceNo,
+        oldBalance: returnOldBalance,
+        runningBalance: returnRunningBalance,
+        customerName: returnCustomerName,
+        customerPhone: returnCustomerPhone
+      });
+      
+      // Verify the return sale record was created correctly
+      const [verifyReturn] = await pool.execute(`
+        SELECT 
+          id, invoice_no, customer_name, customer_phone, 
+          old_balance, running_balance, payment_method, payment_type,
+          subtotal, total, created_at
+        FROM sales 
+        WHERE id = ?
+      `, [returnSaleId]);
+      
+      if (verifyReturn.length > 0) {
+        console.log('[SalesController] ✅ Verified return sale record in database:', {
+          id: verifyReturn[0].id,
+          invoice_no: verifyReturn[0].invoice_no,
+          customer_name: verifyReturn[0].customer_name,
+          customer_phone: verifyReturn[0].customer_phone,
+          old_balance: verifyReturn[0].old_balance,
+          running_balance: verifyReturn[0].running_balance,
+          payment_method: verifyReturn[0].payment_method,
+          payment_type: verifyReturn[0].payment_type,
+          subtotal: verifyReturn[0].subtotal,
+          total: verifyReturn[0].total,
+          created_at: verifyReturn[0].created_at
+        });
+      } else {
+        console.error('[SalesController] ❌ ERROR: Return sale record not found after creation!');
+      }
+    } catch (returnSaleError) {
+      console.error('[SalesController] CRITICAL ERROR creating return sale record:', returnSaleError);
+      console.error('[SalesController] Return sale error details:', {
+        message: returnSaleError.message,
+        sqlMessage: returnSaleError.sqlMessage,
+        sqlState: returnSaleError.sqlState,
+        code: returnSaleError.code,
+        errno: returnSaleError.errno
+      });
+      // Re-throw the error so the return creation fails
+      // This ensures returns always have sale records for ledger tracking
+      throw new Error(`Failed to create return sale record: ${returnSaleError.message}`);
+    }
+
+    // Record return in ledger with proper debit/credit entries
+    try {
+      console.log('[SalesController] Starting ledger recording for return...');
+      const ledgerResult = await LedgerService.recordReturnTransaction({
+        returnId: salesReturn.id,
+        returnNo: salesReturn.returnNo,
+        originalSaleId: saleId,
+        originalSale: originalSale,
+        scopeType: originalSale.scopeType,
+        scopeId: originalSale.scopeId,
+        totalRefund: totalRefund,
+        items: enrichedItems,
+        userId: req.user.id
+      });
+      console.log('[SalesController] Return recorded in ledger successfully:', ledgerResult);
+    } catch (ledgerError) {
+      console.error('[SalesController] CRITICAL ERROR recording return in ledger:', ledgerError);
+      console.error('[SalesController] Ledger error stack:', ledgerError.stack);
+      console.error('[SalesController] Ledger error details:', {
+        message: ledgerError.message,
+        code: ledgerError.code,
+        errno: ledgerError.errno,
+        sqlState: ledgerError.sqlState,
+        sqlMessage: ledgerError.sqlMessage
+      });
+      // Don't fail the return if ledger recording fails, but log it properly
+    }
+
+    // Fetch the created return sale record to include in response
+    let returnSaleRecord = null;
+    try {
+      const [returnSaleRows] = await pool.execute(`
+        SELECT 
+          id, invoice_no, customer_name, customer_phone, 
+          old_balance, running_balance, payment_method, payment_type,
+          subtotal, total, payment_amount, created_at
+        FROM sales 
+        WHERE invoice_no = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `, [salesReturn.returnNo]);
+      
+      if (returnSaleRows.length > 0) {
+        returnSaleRecord = returnSaleRows[0];
+      }
+    } catch (fetchError) {
+      console.error('[SalesController] Error fetching return sale record for response:', fetchError);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Sales return created successfully',
-      data: salesReturn
+      data: {
+        ...salesReturn,
+        returnSaleRecord: returnSaleRecord ? {
+          id: returnSaleRecord.id,
+          invoice_no: returnSaleRecord.invoice_no,
+          customer_name: returnSaleRecord.customer_name,
+          customer_phone: returnSaleRecord.customer_phone,
+          old_balance: returnSaleRecord.old_balance,
+          running_balance: returnSaleRecord.running_balance,
+          payment_method: returnSaleRecord.payment_method,
+          payment_type: returnSaleRecord.payment_type,
+          subtotal: returnSaleRecord.subtotal,
+          total: returnSaleRecord.total,
+          payment_amount: returnSaleRecord.payment_amount,
+          created_at: returnSaleRecord.created_at
+        } : null
+      },
+      debug: {
+        customerName: returnCustomerName,
+        customerPhone: returnCustomerPhone,
+        previousRunningBalance: previousRunningBalance,
+        returnOldBalance: returnOldBalance,
+        returnRunningBalance: returnRunningBalance,
+        totalRefund: totalRefund
+      }
     });
   } catch (error) {
     console.error('[DEBUG] Error creating sales return:', error);
@@ -1822,7 +2847,13 @@ const createSalesReturn = async (req, res, next) => {
 // @access  Private (Admin, Cashier, Warehouse Keeper)
 const getSalesReturns = async (req, res, next) => {
   try {
-    const { scopeType, scopeId, startDate, endDate } = req.query;
+    const { scopeType, scopeId, startDate, endDate, search } = req.query;
+    let page = parseInt(req.query.page, 10);
+    let limit = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(page) || page < 1) page = 1;
+    if (!Number.isFinite(limit) || limit < 1) limit = 25;
+    if (limit > 200) limit = 200;
+    const offset = (page - 1) * limit;
     let whereConditions = [];
     let params = [];
 
@@ -1860,31 +2891,75 @@ const getSalesReturns = async (req, res, next) => {
         whereConditions.push('s.scope_type = ?');
         params.push('WAREHOUSE');
       }
-    } else if (scopeType && scopeId) {
-      if (scopeType === 'WAREHOUSE') {
-        // For warehouse scope, we need to resolve warehouse ID to warehouse keeper ID
-        // because sales are stored with warehouse keeper ID as scope_id
-        const [warehouseKeepers] = await pool.execute(
-          'SELECT id FROM users WHERE warehouse_id = ? AND role = "WAREHOUSE_KEEPER"',
-          [scopeId]
-        );
+    } else if (req.user.role === 'ADMIN') {
+      // Admin can filter by scopeType and/or scopeId
+      if (scopeType && scopeType !== 'all') {
+        whereConditions.push('s.scope_type = ?');
+        params.push(scopeType);
         
-        if (warehouseKeepers.length > 0) {
-          // Use the warehouse keeper ID for filtering
-          const warehouseKeeperIds = warehouseKeepers.map(wk => wk.id);
-          const placeholders = warehouseKeeperIds.map(() => '?').join(',');
-          whereConditions.push(`s.scope_type = ? AND s.scope_id IN (${placeholders})`);
-          params.push(scopeType, ...warehouseKeeperIds);
-        } else {
-          // No warehouse keepers found for this warehouse
-          whereConditions.push('s.scope_type = ? AND s.scope_id = ?');
-          params.push(scopeType, -1); // Use -1 to ensure no matches
+        // If scopeId is also provided, handle both name (string) and ID (number) matching
+        if (scopeId && scopeId !== 'all') {
+          // Check if scopeId is numeric (branch/warehouse ID) or string (name)
+          const isNumeric = /^\d+$/.test(String(scopeId));
+          
+          if (scopeType === 'BRANCH' && isNumeric) {
+            // If scopeId is numeric, get branch name to match against sales.scope_id
+            const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [parseInt(scopeId)]);
+            if (branches.length > 0) {
+              whereConditions.push('(s.scope_id = ? OR s.scope_id = ?)');
+              params.push(branches[0].name, String(scopeId));
+            } else {
+              // Branch not found, match by ID as string
+              whereConditions.push('s.scope_id = ?');
+              params.push(String(scopeId));
+            }
+          } else if (scopeType === 'WAREHOUSE' && isNumeric) {
+            // If scopeId is numeric, get warehouse name to match against sales.scope_id
+            const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [parseInt(scopeId)]);
+            if (warehouses.length > 0) {
+              whereConditions.push('(s.scope_id = ? OR s.scope_id = ?)');
+              params.push(warehouses[0].name, String(scopeId));
+            } else {
+              // Warehouse not found, match by ID as string
+              whereConditions.push('s.scope_id = ?');
+              params.push(String(scopeId));
+            }
+          } else {
+            // scopeId is a string (name), match directly
+            whereConditions.push('(s.scope_id = ? OR s.scope_id = ?)');
+            params.push(scopeId, String(scopeId));
+          }
         }
-      } else {
-        // For other scope types (BRANCH), use the scopeId directly
-        whereConditions.push('s.scope_type = ? AND s.scope_id = ?');
-        params.push(scopeType, scopeId);
+      } else if (scopeId && scopeId !== 'all') {
+        // If only scopeId is provided without scopeType, try to match by both BRANCH and WAREHOUSE
+        const isNumeric = /^\d+$/.test(String(scopeId));
+        
+        if (isNumeric) {
+          // Try to find branch or warehouse with this ID
+          const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [parseInt(scopeId)]);
+          const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [parseInt(scopeId)]);
+          
+          if (branches.length > 0) {
+            whereConditions.push('(s.scope_type = ? AND (s.scope_id = ? OR s.scope_id = ?))');
+            params.push('BRANCH', branches[0].name, String(scopeId));
+          }
+          if (warehouses.length > 0) {
+            if (branches.length > 0) {
+              // Add OR condition for warehouse
+              whereConditions[whereConditions.length - 1] = whereConditions[whereConditions.length - 1].replace(')', '') + ' OR (s.scope_type = ? AND (s.scope_id = ? OR s.scope_id = ?)))';
+              params.push('WAREHOUSE', warehouses[0].name, String(scopeId));
+            } else {
+              whereConditions.push('(s.scope_type = ? AND (s.scope_id = ? OR s.scope_id = ?))');
+              params.push('WAREHOUSE', warehouses[0].name, String(scopeId));
+            }
+          }
+        } else {
+          // scopeId is a string, match by name for both BRANCH and WAREHOUSE
+          whereConditions.push('((s.scope_type = ? AND s.scope_id = ?) OR (s.scope_type = ? AND s.scope_id = ?))');
+          params.push('BRANCH', scopeId, 'WAREHOUSE', scopeId);
+        }
       }
+      // If neither scopeType nor scopeId is provided, show all returns (no scope filtering)
     }
 
     if (startDate) {
@@ -1897,7 +2972,31 @@ const getSalesReturns = async (req, res, next) => {
       params.push(endDate);
     }
 
+    if (search && search.trim()) {
+      const like = `%${search.trim()}%`;
+      whereConditions.push('(sr.return_no LIKE ? OR s.invoice_no LIKE ? OR sr.reason LIKE ? OR sr.notes LIKE ?)');
+      params.push(like, like, like, like);
+    }
+
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+
+    console.log('[SalesController] getSalesReturns - Query params:', {
+      role: req.user.role,
+      scopeType,
+      scopeId,
+      whereClause,
+      params,
+      whereConditions
+    });
+
+    // Total count for pagination
+    const [countRows] = await pool.execute(`
+      SELECT COUNT(*) AS count
+      FROM sales_returns sr
+      JOIN sales s ON sr.original_sale_id = s.id
+      ${whereClause}
+    `, params);
+    const total = countRows?.[0]?.count || 0;
 
     const [returns] = await pool.execute(`
       SELECT 
@@ -1909,21 +3008,99 @@ const getSalesReturns = async (req, res, next) => {
         p.username as processed_by_username,
         p.username as processed_by_name,
         b.name as branch_name,
-        w.name as warehouse_name
+        w.name as warehouse_name,
+        (
+          SELECT SUM(sri.remaining_quantity) 
+          FROM sales_return_items sri 
+          WHERE sri.return_id = sr.id
+        ) AS remaining_total
       FROM sales_returns sr
       JOIN sales s ON sr.original_sale_id = s.id
       LEFT JOIN users u ON sr.user_id = u.id
       LEFT JOIN users p ON sr.processed_by = p.id
-      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
-      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
+      LEFT JOIN branches b ON (
+        s.scope_type = 'BRANCH' AND (
+          CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(b.name AS CHAR) COLLATE utf8mb4_bin OR 
+          CAST(s.scope_id AS UNSIGNED) = b.id OR
+          CAST(b.id AS CHAR) COLLATE utf8mb4_bin = CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin
+        )
+      )
+      LEFT JOIN warehouses w ON (
+        s.scope_type = 'WAREHOUSE' AND (
+          CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(w.name AS CHAR) COLLATE utf8mb4_bin OR 
+          CAST(s.scope_id AS UNSIGNED) = w.id OR
+          CAST(w.id AS CHAR) COLLATE utf8mb4_bin = CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin
+        )
+      )
       ${whereClause}
       ORDER BY sr.created_at DESC
-    `, params);
+      LIMIT ? OFFSET ?
+    `, [...params, limit, offset]);
+
+    console.log('[SalesController] getSalesReturns - Found', returns.length, 'returns');
+    if (returns.length > 0) {
+      console.log('[SalesController] Sample returns:', returns.slice(0, 3).map(r => ({
+        id: r.id,
+        return_no: r.return_no,
+        original_sale_id: r.original_sale_id,
+        invoice_no: r.invoice_no,
+        scope_type: r.scope_type || 'N/A',
+        scope_id: r.scope_id || 'N/A'
+      })));
+    }
+
+    // ✅ FIXED: Calculate total refund for each return by summing its items
+    // Also calculate overall summary totals
+    let totalReturnsAmount = 0;
+    const returnsWithCalculatedTotals = await Promise.all(
+      returns.map(async (returnRecord) => {
+        // Get return items to calculate actual total refund
+        const [items] = await pool.execute(`
+          SELECT refund_amount
+          FROM sales_return_items
+          WHERE return_id = ?
+        `, [returnRecord.id]);
+
+        // Calculate total refund as sum of all items' refund amounts
+        const calculatedTotalRefund = items.reduce((sum, item) => {
+          return sum + parseFloat(item.refund_amount || 0);
+        }, 0);
+
+        // Add to overall total
+        totalReturnsAmount += calculatedTotalRefund;
+
+        return {
+          ...returnRecord,
+          // ✅ Use calculated total refund (sum of items) instead of stored value
+          total_refund: calculatedTotalRefund,
+          totalRefund: calculatedTotalRefund, // Add camelCase for frontend compatibility
+          // Keep original stored value for reference
+          _original_total_refund: returnRecord.total_refund
+        };
+      })
+    );
+
+    console.log('[SalesController] getSalesReturns - Summary:', {
+      totalReturns: returnsWithCalculatedTotals.length,
+      totalAmount: totalReturnsAmount,
+      sampleCalculatedTotals: returnsWithCalculatedTotals.slice(0, 3).map(r => ({
+        id: r.id,
+        stored_total_refund: r._original_total_refund,
+        calculated_total_refund: r.total_refund
+      }))
+    });
 
     res.json({
       success: true,
-      count: returns.length,
-      data: returns
+      count: returnsWithCalculatedTotals.length,
+      total,
+      page,
+      limit,
+      summary: {
+        totalReturns: total,
+        totalAmount: totalReturnsAmount
+      },
+      data: returnsWithCalculatedTotals
     });
   } catch (error) {
     res.status(500).json({
@@ -1957,8 +3134,20 @@ const getSalesReturn = async (req, res, next) => {
       LEFT JOIN sales s ON sr.original_sale_id = s.id
       LEFT JOIN users u ON sr.user_id = u.id
       LEFT JOIN users p ON sr.processed_by = p.id
-      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
-      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
+      LEFT JOIN branches b ON (
+        s.scope_type = 'BRANCH' AND (
+          CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(b.name AS CHAR) COLLATE utf8mb4_bin OR 
+          CAST(s.scope_id AS UNSIGNED) = b.id OR
+          CAST(b.id AS CHAR) COLLATE utf8mb4_bin = CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin
+        )
+      )
+      LEFT JOIN warehouses w ON (
+        s.scope_type = 'WAREHOUSE' AND (
+          CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(w.name AS CHAR) COLLATE utf8mb4_bin OR 
+          CAST(s.scope_id AS UNSIGNED) = w.id OR
+          CAST(w.id AS CHAR) COLLATE utf8mb4_bin = CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin
+        )
+      )
       WHERE sr.id = ?
     `, [id]);
 
@@ -1970,6 +3159,11 @@ const getSalesReturn = async (req, res, next) => {
     }
 
     const returnData = returns[0];
+
+    console.log('[SalesController] getSalesReturn - Return found:', {
+      returnId: returnData.id,
+      originalSaleId: returnData.original_sale_id
+    });
 
     // Get return items
     const [items] = await pool.execute(`
@@ -1986,20 +3180,91 @@ const getSalesReturn = async (req, res, next) => {
       ORDER BY sri.id
     `, [id]);
 
+    console.log('[SalesController] getSalesReturn - Items found:', items.length);
+    if (items.length > 0) {
+      console.log('[SalesController] getSalesReturn - First item sample:', {
+        id: items[0].id,
+        item_name: items[0].item_name,
+        inventory_item_name: items[0].inventory_item_name,
+        inventory_item_id: items[0].inventory_item_id,
+        quantity: items[0].quantity,
+        refund_amount: items[0].refund_amount
+      });
+    }
+
+    // FALLBACK: If no items found (old returns that weren't saved), try to reconstruct from original sale
+    let itemsToUse = items;
+    if (items.length === 0 && returnData.original_sale_id) {
+      console.log('[SalesController] getSalesReturn - No items found, attempting to reconstruct from original sale:', returnData.original_sale_id);
+      
+      try {
+        // Get original sale items
+        const [originalSaleItems] = await pool.execute(`
+          SELECT 
+            si.*,
+            ii.name as inventory_item_name,
+            ii.sku as inventory_sku,
+            ii.selling_price as inventory_price,
+            ii.category as inventory_category,
+            ii.barcode as inventory_barcode
+          FROM sale_items si
+          LEFT JOIN inventory_items ii ON si.inventory_item_id = ii.id
+          WHERE si.sale_id = ?
+          ORDER BY si.id
+        `, [returnData.original_sale_id]);
+
+        if (originalSaleItems.length > 0) {
+          console.log('[SalesController] getSalesReturn - Reconstructed items from original sale:', originalSaleItems.length);
+          
+          // Reconstruct return items from original sale items
+          // Use the total refund amount divided by number of items as a simple approximation
+          const refundPerItem = returnData.total_refund ? (parseFloat(returnData.total_refund) / originalSaleItems.length) : 0;
+          
+          itemsToUse = originalSaleItems.map((saleItem, index) => ({
+            id: null, // No actual return item ID
+            return_id: returnData.id,
+            inventory_item_id: saleItem.inventory_item_id,
+            item_name: saleItem.item_name || saleItem.inventory_item_name || 'Unknown Item',
+            sku: saleItem.sku || saleItem.inventory_sku || 'N/A',
+            barcode: saleItem.barcode || saleItem.inventory_barcode || null,
+            category: saleItem.category || saleItem.inventory_category || null,
+            quantity: parseFloat(saleItem.quantity) || 0,
+            original_quantity: parseFloat(saleItem.quantity) || 0,
+            remaining_quantity: parseFloat(saleItem.quantity) || 0,
+            unit_price: parseFloat(saleItem.unit_price) || 0,
+            refund_amount: refundPerItem || parseFloat(saleItem.total) || 0,
+            created_at: returnData.created_at,
+            inventory_item_name: saleItem.inventory_item_name,
+            inventory_sku: saleItem.inventory_sku,
+            inventory_price: parseFloat(saleItem.inventory_price) || 0,
+            inventory_category: saleItem.inventory_category,
+            inventory_barcode: saleItem.inventory_barcode
+          }));
+        }
+      } catch (fallbackError) {
+        console.error('[SalesController] getSalesReturn - Error reconstructing items from original sale:', fallbackError);
+        // Continue with empty items array
+      }
+    }
+
     // Transform items data
-    const transformedItems = items.map(item => ({
+    const transformedItems = itemsToUse.map(item => ({
       id: item.id,
       returnId: item.return_id,
       inventoryItemId: item.inventory_item_id,
       itemName: item.item_name || item.inventory_item_name || 'Unknown Item',
+      name: item.item_name || item.inventory_item_name || 'Unknown Item', // Add 'name' for frontend compatibility
+      productName: item.item_name || item.inventory_item_name || 'Unknown Item', // Add 'productName' for frontend compatibility
       sku: item.sku || item.inventory_sku || 'N/A',
       barcode: item.barcode || item.inventory_barcode || null,
       category: item.category || item.inventory_category || null,
-      quantity: parseFloat(item.quantity),
-      originalQuantity: parseFloat(item.original_quantity),
-      remainingQuantity: parseFloat(item.remaining_quantity),
-      unitPrice: parseFloat(item.unit_price),
-      refundAmount: parseFloat(item.refund_amount),
+      quantity: parseFloat(item.quantity) || 0,
+      originalQuantity: parseFloat(item.original_quantity) || 0,
+      remainingQuantity: parseFloat(item.remaining_quantity) || 0,
+      unitPrice: parseFloat(item.unit_price) || 0,
+      unit_price: parseFloat(item.unit_price) || 0, // Add snake_case for frontend compatibility
+      refundAmount: parseFloat(item.refund_amount) || 0,
+      refund_amount: parseFloat(item.refund_amount) || 0, // Add snake_case for frontend compatibility
       createdAt: item.created_at,
       // Additional inventory info
       inventoryItemName: item.inventory_item_name,
@@ -2010,11 +3275,38 @@ const getSalesReturn = async (req, res, next) => {
       maxStockLevel: parseFloat(item.max_stock_level) || 0
     }));
 
+    console.log('[SalesController] getSalesReturn - Transformed items:', transformedItems.length);
+
+    // ✅ FIXED: Calculate total refund as sum of all items' refund amounts
+    const calculatedTotalRefund = transformedItems.reduce((sum, item) => {
+      const refundAmount = parseFloat(item.refundAmount || item.refund_amount || 0);
+      return sum + refundAmount;
+    }, 0);
+
+    console.log('[SalesController] getSalesReturn - Total refund calculation:', {
+      storedTotalRefund: returnData.total_refund,
+      calculatedTotalRefund: calculatedTotalRefund,
+      itemsCount: transformedItems.length,
+      itemRefunds: transformedItems.map(item => ({
+        itemName: item.itemName,
+        refundAmount: item.refundAmount || item.refund_amount
+      }))
+    });
+
     // Combine return data with items
     const returnWithItems = {
       ...returnData,
-      items: transformedItems
+      items: transformedItems,
+      // ✅ Use calculated total refund (sum of all items) instead of stored value
+      total_refund: calculatedTotalRefund,
+      totalRefund: calculatedTotalRefund // Add camelCase for frontend compatibility
     };
+
+    console.log('[SalesController] getSalesReturn - Returning data with items:', {
+      returnId: returnWithItems.id,
+      itemsCount: returnWithItems.items.length,
+      totalRefund: returnWithItems.total_refund
+    });
 
     res.json({
       success: true,
@@ -2553,15 +3845,36 @@ const searchSales = async (req, res, next) => {
     } else if (req.user.role === 'WAREHOUSE_KEEPER') {
       // Get warehouse name if not already available
       let userWarehouseName = req.user.warehouseName;
-      if (!userWarehouseName && req.user.warehouseId) {
-        const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [req.user.warehouseId]);
-        userWarehouseName = warehouses[0]?.name || null;
+      let userWarehouseId = req.user.warehouseId;
+      
+      if (!userWarehouseName && userWarehouseId) {
+        const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [userWarehouseId]);
+        if (warehouses.length > 0) {
+          userWarehouseName = warehouses[0].name;
+        }
       }
       
       if (userWarehouseName) {
-        whereConditions.push('s.scope_type = ? AND s.scope_id = ?');
-        params.push('WAREHOUSE', userWarehouseName);
+        // Filter by warehouse name and ID (handle both string and number comparisons)
+        whereConditions.push(`(
+          s.scope_type = 'WAREHOUSE' AND (
+            CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+            OR s.scope_id = ?
+            OR s.scope_id = ?
+          )
+        )`);
+        params.push(userWarehouseName, String(userWarehouseId || ''), userWarehouseId);
+      } else if (userWarehouseId) {
+        // Fallback: only warehouse ID available
+        whereConditions.push(`(
+          s.scope_type = 'WAREHOUSE' AND (
+            s.scope_id = ?
+            OR s.scope_id = ?
+          )
+        )`);
+        params.push(String(userWarehouseId), userWarehouseId);
       } else {
+        // No warehouse info available, only filter by type
         whereConditions.push('s.scope_type = ?');
         params.push('WAREHOUSE');
       }
@@ -2881,7 +4194,8 @@ const searchOutstandingPayments = async (req, res) => {
 
     console.log('🔍 Scope info:', { scopeType, scopeName });
 
-    // ✅ FIXED: SIMPLE AND RELIABLE QUERY - Get ONLY the latest transaction
+    // ✅ FIXED: Get the latest transaction first, then check if balance is outstanding
+    // This ensures returns (which set running_balance to 0) are correctly handled
     let query = `
       SELECT 
         s.customer_name,
@@ -2893,13 +4207,14 @@ const searchOutstandingPayments = async (req, res) => {
         s.credit_amount,
         s.payment_amount,
         s.total,
-        s.subtotal
+        s.subtotal,
+        s.payment_method,
+        s.payment_type
       FROM sales s
-      WHERE (s.customer_name = ? OR s.customer_phone = ?)
-        AND ABS(s.running_balance) > 0.01
+      WHERE (LOWER(TRIM(s.customer_name)) = LOWER(TRIM(?)) OR s.customer_phone = ? OR LOWER(TRIM(JSON_EXTRACT(s.customer_info, "$.name"))) = LOWER(TRIM(?)) OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)
     `;
     
-    let params = [customerName || phone, phone || customerName];
+    let params = [customerName || phone || '', phone || customerName || '', customerName || phone || '', phone || customerName || ''];
 
     // Add scope filtering for non-admin users
     if (req.user.role !== 'ADMIN' && scopeType && scopeName) {
@@ -2927,6 +4242,16 @@ const searchOutstandingPayments = async (req, res) => {
     // Format the single result
     const customer = results[0];
     const outstanding = parseFloat(customer.running_balance) || 0;
+    
+    // ✅ FIXED: Only return outstanding if balance is actually > 0.01
+    // This ensures returns that set balance to 0 are correctly handled
+    if (Math.abs(outstanding) <= 0.01) {
+      console.log('🔍 No outstanding balance - latest running_balance is:', outstanding);
+      return res.json({
+        success: true,
+        data: []
+      });
+    }
     
     const formattedResult = {
       customerName: customer.customer_name,
@@ -2977,46 +4302,48 @@ const searchOutstandingPayments = async (req, res) => {
 // @access  Private (Cashier)
 const clearOutstandingPayment = async (req, res) => {
   try {
-    const { customerName, phone, paymentAmount, paymentMethod, creditAmount = 0 } = req.body;
+    const { customerName, phone, paymentAmount, paymentMethod } = req.body;
 
-    if (!customerName || !phone || !paymentAmount || !paymentMethod) {
-      return res.status(400).json({
-        success: false,
-        message: 'Customer name, phone, payment amount, and payment method are required'
-      });
-    }
+    if (!customerName || !phone || !paymentMethod) {
+  return res.status(400).json({
+    success: false,
+    message: 'Customer name, phone, and payment method are required'
+  });
+}
 
-    // Get user's scope information based on role (outside transaction)
+    // Get user's scope information based on role
     let scopeType, scope;
     
     if (req.user.role === 'CASHIER' && req.user.branchId) {
-      // For cashiers, get branch name from branch ID
       const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [req.user.branchId]);
       if (branches.length > 0) {
         scopeType = 'BRANCH';
         scope = branches[0].name;
       }
     } else if (req.user.role === 'WAREHOUSE_KEEPER' && req.user.warehouseId) {
-      // For warehouse keepers, get warehouse name from warehouse ID
       const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [req.user.warehouseId]);
       if (warehouses.length > 0) {
         scopeType = 'WAREHOUSE';
         scope = warehouses[0].name;
       }
     } else if (req.user.role === 'ADMIN') {
-      // Admin can see all transactions (no scope restrictions)
       scopeType = null;
       scope = null;
     }
 
-    console.log('🔍 clearOutstandingPayment - scope:', scope, 'scopeType:', scopeType);
-
     // Validate scope information for non-admin users
     if (req.user.role !== 'ADMIN' && (!scope || !scopeType)) {
-      console.error('❌ Missing scope information:', { scope, scopeType, role: req.user.role });
       return res.status(400).json({
         success: false,
         message: 'User scope information is missing'
+      });
+    }
+
+    const normalizedPaymentAmount = parseFloat(paymentAmount) || 0;
+    if (Number.isNaN(normalizedPaymentAmount) || normalizedPaymentAmount < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment amount cannot be negative'
       });
     }
 
@@ -3025,317 +4352,213 @@ const clearOutstandingPayment = async (req, res) => {
     try {
       await connection.beginTransaction();
 
-      // Build query with conditional scope filtering
-      let query = `
-        SELECT id, invoice_no, credit_amount, running_balance, payment_amount, total, payment_status, scope_type, scope_id
-        FROM sales 
-        WHERE customer_name = ? AND customer_phone = ? 
-          AND running_balance != 0
-      `;
-      
-      const queryParams = [customerName, phone];
-      
-      // Add scope filtering for non-admin users
-      if (req.user.role !== 'ADMIN' && scope && scopeType) {
-        query += ' AND scope_type = ? AND scope_id = ?';
-        queryParams.push(scopeType, scope);
-      }
-      
-      query += ' ORDER BY created_at ASC';
-
-      console.log('🔍 clearOutstandingPayment - Final query:', query);
-      console.log('🔍 clearOutstandingPayment - Final params:', queryParams);
-
-      const [outstandingSales] = await connection.execute(query, queryParams);
-
-      if (outstandingSales.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'No outstanding payments found for this customer'
-        });
-      }
-
-      let normalizedPaymentAmount = parseFloat(paymentAmount);
-      let normalizedCreditAmount = parseFloat(creditAmount);
-
-      if (Number.isNaN(normalizedPaymentAmount) || normalizedPaymentAmount < 0) {
-        normalizedPaymentAmount = 0;
-      }
-
-      if (Number.isNaN(normalizedCreditAmount)) {
-        normalizedCreditAmount = 0;
-      }
-
-      // Calculate total outstanding amount before processing
-      const totalOutstandingBefore = outstandingSales.reduce((sum, sale) => sum + parseFloat(sale.running_balance), 0);
-      console.log('💰 Total outstanding before:', totalOutstandingBefore);
-
-      const targetOutstanding = normalizedCreditAmount;
-      let totalAdjustment = totalOutstandingBefore - targetOutstanding;
-
-      if (!Number.isFinite(totalAdjustment)) {
-        totalAdjustment = 0;
-      }
-
-      if (totalAdjustment < 0) {
-        totalAdjustment = 0;
-      }
-
-      const cashToApply = Math.min(totalAdjustment, normalizedPaymentAmount);
-      let paymentRemaining = cashToApply;
-      let creditAdjustmentRemaining = totalAdjustment - cashToApply;
-      if (creditAdjustmentRemaining < 0) {
-        creditAdjustmentRemaining = 0;
-      }
-
-      let processedSales = [];
-
-      // Process each outstanding sale
-      for (const sale of outstandingSales) {
-        const currentRunningBalance = parseFloat(sale.running_balance);
-
-        if (currentRunningBalance < 0 && paymentRemaining > 0) {
-          // Negative running balance (customer has advance credit) - reduce credit
-          const creditToUse = Math.min(paymentRemaining, Math.abs(currentRunningBalance));
-
-          const newRunningBalance = currentRunningBalance + creditToUse;
-          const newCreditAmount = parseFloat(sale.credit_amount) + creditToUse;
-
-          await connection.execute(
-            `UPDATE sales 
-             SET credit_amount = ?, 
-                 running_balance = ?,
-                 updated_at = NOW()
-             WHERE id = ?`,
-            [newCreditAmount, newRunningBalance, sale.id]
-          );
-
-          processedSales.push({
-            saleId: sale.id,
-            invoiceNo: sale.invoice_no,
-            creditUsed: creditToUse,
-            remainingRunningBalance: newRunningBalance,
-            newStatus: sale.payment_status,
-            isCredit: true
-          });
-
-          paymentRemaining -= creditToUse;
-        }
-
-        if (currentRunningBalance > 0) {
-          if (paymentRemaining > 0) {
-            const paymentToApply = Math.min(paymentRemaining, currentRunningBalance);
-
-            const newPaymentAmount = parseFloat(sale.payment_amount) + paymentToApply;
-            const newCreditAmount = parseFloat(sale.credit_amount) - paymentToApply;
-            const newRunningBalance = currentRunningBalance - paymentToApply;
-            const newPaymentStatus = newRunningBalance <= 0 ? 'COMPLETED' : 'PARTIAL';
-
-            await connection.execute(
-              `UPDATE sales 
-               SET payment_amount = ?, 
-                   credit_amount = ?, 
-                   running_balance = ?,
-                   payment_status = ?,
-                   updated_at = NOW()
-               WHERE id = ?`,
-              [newPaymentAmount, newCreditAmount, newRunningBalance, newPaymentStatus, sale.id]
-            );
-
-            processedSales.push({
-              saleId: sale.id,
-              invoiceNo: sale.invoice_no,
-              paymentApplied: paymentToApply,
-              remainingRunningBalance: newRunningBalance,
-              newStatus: newPaymentStatus
-            });
-
-            paymentRemaining -= paymentToApply;
-          }
-
-          if (creditAdjustmentRemaining > 0) {
-            const creditToApply = Math.min(creditAdjustmentRemaining, currentRunningBalance);
-
-            const newCreditAmount = parseFloat(sale.credit_amount) - creditToApply;
-            const newRunningBalance = currentRunningBalance - creditToApply;
-            const newPaymentStatus = newRunningBalance <= 0 ? 'COMPLETED' : 'PARTIAL';
-
-            await connection.execute(
-              `UPDATE sales 
-               SET credit_amount = ?, 
-                   running_balance = ?,
-                   payment_status = ?,
-                   updated_at = NOW()
-               WHERE id = ?`,
-              [newCreditAmount, newRunningBalance, newPaymentStatus, sale.id]
-            );
-
-            processedSales.push({
-              saleId: sale.id,
-              invoiceNo: sale.invoice_no,
-              creditNoteApplied: creditToApply,
-              remainingRunningBalance: newRunningBalance,
-              newStatus: newPaymentStatus
-            });
-
-            creditAdjustmentRemaining -= creditToApply;
-          }
-        }
-      }
-
-      const totalPaymentApplied = cashToApply;
-      const finalCreditAmount = normalizedCreditAmount;
-      const totalSettlementAdjustment = totalOutstandingBefore - finalCreditAmount;
-      let settlementAmountRecorded = totalSettlementAdjustment;
-
-      // ✅ Determine the latest running balance after applying payments above
+      // ✅ RULE: Find the customer's latest running balance
       let latestRunningBalance = 0;
-      try {
-        let latestBalanceQuery = `
-          SELECT running_balance
-          FROM sales
-          WHERE customer_name = ? AND customer_phone = ?
-        `;
-        const latestBalanceParams = [customerName, phone];
+      let latestBalanceQuery = `
+        SELECT running_balance
+        FROM sales
+        WHERE customer_name = ? AND customer_phone = ?
+      `;
+      const latestBalanceParams = [customerName, phone];
 
-        if (req.user.role !== 'ADMIN' && scope && scopeType) {
-          latestBalanceQuery += ' AND scope_type = ? AND scope_id = ?';
-          latestBalanceParams.push(scopeType, scope);
-        }
-
-        latestBalanceQuery += ' ORDER BY created_at DESC, id DESC LIMIT 1';
-
-        const [latestBalanceRows] = await connection.execute(latestBalanceQuery, latestBalanceParams);
-        if (latestBalanceRows.length > 0) {
-          latestRunningBalance = parseFloat(latestBalanceRows[0].running_balance) || 0;
-        }
-      } catch (balanceError) {
-        console.error('❌ clearOutstandingPayment - Error fetching latest running balance:', balanceError);
+      if (req.user.role !== 'ADMIN' && scope && scopeType) {
+        latestBalanceQuery += ' AND scope_type = ? AND scope_id = ?';
+        latestBalanceParams.push(scopeType, scope);
       }
 
-      // ✅ NEW: Create a settlement transaction in sales table for ledger tracking
-      
-      if (totalSettlementAdjustment > 0) {
-        console.log('💰 Creating settlement transaction:', {
-          customerName,
-          phone,
-          totalSettlementAdjustment,
-          finalCreditAmount,
-          scopeType,
-          scope
+      latestBalanceQuery += ' ORDER BY created_at DESC, id DESC LIMIT 1';
+
+      const [latestBalanceRows] = await connection.execute(latestBalanceQuery, latestBalanceParams);
+      if (latestBalanceRows.length > 0) {
+        latestRunningBalance = parseFloat(latestBalanceRows[0].running_balance) || 0;
+      }
+
+      // Check if customer has any balance to settle
+      if (Math.abs(latestRunningBalance) <= 0.01) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'Customer has no outstanding balance or credit to settle'
         });
+      }
 
-        // Generate invoice number for settlement
-        let settlementInvoiceNo;
-        try {
-          const numericScopeId = typeof scope === 'string' ? (scope.match(/^\d+$/) ? parseInt(scope) : scope) : scope;
-          settlementInvoiceNo = await InvoiceNumberService.generateInvoiceNumber(scopeType, numericScopeId);
-        } catch (invoiceError) {
-          console.error('Error generating settlement invoice number:', invoiceError);
-          settlementInvoiceNo = `SETTLE-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+      // Determine if we're dealing with credit (negative) or outstanding (positive)
+      const isCreditSettlement = latestRunningBalance < 0;
+      const absoluteBalance = Math.abs(latestRunningBalance);
+      
+      console.log('💰 Settlement details:', {
+        customerName,
+        phone,
+        latestRunningBalance,
+        isCreditSettlement,
+        absoluteBalance,
+        paymentAmount: normalizedPaymentAmount
+      });
+
+      // Validate payment amount based on balance type
+      let actualPaymentAmount = normalizedPaymentAmount;
+      
+      if (isCreditSettlement) {
+        // For credit (negative balance): customer is getting MONEY BACK
+        // This is a REFUND scenario
+        if (normalizedPaymentAmount === 0) {
+          // If payment amount is 0, they want to clear the full credit
+          actualPaymentAmount = absoluteBalance;
+        } else if (normalizedPaymentAmount > absoluteBalance) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: `Refund amount (${normalizedPaymentAmount}) cannot exceed available credit (${absoluteBalance})`
+          });
         }
+        
+        // For credit refunds, payment method should indicate it's a refund
+        console.log(`💰 Customer getting refund of ${actualPaymentAmount} from credit balance of ${absoluteBalance}`);
+      } else {
+        // For outstanding (positive balance): customer is PAYING their debt
+        if (normalizedPaymentAmount === 0) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: 'Payment amount must be greater than 0 for outstanding balance'
+          });
+        }
+        
+        if (normalizedPaymentAmount > absoluteBalance) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: `Payment amount (${normalizedPaymentAmount}) cannot exceed outstanding balance (${absoluteBalance})`
+          });
+        }
+      }
 
-        // Calculate new running balance after settlement
-        const settlementAmount = totalSettlementAdjustment;
-        settlementAmountRecorded = settlementAmount;
-        const newRunningBalance = finalCreditAmount !== 0 ? finalCreditAmount : latestRunningBalance;
+      // ✅ RULE: Create ONE new settlement sale row
+      const oldBalance = latestRunningBalance; // old_balance = latest running_balance
+      
+      // Calculate new running balance and payment type
+      let newRunningBalance, actualPaymentMethod, settlementType, totalAmount, notes;
+      
+      if (isCreditSettlement) {
+        // Customer is getting REFUND from their credit (negative balance)
+        // Example: -500 credit, refund 500 → new balance = 0
+        // Payment is negative because we're GIVING money to customer
+        newRunningBalance = oldBalance + actualPaymentAmount; // Negative + positive = less negative
+        actualPaymentMethod = 'CASH_REFUND'; // Special payment method for refunds
+        settlementType = 'CREDIT_REFUND_SETTLEMENT';
+        totalAmount = -actualPaymentAmount; // Negative total for refund
+        notes = `Credit refund: Customer received ${actualPaymentAmount.toFixed(2)} cash back from credit balance of ${Math.abs(oldBalance).toFixed(2)}`;
+      } else {
+        // Customer is PAYING their outstanding (positive balance)
+        newRunningBalance = oldBalance - actualPaymentAmount; // Positive - positive = less positive
+        actualPaymentMethod = paymentMethod;
+        settlementType = 'OUTSTANDING_SETTLEMENT';
+        totalAmount = actualPaymentAmount;
+        notes = `Outstanding payment settlement: Customer paid ${actualPaymentAmount.toFixed(2)} toward balance of ${oldBalance.toFixed(2)}`;
+      }
+      
+      const paymentStatus = Math.abs(newRunningBalance) <= 0.01 ? 'COMPLETED' : 'PARTIAL';
 
-        // Create settlement sale record
-        const settlementData = {
-          invoiceNo: settlementInvoiceNo,
-          scopeType: scopeType,
-          scopeId: scope,
-          userId: req.user.id,
-          subtotal: 0, // No items in settlement
-          tax: 0,
-          discount: 0,
-          total: settlementAmount, // Total adjustment amount (cash + credit note)
-          paymentMethod: paymentMethod,
-          paymentType: 'OUTSTANDING_SETTLEMENT',
-          paymentStatus: finalCreditAmount > 0 ? 'PARTIAL' : 'COMPLETED',
-          customerInfo: JSON.stringify({
-            name: customerName,
-            phone: phone
-          }),
-          customerName: customerName,
-          customerPhone: phone,
-          paymentAmount: totalPaymentApplied,
-          creditAmount: finalCreditAmount,
-          runningBalance: newRunningBalance,
-          creditStatus: finalCreditAmount > 0 ? 'PENDING' : 'NONE',
-          notes: `Outstanding settlement adjustment ${settlementAmount.toFixed(2)} (cash: ${totalPaymentApplied.toFixed(2)}, balance: ${finalCreditAmount.toFixed(2)})`,
-          status: 'COMPLETED',
-          items: [] // No items for settlement
-        };
+      console.log('💰 Settlement calculation:', {
+        oldBalance,
+        actualPaymentAmount,
+        newRunningBalance,
+        isCreditSettlement,
+        paymentStatus,
+        settlementType
+      });
 
-        console.log('💰 Settlement data:', settlementData);
+      // Generate invoice number for settlement
+      let settlementInvoiceNo;
+      try {
+        const numericScopeId = typeof scope === 'string' ? (scope.match(/^\d+$/) ? parseInt(scope) : scope) : scope;
+        settlementInvoiceNo = await InvoiceNumberService.generateInvoiceNumber(scopeType, numericScopeId);
+      } catch (invoiceError) {
+        console.error('Error generating settlement invoice number:', invoiceError);
+        settlementInvoiceNo = `SETTLE-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+      }
 
-        // Insert settlement record
-        const [settlementResult] = await connection.execute(`
-          INSERT INTO sales (
-            invoice_no, scope_type, scope_id, user_id, subtotal, tax, discount, total,
-            payment_method, payment_type, payment_status, customer_info, customer_name, 
-            customer_phone, payment_amount, credit_amount, running_balance, credit_status,
-            notes, status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-        `, [
-          settlementData.invoiceNo,
-          settlementData.scopeType,
-          settlementData.scopeId,
-          settlementData.userId,
-          settlementData.subtotal,
-          settlementData.tax,
-          settlementData.discount,
-          settlementData.total,
-          settlementData.paymentMethod,
-          settlementData.paymentType,
-          settlementData.paymentStatus,
-          settlementData.customerInfo,
-          settlementData.customerName,
-          settlementData.customerPhone,
-          settlementData.paymentAmount,
-          settlementData.creditAmount,
-          settlementData.runningBalance,
-          settlementData.creditStatus,
-          settlementData.notes,
-          settlementData.status
-        ]);
+      // Insert settlement record with appropriate values
+      const [settlementResult] = await connection.execute(`
+        INSERT INTO sales (
+          invoice_no, scope_type, scope_id, user_id, subtotal, tax, discount, total,
+          payment_method, payment_type, payment_status, customer_info, customer_name, 
+          customer_phone, payment_amount, credit_amount, old_balance, running_balance, credit_status,
+          notes, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+      `, [
+        settlementInvoiceNo,
+        scopeType,
+        scope,
+        req.user.id,
+        0, // subtotal
+        0, // tax
+        0, // discount
+        totalAmount, // total = positive for payment, negative for refund
+        actualPaymentMethod,
+        settlementType,
+        paymentStatus,
+        JSON.stringify({ 
+          name: customerName, 
+          phone: phone,
+          isCreditRefund: isCreditSettlement,
+          refundAmount: isCreditSettlement ? actualPaymentAmount : 0,
+          paymentAmount: !isCreditSettlement ? actualPaymentAmount : 0
+        }),
+        customerName,
+        phone,
+        isCreditSettlement ? -actualPaymentAmount : actualPaymentAmount, // payment_amount (negative for refund)
+        isCreditSettlement ? actualPaymentAmount : 0, // credit_amount (amount of credit refunded)
+        oldBalance, // old_balance
+        newRunningBalance, // running_balance
+        isCreditSettlement ? 'REFUNDED' : 'NONE', // credit_status
+        notes,
+        'COMPLETED',
+      ]);
 
-        const settlementId = settlementResult.insertId;
+      const settlementId = settlementResult.insertId;
 
-        // ✅ Record settlement in ledger
-        try {
-          console.log('💰 Recording settlement in ledger...');
-          const ledgerResult = await LedgerService.recordSaleTransaction({
+      // ✅ Record settlement in ledger
+      try {
+        if (typeof LedgerService !== 'undefined' && LedgerService.recordSaleTransaction) {
+          await LedgerService.recordSaleTransaction({
             saleId: settlementId,
             invoiceNo: settlementInvoiceNo,
             scopeType: scopeType,
             scopeId: scope,
-            totalAmount: settlementAmount,
-            paymentAmount: totalPaymentApplied,
-            creditAmount: finalCreditAmount,
-            paymentMethod: paymentMethod,
-            customerInfo: { name: customerName, phone: phone },
+            totalAmount: Math.abs(totalAmount),
+            paymentAmount: isCreditSettlement ? 0 : actualPaymentAmount,
+            creditAmount: isCreditSettlement ? actualPaymentAmount : 0,
+            paymentMethod: actualPaymentMethod,
+            customerInfo: { 
+              name: customerName, 
+              phone: phone,
+              isCreditRefund: isCreditSettlement
+            },
             userId: req.user.id,
             items: [],
-            isSettlement: true
+            isSettlement: true,
+            isCreditRefund: isCreditSettlement
           });
-          console.log('💰 Settlement recorded in ledger:', ledgerResult);
-        } catch (ledgerError) {
-          console.error('💰 CRITICAL ERROR recording settlement in ledger:', ledgerError);
-          // Don't fail the settlement if ledger recording fails
         }
+      } catch (ledgerError) {
+        console.error('Error recording settlement in ledger:', ledgerError);
+        // Don't fail the settlement if ledger recording fails
+      }
 
-        // ✅ Create financial voucher for the settlement
-        try {
-          const voucherNo = `VCH-SETTLE-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
-          const voucherData = {
+      // ✅ Create financial voucher
+      try {
+        if (typeof FinancialVoucher !== 'undefined' && FinancialVoucher.create) {
+          const voucherNo = `VCH-${isCreditSettlement ? 'REFUND' : 'SETTLE'}-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+          await FinancialVoucher.create({
             voucherNo: voucherNo,
-            type: 'INCOME',
-            category: 'SETTLEMENT',
-            paymentMethod: paymentMethod.toUpperCase(),
-            amount: totalPaymentApplied,
-            description: `Outstanding payment settlement for ${customerName} (${phone})`,
+            type: isCreditSettlement ? 'EXPENSE' : 'INCOME',
+            category: isCreditSettlement ? 'CREDIT_REFUND' : 'SETTLEMENT',
+            paymentMethod: actualPaymentMethod.toUpperCase(),
+            amount: Math.abs(totalAmount),
+            description: isCreditSettlement 
+              ? `Credit refund to ${customerName} (${phone}): Refunded ${actualPaymentAmount.toFixed(2)} from credit balance`
+              : `Outstanding payment from ${customerName} (${phone}): Received ${actualPaymentAmount.toFixed(2)}`,
             reference: settlementInvoiceNo,
             scopeType: scopeType,
             scopeId: scope,
@@ -3346,57 +4569,57 @@ const clearOutstandingPayment = async (req, res) => {
             approvedBy: req.user.id,
             approvalNotes: null,
             rejectionReason: null
-          };
-
-          await FinancialVoucher.create(voucherData);
-        } catch (voucherError) {
-          console.error('Error creating financial voucher for settlement:', voucherError);
-          // Don't fail the settlement if voucher creation fails
+          });
         }
-
-        console.log('✅ Settlement transaction created with ID:', settlementId);
+      } catch (voucherError) {
+        console.error('Error creating financial voucher for settlement:', voucherError);
+        // Don't fail the settlement if voucher creation fails
       }
 
       await connection.commit();
 
-      // Get updated outstanding amount within the user's scope
-      let remainingQuery = `
-        SELECT SUM(running_balance) as remaining_outstanding
-        FROM sales 
+      // Get the updated balance
+      const [latestSaleRow] = await connection.execute(
+        `SELECT running_balance FROM sales 
         WHERE customer_name = ? AND customer_phone = ? 
-          AND running_balance != 0
-      `;
-      
-      const remainingParams = [customerName, phone];
-      
-      // Add scope filtering for non-admin users
-      if (req.user.role !== 'ADMIN' && scope && scopeType) {
-        remainingQuery += ' AND scope_type = ? AND scope_id = ?';
-        remainingParams.push(scopeType, scope);
-      }
+         ${req.user.role !== 'ADMIN' && scope && scopeType ? 'AND scope_type = ? AND scope_id = ?' : ''}
+         ORDER BY created_at DESC, id DESC LIMIT 1`,
+        req.user.role !== 'ADMIN' && scope && scopeType 
+          ? [customerName, phone, scopeType, scope]
+          : [customerName, phone]
+      );
 
-      console.log('🔍 clearOutstandingPayment - Remaining query:', remainingQuery);
-      console.log('🔍 clearOutstandingPayment - Remaining params:', remainingParams);
+      const remainingOutstanding = latestSaleRow.length > 0 
+        ? parseFloat(latestSaleRow[0].running_balance) || 0 
+        : 0;
 
-      const [outstanding] = await connection.execute(remainingQuery, remainingParams);
-
-      const remainingOutstanding = parseFloat(outstanding[0].remaining_outstanding) || 0;
+      // Get settlement sale details
+      const [settlementSaleRows] = await connection.execute(
+        `SELECT id, invoice_no, created_at, total, payment_method, payment_amount, credit_amount, running_balance, customer_name, customer_phone
+         FROM sales WHERE id = ?`,
+        [settlementId]
+      );
+      const settlementSale = settlementSaleRows.length > 0 ? settlementSaleRows[0] : null;
 
       res.json({
         success: true,
-        message: 'Payment processed successfully',
+        message: isCreditSettlement 
+          ? `Credit refund processed successfully: Customer received ${actualPaymentAmount.toFixed(2)} cash back`
+          : `Settlement processed successfully: Customer paid ${actualPaymentAmount.toFixed(2)}`,
         data: {
           customerName,
           phone,
-          paymentAmount: totalPaymentApplied,
-          paymentMethod,
+          paymentAmount: actualPaymentAmount,
+          paymentMethod: actualPaymentMethod,
           remainingOutstanding,
-          isFullyCleared: Math.abs(remainingOutstanding) <= 0.01, // Allow small rounding differences
-          processedSales,
-          unprocessedAmount: 0,
-          settlementCreated: totalPaymentApplied > 0,
-          settlementAmount: settlementAmountRecorded,
-          settlementCredit: finalCreditAmount
+          isFullyCleared: Math.abs(remainingOutstanding) <= 0.01,
+          settlementCreated: true,
+          settlementAmount: actualPaymentAmount,
+          settlementSale,
+          isCreditRefund: isCreditSettlement,
+          originalBalance: oldBalance,
+          newBalance: newRunningBalance,
+          refundAmount: isCreditSettlement ? actualPaymentAmount : 0
         }
       });
 
@@ -3416,7 +4639,6 @@ const clearOutstandingPayment = async (req, res) => {
     });
   }
 };
-
 module.exports = {
   createSale,
   getSales,

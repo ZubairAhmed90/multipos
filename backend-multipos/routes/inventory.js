@@ -18,6 +18,11 @@ const { uploadSingle, handleUploadError } = require('../middleware/upload');
 // @access  Private (Admin, Warehouse Keeper, Cashier)
 router.get('/', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), inventoryController.getInventoryItems);
 
+// @route   GET /api/inventory/cross-warehouse
+// @desc    Get cross-warehouse inventory (other warehouses)
+// @access  Private (Admin, Warehouse Keeper)
+router.get('/cross-warehouse', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), inventoryController.getCrossWarehouseInventory);
+
 // @route   GET /api/inventory/cross-branch
 // @desc    Get cross-branch inventory (branches only, not warehouses)
 // @access  Private (Admin, Warehouse Keeper, Cashier)
@@ -29,6 +34,7 @@ router.get('/changes',
   rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'),
   inventoryController.getLatestInventoryChanges
 );
+
 
 router.get('/changes/since',
   auth,

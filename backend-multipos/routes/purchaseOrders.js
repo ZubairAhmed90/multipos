@@ -6,41 +6,38 @@ const {
   createPurchaseOrder,
   updatePurchaseOrderStatus,
   deletePurchaseOrder,
+  updatePurchaseOrder,
   getSuppliers
 } = require('../controllers/purchaseOrderController');
 const auth = require('../middleware/auth');
+const { rbac, requireAdmin } = require('../middleware/rbac');
 
-// Apply authentication middleware to all routes
-// router.use(auth); // Temporarily disabled for testing
+router.put('/:id', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), updatePurchaseOrder);
 
+
+// Apply authentication and role-based access
 // @route   GET /api/purchase-orders
-// @desc    Get all purchase orders
 // @access  Private (Admin, Warehouse Keeper, Cashier)
-router.get('/', getPurchaseOrders);
+router.get('/', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), getPurchaseOrders);
 
 // @route   GET /api/purchase-orders/suppliers
-// @desc    Get suppliers (companies that can supply items)
 // @access  Private (Admin, Warehouse Keeper, Cashier)
-router.get('/suppliers', getSuppliers);
+router.get('/suppliers', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), getSuppliers);
 
 // @route   GET /api/purchase-orders/:id
-// @desc    Get single purchase order
 // @access  Private (Admin, Warehouse Keeper, Cashier)
-router.get('/:id', getPurchaseOrder);
+router.get('/:id', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), getPurchaseOrder);
 
 // @route   POST /api/purchase-orders
-// @desc    Create new purchase order
 // @access  Private (Admin, Warehouse Keeper, Cashier)
-router.post('/', createPurchaseOrder);
+router.post('/', auth, rbac('ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER'), createPurchaseOrder);
 
 // @route   PUT /api/purchase-orders/:id/status
-// @desc    Update purchase order status
-// @access  Private (Admin, Warehouse Keeper, Cashier)
-router.put('/:id/status', updatePurchaseOrderStatus);
+// @access  Private (Admin only)
+router.put('/:id/status', auth, requireAdmin, updatePurchaseOrderStatus);
 
 // @route   DELETE /api/purchase-orders/:id
-// @desc    Delete purchase order
-// @access  Private (Admin, Warehouse Keeper, Cashier)
-router.delete('/:id', deletePurchaseOrder);
+// @access  Private (Admin only)
+router.delete('/:id', auth, requireAdmin, deletePurchaseOrder);
 
 module.exports = router;

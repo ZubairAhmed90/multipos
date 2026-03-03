@@ -16,24 +16,12 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
-
-// IMPORTANT: Save system PORT (from cPanel/PM2) BEFORE loading .env
-// This ensures cPanel/process manager PORT takes precedence over .env PORT
-const systemPort = process.env.PORT;
-
-// Load .env file (but PORT should NOT be in .env - let cPanel/system decide)
 require('dotenv').config();
-
-// Restore system PORT if it existed (cPanel/PM2), removing any PORT from .env
-// This ensures ONLY cPanel/process manager controls the port, not .env file
-if (systemPort) {
-  process.env.PORT = systemPort;
-} else {
-  delete process.env.PORT; // Remove PORT if it was only in .env
-}
 
 const errorHandler = require('./middleware/errorHandler');
 const { connectDB, closeDB } = require('./config/database');
+const auth = require('./middleware/auth');
+const adminSimulation = require('./middleware/adminSimulation');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -64,11 +52,12 @@ const financialVoucherRoutes = require('./routes/financialVoucherRoutes');
 const salespeopleRoutes = require('./routes/salespeople');
 const returnsRoutes = require('./routes/returns');
 const purchaseOrdersRoutes = require('./routes/purchaseOrders');
+const categoriesRoutes = require('./routes/categories');
+
 const app = express();
 
 // Connect to MySQL (only if not in test mode)
 if (process.env.NODE_ENV !== 'test') {
-  // Call connectDB without blocking - it handles errors internally
   connectDB().catch(err => {
     console.error('Failed to connect to database during startup:', err.message);
   });
@@ -86,7 +75,7 @@ app.use(helmet({
   },
 }));
 
-// CORS configuration
+// CORS configuration - added simulation headers
 app.use(cors({
   origin: [
     'http://localhost:3001',
@@ -94,13 +83,18 @@ app.use(cors({
   ].filter(Boolean),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'x-simulate-scope-type',
+    'x-simulate-scope-id'
+  ]
 }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 5 * 60 * 1000, // 5 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // limit each IP to 100 requests per windowMs
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 5 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
   message: {
     success: false,
     message: 'Too many requests from this IP, please try again later.'
@@ -129,11 +123,26 @@ app.use(cookieParser());
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     success: true,
-    message: 'Server is running', 
+    message: 'Server is running',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,
     uptime: process.uptime()
   });
+});
+
+// =============================================================
+// ADMIN SIMULATION MIDDLEWARE
+// Runs auth + adminSimulation before all non-auth API routes
+// This ensures req.user is populated and simulation scope is
+// injected BEFORE any route handler or permission middleware runs
+// =============================================================
+app.use('/api', (req, res, next) => {
+  // Skip auth routes (login, refresh, etc. don't need simulation)
+  if (req.path.startsWith('/auth')) return next();
+  // Skip if no authorization header (route's own auth will handle the error)
+  if (!req.headers.authorization) return next();
+  // Run auth first, then inject simulation scope
+  auth(req, res, () => adminSimulation(req, res, next));
 });
 
 // API routes
@@ -165,6 +174,7 @@ app.use('/api/financial-vouchers', financialVoucherRoutes);
 app.use('/api/salespeople', salespeopleRoutes);
 app.use('/api/returns', returnsRoutes);
 app.use('/api/purchase-orders', purchaseOrdersRoutes);
+app.use('/api/categories', categoriesRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -188,14 +198,10 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-// Let cPanel/hosting environment decide the port
-// IMPORTANT: PORT should NOT be in .env file
-// Port will ONLY be set by process manager (PM2, Forever, etc.) or cPanel via system environment
-// This ensures the hosting provider controls the port assignment
-const PORT = process.env.PORT; // Gets PORT from system environment (cPanel/PM2), NOT from .env
+const PORT = process.env.PORT;
 
-// Only start the server if not in test mode and PORT is defined
-if (process.env.NODE_ENV !== 'test' && PORT) {
+// Only start the server if not in test mode
+if (process.env.NODE_ENV !== 'test') {
   try {
     const server = app.listen(PORT, '0.0.0.0', () => {
       const address = server.address();
@@ -203,8 +209,7 @@ if (process.env.NODE_ENV !== 'test' && PORT) {
       console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`⏰ Started at: ${new Date().toISOString()}`);
     });
-    
-    // Handle server errors
+
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
         console.error(`❌ Port ${PORT} is already in use. Please use a different port.`);
@@ -213,25 +218,6 @@ if (process.env.NODE_ENV !== 'test' && PORT) {
         console.error('❌ Server error:', err);
         process.exit(1);
       }
-    });
-  } catch (error) {
-    console.error('❌ Failed to start server:', error);
-    process.exit(1);
-  }
-} else if (process.env.NODE_ENV !== 'test' && !PORT) {
-  // If no PORT is set, let the system assign one automatically
-  try {
-    const server = app.listen(0, '0.0.0.0', () => {
-      const address = server.address();
-      console.log(`🚀 Server running on http://${address.address}:${address.port} (auto-assigned port)`);
-      console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`⏰ Started at: ${new Date().toISOString()}`);
-    });
-    
-    // Handle server errors
-    server.on('error', (err) => {
-      console.error('❌ Server error:', err);
-      process.exit(1);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);

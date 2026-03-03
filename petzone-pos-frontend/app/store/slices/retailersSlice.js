@@ -1,0 +1,216 @@
+import { createSlice, createAsyncThunk } from '@reduxjs/toolkit'
+import api from '../../../utils/axios'
+
+// Async thunks
+export const fetchRetailers = createAsyncThunk(
+  'retailers/fetchRetailers',
+  async (params = {}, { rejectWithValue }) => {
+    try {
+      const queryParams = new URLSearchParams()
+      
+      if (params.status) queryParams.append('status', params.status)
+      if (params.businessType) queryParams.append('businessType', params.businessType)
+      if (params.paymentTerms) queryParams.append('paymentTerms', params.paymentTerms)
+      if (params.warehouseId) queryParams.append('warehouseId', params.warehouseId)
+      
+      console.log('[Retailers Slice] Fetching retailers with params:', params)
+      console.log('[Retailers Slice] Query string:', queryParams.toString())
+      
+      const response = await api.get(`/retailers?${queryParams.toString()}`)
+      console.log('[Retailers Slice] API response:', response.data)
+      return response.data
+    } catch (error) {
+      console.error('[Retailers Slice] API error:', error)
+      return rejectWithValue(error.response?.data?.message || 'Failed to fetch retailers')
+    }
+  }
+)
+
+export const fetchRetailer = createAsyncThunk(
+  'retailers/fetchRetailer',
+  async (id, { rejectWithValue }) => {
+    try {
+      const response = await api.get(`/retailers/${id}`)
+      return response.data
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to fetch retailer')
+    }
+  }
+)
+
+export const createRetailer = createAsyncThunk(
+  'retailers/createRetailer',
+  async (retailerData, { rejectWithValue }) => {
+    try {
+      const normalize = (v) => (v === undefined || v === '' ? null : v)
+      const payload = {
+        name: retailerData.name || '',
+        email: normalize(retailerData.email),
+        phone: normalize(retailerData.phone),
+        address: normalize(retailerData.address),
+        city: normalize(retailerData.city),
+        state: normalize(retailerData.state),
+        zipCode: normalize(retailerData.zipCode),
+        businessType: normalize(retailerData.businessType),
+        taxId: normalize(retailerData.taxId),
+        creditLimit: retailerData.creditLimit === '' || retailerData.creditLimit === undefined || retailerData.creditLimit === null
+          ? 0
+          : Number(retailerData.creditLimit),
+        paymentTerms: retailerData.paymentTerms || 'CASH',
+        status: retailerData.status || 'ACTIVE',
+        notes: normalize(retailerData.notes),
+        warehouseId: retailerData.warehouseId ?? null
+      }
+      console.log('[retailersSlice:create] payload', payload)
+      const response = await api.post('/retailers', payload)
+      return response.data
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to create retailer')
+    }
+  }
+)
+
+export const updateRetailer = createAsyncThunk(
+  'retailers/updateRetailer',
+  // Accept either { id, data } or { id, retailerData } for backward compatibility
+  async ({ id, data, retailerData }, { rejectWithValue }) => {
+    try {
+      const payload = data ?? retailerData ?? {}
+      const response = await api.put(`/retailers/${id}`, payload)
+      return response.data
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to update retailer')
+    }
+  }
+)
+
+export const deleteRetailer = createAsyncThunk(
+  'retailers/deleteRetailer',
+  async (id, { rejectWithValue }) => {
+    try {
+      await api.delete(`/retailers/${id}`)
+      return id
+    } catch (error) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to delete retailer')
+    }
+  }
+)
+
+const initialState = {
+  data: [],
+  selectedRetailer: null,
+  loading: false,
+  error: null,
+  createLoading: false,
+  updateLoading: false,
+  deleteLoading: false
+}
+
+const retailersSlice = createSlice({
+  name: 'retailers',
+  initialState,
+  reducers: {
+    clearError: (state) => {
+      state.error = null
+    },
+    clearSelectedRetailer: (state) => {
+      state.selectedRetailer = null
+    },
+    setSelectedRetailer: (state, action) => {
+      state.selectedRetailer = action.payload
+    }
+  },
+  extraReducers: (builder) => {
+    builder
+      // Fetch retailers
+      .addCase(fetchRetailers.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(fetchRetailers.fulfilled, (state, action) => {
+        console.log('[Retailers Slice] fetchRetailers.fulfilled:', action.payload)
+        state.loading = false
+        state.data = action.payload.data || []
+        state.error = null
+        console.log('[Retailers Slice] Updated state.data:', state.data)
+      })
+      .addCase(fetchRetailers.rejected, (state, action) => {
+        console.log('[Retailers Slice] fetchRetailers.rejected:', action.payload)
+        state.loading = false
+        state.error = action.payload
+      })
+      
+      // Fetch single retailer
+      .addCase(fetchRetailer.pending, (state) => {
+        state.loading = true
+        state.error = null
+      })
+      .addCase(fetchRetailer.fulfilled, (state, action) => {
+        state.loading = false
+        state.selectedRetailer = action.payload.data
+        state.error = null
+      })
+      .addCase(fetchRetailer.rejected, (state, action) => {
+        state.loading = false
+        state.error = action.payload
+      })
+      
+      // Create retailer
+      .addCase(createRetailer.pending, (state) => {
+        state.createLoading = true
+        state.error = null
+      })
+      .addCase(createRetailer.fulfilled, (state, action) => {
+        state.createLoading = false
+        state.data.push(action.payload.data)
+        state.error = null
+      })
+      .addCase(createRetailer.rejected, (state, action) => {
+        state.createLoading = false
+        state.error = action.payload
+      })
+      
+      // Update retailer
+      .addCase(updateRetailer.pending, (state) => {
+        state.updateLoading = true
+        state.error = null
+      })
+      .addCase(updateRetailer.fulfilled, (state, action) => {
+        state.updateLoading = false
+        const index = state.data.findIndex(retailer => retailer.id === action.payload.data.id)
+        if (index !== -1) {
+          state.data[index] = action.payload.data
+        }
+        if (state.selectedRetailer && state.selectedRetailer.id === action.payload.data.id) {
+          state.selectedRetailer = action.payload.data
+        }
+        state.error = null
+      })
+      .addCase(updateRetailer.rejected, (state, action) => {
+        state.updateLoading = false
+        state.error = action.payload
+      })
+      
+      // Delete retailer
+      .addCase(deleteRetailer.pending, (state) => {
+        state.deleteLoading = true
+        state.error = null
+      })
+      .addCase(deleteRetailer.fulfilled, (state, action) => {
+        state.deleteLoading = false
+        state.data = state.data.filter(retailer => retailer.id !== action.payload)
+        if (state.selectedRetailer && state.selectedRetailer.id === action.payload) {
+          state.selectedRetailer = null
+        }
+        state.error = null
+      })
+      .addCase(deleteRetailer.rejected, (state, action) => {
+        state.deleteLoading = false
+        state.error = action.payload
+      })
+  }
+})
+
+export const { clearError, clearSelectedRetailer, setSelectedRetailer } = retailersSlice.actions
+
+export default retailersSlice.reducer

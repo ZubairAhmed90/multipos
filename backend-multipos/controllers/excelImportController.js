@@ -65,6 +65,7 @@ const importInventoryFromExcel = async (req, res, next) => {
     const expectedColumns = {
       'name': ['name', 'item_name', 'product_name', 'item name', 'product name'],
       'code': ['code', 'item_code', 'product_code', 'sku', 'item code', 'product code'],
+      'barcode': ['barcode', 'bar code', 'ean', 'upc', 'gtin', 'scan code'],
       'category': ['category', 'item_category', 'product_category', 'item category', 'product category'],
       'description': ['description', 'item_description', 'product_description', 'item description', 'product description'],
       'current_stock': ['current_stock', 'stock', 'quantity', 'qty', 'current stock', 'available stock'],
@@ -117,6 +118,9 @@ const importInventoryFromExcel = async (req, res, next) => {
         const item = {
           name: row[headerMapping.name]?.toString().trim() || '',
           code: row[headerMapping.code]?.toString().trim() || '',
+          barcode: headerMapping.barcode !== undefined 
+            ? (row[headerMapping.barcode]?.toString().trim() || '')
+            : '',
           category: row[headerMapping.category]?.toString().trim() || 'General',
           description: row[headerMapping.description]?.toString().trim() || '',
           current_stock: parseFloat(row[headerMapping.current_stock]) || 0,
@@ -205,15 +209,33 @@ const importInventoryFromExcel = async (req, res, next) => {
           finalSku = `${cleanName}-${timestamp}`;
         }
 
+        // If barcode exists, ensure uniqueness within the same scope
+        if (item.barcode && item.barcode.trim() !== '') {
+          const [existingBarcode] = await pool.execute(
+            'SELECT id FROM inventory_items WHERE barcode = ? AND scope_type = ? AND scope_id = ?',
+            [item.barcode, item.scope_type, item.scope_id]
+          );
+
+          if (existingBarcode.length > 0) {
+            duplicateItems.push({
+              name: item.name,
+              code: item.code,
+              barcode: item.barcode,
+              reason: 'Item with this barcode already exists'
+            });
+            continue;
+          }
+        }
+
         // Insert new item
         const [result] = await pool.execute(`
           INSERT INTO inventory_items (
-            name, sku, category, description, current_stock, min_stock_level, 
+            name, sku, barcode, category, description, current_stock, min_stock_level, 
             max_stock_level, selling_price, cost_price, unit, scope_type, scope_id, 
             created_by, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
-          item.name, finalSku, item.category, item.description, item.current_stock,
+          item.name, finalSku, item.barcode || null, item.category, item.description, item.current_stock,
           item.min_stock_level, item.max_stock_level, item.unit_price, item.cost_price,
           item.unit, item.scope_type, item.scope_id, req.user.id, item.created_at, item.updated_at
         ]);
@@ -296,27 +318,26 @@ const importInventoryFromExcel = async (req, res, next) => {
 // @access  Private (Admin, Warehouse Keeper)
 const getExcelTemplate = async (req, res, next) => {
   try {
-    // Create sample data for template
+    // Create sample data for template (min/max stock columns removed)
     const sampleData = [
-      ['name', 'code', 'category', 'description', 'current_stock', 'min_stock_level', 'max_stock_level', 'unit_price', 'cost_price', 'unit'],
-      ['Sample Product 1', 'SP001', 'Electronics', 'Sample electronic product', '100', '10', '500', '25.50', '20.00', 'pcs'],
-      ['Sample Product 2', 'SP002', 'Clothing', 'Sample clothing item', '50', '5', '200', '15.75', '12.00', 'pcs'],
-      ['Sample Product 3', 'SP003', 'Books', 'Sample book', '75', '5', '300', '12.00', '8.50', 'pcs']
+      ['name', 'code', 'barcode', 'category', 'description', 'current_stock', 'unit_price', 'cost_price', 'unit'],
+      ['Sample Product 1', 'SP001', '1234567890123', 'Electronics', 'Sample electronic product', '100', '25.50', '20.00', 'pcs'],
+      ['Sample Product 2', 'SP002', '9876543210987', 'Clothing', 'Sample clothing item', '50', '15.75', '12.00', 'pcs'],
+      ['Sample Product 3', 'SP003', '4567890123456', 'Books', 'Sample book', '75', '12.00', '8.50', 'pcs']
     ];
 
     // Create workbook
     const workbook = XLSX.utils.book_new();
     const worksheet = XLSX.utils.aoa_to_sheet(sampleData);
 
-    // Set column widths
+    // Set column widths (min/max columns removed)
     const columnWidths = [
       { wch: 20 }, // name
       { wch: 15 }, // code
+      { wch: 18 }, // barcode
       { wch: 15 }, // category
       { wch: 30 }, // description
       { wch: 15 }, // current_stock
-      { wch: 15 }, // min_stock_level
-      { wch: 15 }, // max_stock_level
       { wch: 15 }, // unit_price
       { wch: 15 }, // cost_price
       { wch: 10 }  // unit

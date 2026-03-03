@@ -34,6 +34,7 @@ class Sale {
     this.paymentStatus = data.payment_status;
     this.paymentAmount = data.payment_amount;
     this.creditAmount = data.credit_amount;
+    this.oldBalance = data.old_balance || 0; // ADDED: Old balance field
     this.runningBalance = data.running_balance || 0; // ADDED: Running balance field
     this.creditStatus = data.credit_status;
     this.creditDueDate = data.credit_due_date;
@@ -54,7 +55,7 @@ class Sale {
       invoiceNo, scopeType, scopeId, userId, shiftId, items, 
       subtotal, tax, discount, total, paymentMethod, paymentType, paymentStatus, 
       customerInfo, notes, status = 'COMPLETED', customerName, customerPhone,
-      paymentAmount, creditAmount, runningBalance, creditStatus, creditDueDate, customerId
+      paymentAmount, creditAmount, oldBalance, runningBalance, creditStatus, creditDueDate, customerId
     } = saleData;
     
     
@@ -63,18 +64,18 @@ class Sale {
     try {
       await connection.beginTransaction();
       
-      // Insert sale with running_balance column
+      // Insert sale with old_balance and running_balance columns
       const [saleResult] = await connection.execute(
         `INSERT INTO sales (invoice_no, scope_type, scope_id, user_id, shift_id, 
          subtotal, tax, discount, total, payment_method, payment_type, payment_status, 
          customer_info, notes, status, customer_name, customer_phone, 
-         payment_amount, credit_amount, running_balance, credit_status, credit_due_date, customer_id) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         payment_amount, credit_amount, old_balance, running_balance, credit_status, credit_due_date, customer_id) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [invoiceNo || null, scopeType || null, scopeId || null, userId || null, shiftId || null, 
          subtotal || 0, tax || 0, discount || 0, total || 0, paymentMethod || null, 
          paymentType || null, paymentStatus || null, customerInfo || null, notes || null, status || null, 
          customerName || null, customerPhone || null, paymentAmount || 0, 
-         creditAmount || 0, runningBalance || 0, creditStatus || 'NONE', creditDueDate || null, customerId || null]
+         creditAmount || 0, oldBalance || 0, runningBalance || 0, creditStatus || 'NONE', creditDueDate || null, customerId || null]
       );
       
       const saleId = saleResult.insertId;
@@ -188,12 +189,12 @@ class Sale {
           `UPDATE sales SET invoice_no = ?, scope_type = ?, scope_id = ?, user_id = ?, 
            shift_id = ?, subtotal = ?, tax = ?, discount = ?, total = ?, 
            payment_method = ?, payment_status = ?, customer_info = ?, notes = ?, status = ?,
-           payment_amount = ?, credit_amount = ?, running_balance = ?, credit_status = ? 
+           payment_amount = ?, credit_amount = ?, old_balance = ?, running_balance = ?, credit_status = ? 
            WHERE id = ?`,
           [this.invoiceNo, this.scopeType, this.scopeId, this.userId, this.shiftId,
            this.subtotal, this.tax, this.discount, this.total, this.paymentMethod,
            this.paymentStatus, JSON.stringify(this.customerInfo), this.notes, this.status,
-           this.paymentAmount, this.creditAmount, this.runningBalance, this.creditStatus, this.id]
+           this.paymentAmount, this.creditAmount, this.oldBalance, this.runningBalance, this.creditStatus, this.id]
         );
         
         // Update sale items if provided
@@ -217,12 +218,12 @@ class Sale {
         const result = await connection.execute(
           `INSERT INTO sales (invoice_no, scope_type, scope_id, user_id, shift_id, 
            subtotal, tax, discount, total, payment_method, payment_status, 
-           customer_info, notes, status, payment_amount, credit_amount, running_balance, credit_status) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           customer_info, notes, status, payment_amount, credit_amount, old_balance, running_balance, credit_status) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [this.invoiceNo, this.scopeType, this.scopeId, this.userId, this.shiftId,
            this.subtotal, this.tax, this.discount, this.total, this.paymentMethod,
            this.paymentStatus, JSON.stringify(this.customerInfo), this.notes, this.status,
-           this.paymentAmount, this.creditAmount, this.runningBalance, this.creditStatus]
+           this.paymentAmount, this.creditAmount, this.oldBalance, this.runningBalance, this.creditStatus]
         );
         
         this.id = result[0].insertId;
@@ -439,6 +440,7 @@ class Sale {
             'customerInfo': 'customer_info',
             'paymentAmount': 'payment_amount',
             'creditAmount': 'credit_amount',
+            'oldBalance': 'old_balance', // ADDED: old_balance mapping
             'runningBalance': 'running_balance', // ADDED: running_balance mapping
             'creditStatus': 'credit_status',
             'creditDueDate': 'credit_due_date',

@@ -3,6 +3,7 @@ const { pool } = require('../config/database');
 class Retailer {
   constructor(data) {
     this.id = data.id;
+    this.warehouseId = data.warehouse_id; 
     this.name = data.name;
     this.email = data.email;
     this.phone = data.phone;
@@ -107,12 +108,30 @@ class Retailer {
     const connection = await pool.getConnection();
 
     try {
+      // Map allowed fields to DB columns (prevents bad column names and accidental wipes)
+      const fieldMap = {
+        name: 'name',
+        email: 'email',
+        phone: 'phone',
+        address: 'address',
+        city: 'city',
+        state: 'state',
+        zipCode: 'zip_code',
+        businessType: 'business_type',
+        taxId: 'tax_id',
+        creditLimit: 'credit_limit',
+        paymentTerms: 'payment_terms',
+        status: 'status',
+        notes: 'notes'
+      };
+
       const fields = [];
       const values = [];
 
       Object.keys(updateData).forEach(key => {
-        if (updateData[key] !== undefined) {
-          fields.push(`${key} = ?`);
+        const column = fieldMap[key];
+        if (column && updateData[key] !== undefined) {
+          fields.push(`${column} = ?`);
           values.push(updateData[key]);
         }
       });

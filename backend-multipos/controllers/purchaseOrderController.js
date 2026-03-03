@@ -225,8 +225,8 @@ const updatePurchaseOrderStatus = async (req, res, next) => {
     const { id } = req.params;
     const { status, actualDelivery, notes } = req.body;
 
-    // Validate status
-    const validStatuses = ['PENDING', 'APPROVED', 'ORDERED', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'CANCELLED'];
+    // Simplified statuses
+    const validStatuses = ['PENDING', 'COMPLETED', 'CANCELLED'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -234,53 +234,43 @@ const updatePurchaseOrderStatus = async (req, res, next) => {
       });
     }
 
-    // Get the purchase order first to check permissions
     const purchaseOrder = await PurchaseOrder.findById(id);
     if (!purchaseOrder) {
-      return res.status(404).json({
+      return res.status(404).json({ success: false, message: 'Purchase order not found' });
+    }
+
+    // Only ADMIN can complete/cancel
+    if (req.user.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Only admins can update order status' });
+    }
+
+    // Only PENDING orders can be completed or cancelled
+    if (purchaseOrder.status !== 'PENDING') {
+      return res.status(400).json({
         success: false,
-        message: 'Purchase order not found'
+        message: 'Only pending purchase orders can be completed or cancelled'
       });
     }
 
-    // Check access permissions
-    if (req.user.role === 'WAREHOUSE_KEEPER') {
-      if (purchaseOrder.scopeType !== 'WAREHOUSE' || purchaseOrder.scopeId !== req.user.warehouseId) {
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied - You can only update purchase orders for your warehouse'
-        });
-      }
-    } else if (req.user.role === 'CASHIER') {
-      if (purchaseOrder.scopeType !== 'BRANCH' || purchaseOrder.scopeId !== req.user.branchId) {
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied - You can only update purchase orders for your branch'
-        });
-      }
-    }
+    const updatedOrder = await PurchaseOrder.updateStatus(
+      id,
+      status,
+      status === 'COMPLETED' ? (actualDelivery || new Date().toISOString().split('T')[0]) : null
+    );
 
-    // Update status
-    const updatedOrder = await PurchaseOrder.updateStatus(id, status, actualDelivery);
-
-    // If status is APPROVED, DELIVERED, or COMPLETED, update inventory
-    if (status === 'APPROVED' || status === 'DELIVERED' || status === 'COMPLETED') {
-      // When marking as COMPLETED, set quantityReceived to quantityOrdered if not already set
-      if (status === 'COMPLETED') {
-        const orderItems = await PurchaseOrderItem.findByOrderId(id);
-        for (const item of orderItems) {
-          // If quantityReceived is null or 0, set it to quantityOrdered
-          if (!item.quantityReceived || item.quantityReceived === 0) {
-            await executeQuery(
-              'UPDATE purchase_order_items SET quantity_received = ? WHERE id = ?',
-              [item.quantityOrdered, item.id]
-            );
-            console.log(`[PurchaseOrder] Set quantityReceived=${item.quantityOrdered} for item ${item.id} (${item.itemName})`);
-          }
+    // COMPLETED triggers inventory update
+    if (status === 'COMPLETED') {
+      // Set quantityReceived = quantityOrdered for all items
+      const orderItems = await PurchaseOrderItem.findByOrderId(id);
+      for (const item of orderItems) {
+        if (!item.quantityReceived || item.quantityReceived === 0) {
+          await executeQuery(
+            'UPDATE purchase_order_items SET quantity_received = ? WHERE id = ?',
+            [item.quantityOrdered, item.id]
+          );
         }
       }
-      
-      console.log(`[PurchaseOrder] Updating inventory for purchase order ${id} with status ${status}`);
+      console.log(`[PurchaseOrder] Updating inventory for completed order ${id}`);
       await updateInventoryFromPurchaseOrder(id);
     }
 
@@ -298,7 +288,6 @@ const updatePurchaseOrderStatus = async (req, res, next) => {
     });
   }
 };
-
 // @desc    Delete purchase order
 // @route   DELETE /api/purchase-orders/:id
 // @access  Private (Admin, Warehouse Keeper, Cashier)
@@ -720,12 +709,192 @@ const updateInventoryFromPurchaseOrder = async (purchaseOrderId) => {
     throw error;
   }
 };
+// @desc    Update pending purchase order
+// @route   PUT /api/purchase-orders/:id
+// @access  Private (Admin, Warehouse Keeper, Cashier)
+// @desc    Update pending purchase order
+// @route   PUT /api/purchase-orders/:id
+// @access  Private (Admin, Warehouse Keeper, Cashier)
+const updatePurchaseOrder = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error',
+        errors: errors.array()
+      });
+    }
 
+    const purchaseOrder = await PurchaseOrder.findById(id);
+    if (!purchaseOrder) {
+      return res.status(404).json({
+        success: false,
+        message: 'Purchase order not found'
+      });
+    }
+
+    if (req.user.role !== 'ADMIN' && purchaseOrder.status !== 'PENDING') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only pending purchase orders can be updated'
+      });
+    }
+
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      if (purchaseOrder.scopeType !== 'WAREHOUSE' || purchaseOrder.scopeId !== req.user.warehouseId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied - You can only update purchase orders for your warehouse'
+        });
+      }
+    } else if (req.user.role === 'CASHIER') {
+      if (purchaseOrder.scopeType !== 'BRANCH' || purchaseOrder.scopeId !== req.user.branchId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied - You can only update purchase orders for your branch'
+        });
+      }
+    }
+
+    const { supplierId, orderDate, expectedDelivery, notes, items } = req.body;
+
+    if (supplierId) purchaseOrder.supplierId = supplierId;
+    if (orderDate) purchaseOrder.orderDate = orderDate;
+    if (expectedDelivery !== undefined) purchaseOrder.expectedDelivery = expectedDelivery;
+    if (notes !== undefined) purchaseOrder.notes = notes;
+
+    if (items && items.length > 0) {
+      const totalAmount = items.reduce((total, item) => {
+        return total + (item.quantityOrdered * item.unitPrice);
+      }, 0);
+      purchaseOrder.totalAmount = totalAmount;
+    }
+
+    await purchaseOrder.save();
+
+    if (items && items.length > 0) {
+      const completedStatuses = ['COMPLETED', 'DELIVERED', 'APPROVED']
+      const isCompletedOrder = completedStatuses.includes(purchaseOrder.status)
+
+      // ── STEP 1: Reverse old inventory + delete old stock_reports ──
+      if (isCompletedOrder) {
+        console.log(`[PurchaseOrder] Order ${id} is ${purchaseOrder.status} - reversing old inventory before update`)
+        
+        const oldItems = await PurchaseOrderItem.findByOrderId(id)
+
+        for (const oldItem of oldItems) {
+          const oldQty = oldItem.quantityReceived || oldItem.quantityOrdered || 0
+          if (oldQty <= 0) continue
+
+          let inventoryItemId = oldItem.inventoryItemId
+
+          // If no inventoryItemId, find by name+SKU
+          if (!inventoryItemId) {
+            const searchSku = oldItem.itemSku
+            const searchName = oldItem.itemName
+            let nameSkuCondition = ''
+            let nameSkuParams = []
+
+            if (searchSku && searchSku.trim() !== '') {
+              nameSkuCondition = 'name = ? AND sku = ?'
+              nameSkuParams = [searchName, searchSku]
+            } else {
+              nameSkuCondition = 'name = ? AND (sku IS NULL OR sku = ?)'
+              nameSkuParams = [searchName, '']
+            }
+
+            const [found] = await pool.execute(
+              `SELECT id FROM inventory_items 
+               WHERE ${nameSkuCondition} AND scope_type = ? AND scope_id = ? LIMIT 1`,
+              [...nameSkuParams, purchaseOrder.scopeType, String(purchaseOrder.scopeId)]
+            )
+            if (found.length > 0) inventoryItemId = found[0].id
+          }
+
+          if (inventoryItemId) {
+            // Reverse current_stock
+            await executeQuery(
+              'UPDATE inventory_items SET current_stock = current_stock - ?, updated_at = NOW() WHERE id = ?',
+              [oldQty, inventoryItemId]
+            )
+            console.log(`[PurchaseOrder] Reversed ${oldQty} units from inventory item ${inventoryItemId} (${oldItem.itemName})`)
+
+            // Delete old stock_report entries for this PO so totalPurchased doesn't double
+            await executeQuery(
+              `DELETE FROM stock_reports 
+               WHERE inventory_item_id = ? 
+               AND transaction_type = 'PURCHASE' 
+               AND adjustment_reason LIKE ?`,
+              [inventoryItemId, `%${purchaseOrder.orderNumber}%`]
+            )
+            console.log(`[PurchaseOrder] Deleted old stock_report entries for item ${inventoryItemId}, PO: ${purchaseOrder.orderNumber}`)
+          } else {
+            console.warn(`[PurchaseOrder] ⚠️ Could not find inventory item for "${oldItem.itemName}" to reverse - skipping`)
+          }
+        }
+      }
+
+      // ── STEP 2: Delete old items and insert new ones ──
+      await executeQuery('DELETE FROM purchase_order_items WHERE purchase_order_id = ?', [id])
+
+      for (const item of items) {
+        await PurchaseOrderItem.create({
+          purchaseOrderId: parseInt(id),
+          inventoryItemId: item.inventoryItemId || null,
+          itemName: item.itemName,
+          itemSku: item.itemSku || null,
+          itemCategory: item.itemCategory || 'General',
+          itemDescription: item.itemDescription || null,
+          quantityOrdered: item.quantityOrdered,
+          unitPrice: item.unitPrice,
+          totalPrice: item.quantityOrdered * item.unitPrice,
+          notes: item.notes || null
+        })
+      }
+
+      // ── STEP 3: Re-apply inventory for completed orders ──
+      if (isCompletedOrder) {
+        // Set quantityReceived = quantityOrdered on all new items
+        const newItems = await PurchaseOrderItem.findByOrderId(id)
+        for (const newItem of newItems) {
+          if (!newItem.quantityReceived || newItem.quantityReceived === 0) {
+            await executeQuery(
+              'UPDATE purchase_order_items SET quantity_received = ? WHERE id = ?',
+              [newItem.quantityOrdered, newItem.id]
+            )
+          }
+        }
+
+        console.log(`[PurchaseOrder] Re-applying inventory for completed order ${id}`)
+        await updateInventoryFromPurchaseOrder(parseInt(id))
+      }
+    }
+
+    const updatedOrder = await PurchaseOrder.findById(id)
+
+    res.json({
+      success: true,
+      message: 'Purchase order updated successfully',
+      data: updatedOrder
+    })
+  } catch (error) {
+    console.error('Error updating purchase order:', error)
+    res.status(500).json({
+      success: false,
+      message: 'Error updating purchase order',
+      error: error.message
+    })
+  }
+}
 module.exports = {
   getPurchaseOrders,
   getPurchaseOrder,
   createPurchaseOrder,
   updatePurchaseOrderStatus,
   deletePurchaseOrder,
+  updatePurchaseOrder,
   getSuppliers
 };

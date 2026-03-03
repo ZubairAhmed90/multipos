@@ -1,0 +1,2664 @@
+'use client'
+
+import React, { useEffect, useState, useCallback, useMemo } from 'react'
+import { useDispatch, useSelector } from 'react-redux'
+import api from '../../../utils/axios'
+import { Box, Typography, Chip, Button, Grid, Card, CardContent, FormControl, InputLabel, Select, MenuItem, Paper, Drawer, List, ListItem, ListItemText, Divider, IconButton, Badge, TextField, Menu, ListItemIcon, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Alert, CircularProgress, Tooltip, InputAdornment, Pagination, Dialog, DialogTitle, DialogContent, Accordion, AccordionSummary, AccordionDetails } from '@mui/material'
+import { Close as CloseIcon, FilterList as FilterIcon, GetApp as ExportIcon, FileDownload as DownloadIcon, Delete as DeleteIcon, Search as SearchIcon, Clear as ClearIcon, Visibility as ViewIcon, Receipt as ReceiptIcon, Refresh as RefreshIcon, ExpandMore as ExpandMoreIcon } from '@mui/icons-material'
+import { DataGrid } from '@mui/x-data-grid'
+import { DatePicker } from '@mui/x-date-pickers/DatePicker'
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns'
+import withAuth from '../../../components/auth/withAuth'
+import DashboardLayout from '../../../components/layout/DashboardLayout'
+import RouteGuard from '../../../components/auth/RouteGuard'
+import PermissionCheck from '../../../components/auth/PermissionCheck'
+import ConfirmationDialog from '../../../components/crud/ConfirmationDialog'
+import PollingStatusIndicator from '../../../components/polling/PollingStatusIndicator'
+import { useSalesPolling } from '../../../hooks/usePolling'
+import { fetchSales, deleteSale, fetchSalesReturns, createSalesReturn, getSale } from '../../store/slices/salesSlice'
+import { fetchInventory } from '../../store/slices/inventorySlice'
+import { fetchBranchSettings, fetchBranches } from '../../store/slices/branchesSlice'
+import { fetchWarehouses, fetchWarehouseSettings } from '../../store/slices/warehousesSlice'
+import { fetchCompanies } from '../../store/slices/companiesSlice'
+import { fetchRetailers } from '../../store/slices/retailersSlice'
+import usePermissions from '../../../hooks/usePermissions'
+import pollingService from '../../../utils/pollingService'
+import EditableInvoiceForm from '../../../components/sales/EditableInvoiceForm'
+
+
+// Table columns configuration
+const columns = [
+  { field: 'id', headerName: 'ID', width: 70 },
+  { field: 'created_at', headerName: 'Date', width: 120, renderCell: (params) => {
+    if (!params || !params.value) {
+      return 'N/A';
+    }
+    try {
+      const date = new Date(params.value);
+      return (
+        <Tooltip title={date.toLocaleString()}>
+          <span>{date.toLocaleDateString()}</span>
+        </Tooltip>
+      );
+    } catch (e) {
+      return 'Invalid Date';
+    }
+  }},
+  { field: 'created_time', headerName: 'Time', width: 100, renderCell: (params) => {
+    if (!params || !params.row || !params.row.created_at) {
+      return 'N/A';
+    }
+    try {
+      const date = new Date(params.row.created_at);
+      const timeString = date.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+      return (
+        <Tooltip title={date.toLocaleString()}>
+          <span>{timeString}</span>
+        </Tooltip>
+      );
+    } catch (e) {
+      return 'Invalid Time';
+    }
+  }},
+  { field: 'invoice_no', headerName: 'Invoice #', width: 120 },
+  { 
+   field: 'scope_type', 
+  headerName: 'Type', 
+  width: 100,
+  renderCell: (params) => {
+    const scopeType = params.row.scope_type || params.row.scopeType
+    return (
+      <Chip 
+        label={scopeType === 'WAREHOUSE' ? 'Warehouse' : 'Branch'} 
+        color={scopeType === 'WAREHOUSE' ? 'error' : 'primary'}
+        size="small"
+      />
+      )
+    }
+  },
+  { 
+    field: 'customerName', 
+    headerName: 'Customer', 
+    width: 150,
+    renderCell: (params) => {
+      if (!params || !params.row) {
+        return 'No Data';
+      }
+      
+      // Check for customerInfo (parsed from JSON)
+      if (params.row.customerInfo && params.row.customerInfo.name) {
+        return params.row.customerInfo.name;
+      }
+      
+      // Check for customer_info (raw JSON string)
+      if (params.row.customer_info) {
+        try {
+          const customerInfo = JSON.parse(params.row.customer_info);
+          return customerInfo.name || 'No Customer';
+        } catch (e) {
+          return 'No Customer';
+        }
+      }
+      
+      return 'No Customer';
+    }
+  },
+  { 
+    field: 'salesperson', 
+    headerName: 'Salesperson', 
+    width: 150,
+    renderCell: (params) => {
+      if (!params || !params.row) {
+        return null; // Don't show anything for empty rows
+      }
+      
+      // Only show salesperson for warehouse sales (where salesperson is used)
+      const scopeType = params.row.scope_type || params.row.scopeType;
+      if (scopeType !== 'WAREHOUSE') {
+        return null; // Return null to hide for non-warehouse sales
+      }
+      
+      // Check for customerInfo with salesperson (parsed from JSON)
+      if (params.row.customerInfo && params.row.customerInfo.salesperson) {
+        const sp = params.row.customerInfo.salesperson;
+        return sp.name || (sp.id ? `Salesperson ${sp.id}` : null);
+      }
+      
+      // Check for customer_info (raw JSON string)
+      if (params.row.customer_info) {
+        try {
+          const customerInfo = JSON.parse(params.row.customer_info);
+          if (customerInfo.salesperson) {
+            const sp = customerInfo.salesperson;
+            return sp.name || (sp.id ? `Salesperson ${sp.id}` : null);
+          }
+        } catch (e) {
+          // Silent error
+        }
+      }
+      
+      return null; // Return null instead of 'N/A' for cleaner look
+    }
+  },
+  { field: 'subtotal', headerName: 'Subtotal', width: 120, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return `${parseFloat(params.value).toFixed(2)}`;
+  }},
+  { field: 'tax', headerName: 'Tax', width: 100, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return `${parseFloat(params.value).toFixed(2)}`;
+  }},
+  { field: 'discount', headerName: 'Discount', width: 100, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return `${parseFloat(params.value).toFixed(2)}`;
+  }},
+  { field: 'total', headerName: 'Total', width: 120, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return `${parseFloat(params.value).toFixed(2)}`;
+  }},
+  { field: 'payment_amount', headerName: 'Payment', width: 120, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return (
+      <Typography 
+        variant="body2"
+        color="success.main"
+        fontWeight="medium"
+      >
+        {parseFloat(params.value).toFixed(2)}
+      </Typography>
+    );
+  }},
+  { field: 'credit_amount', headerName: 'Credit', width: 120, type: 'number', renderCell: (params) => {
+    const creditAmount = params.row.creditAmount || params.row.credit_amount || 0;
+    const isPositive = parseFloat(creditAmount) >= 0;
+    return (
+      <Typography 
+        variant="body2"
+        color={isPositive ? 'error.main' : 'success.main'}
+        fontWeight="medium"
+      >
+        {parseFloat(creditAmount).toFixed(2)}
+      </Typography>
+    );
+  }},
+  { field: 'running_balance', headerName: 'Balance', width: 120, type: 'number', renderCell: (params) => {
+    const balance = params.row.runningBalance || params.row.running_balance || 0;
+    const balanceValue = parseFloat(balance);
+    const isPositive = balanceValue >= 0;
+    return (
+      <Typography 
+        variant="body2"
+        color={isPositive ? 'error.main' : 'success.main'}
+        fontWeight="bold"
+      >
+        {balanceValue.toFixed(2)}
+      </Typography>
+    );
+  }},
+  { 
+    field: 'paymentMethod', 
+    headerName: 'Payment Method', 
+    width: 150, 
+    renderCell: (params) => {
+      let paymentMethod = params.row.paymentMethod || params.row.payment_method;
+      
+      // Check customer_info for payment method if not found directly
+      if (!paymentMethod && params.row.customer_info) {
+        try {
+          const customerInfo = typeof params.row.customer_info === 'string' 
+            ? JSON.parse(params.row.customer_info) 
+            : params.row.customer_info;
+          paymentMethod = customerInfo.paymentMethod;
+        } catch (e) {
+          // Silent error handling
+        }
+      }
+      
+      if (!paymentMethod) {
+        // Check if this is a credit sale based on creditAmount
+        const creditAmount = params.row.creditAmount || 0;
+        if (creditAmount > 0) {
+          return <Chip label="FULLY CREDIT" color="error" size="small" />;
+        }
+        return <Chip label="N/A" color="default" size="small" />;
+      }
+      
+      // ✅ CORRECTED LOGIC: Show actual payment method (CASH, BANK_TRANSFER, etc.)
+      // Payment type (PARTIAL_PAYMENT, FULLY_CREDIT) should be shown in Status column
+      
+      const methodColors = {
+        'CASH': 'success',
+        'CARD': 'primary',
+        'BANK_TRANSFER': 'info',
+        'MOBILE_PAYMENT': 'secondary',
+        'CHEQUE': 'warning',
+        'MOBILE_MONEY': 'secondary'
+      };
+      
+      return (
+        <Chip 
+          label={paymentMethod.replace('_', ' ').toUpperCase()} 
+          color={methodColors[paymentMethod] || 'default'}
+          size="small"
+        />
+      );
+    }
+  },
+  { 
+    field: 'paymentType', 
+    headerName: 'Payment Type', 
+    width: 150, 
+    renderCell: (params) => {
+      // Show payment type instead of status
+      let paymentType = params.row.payment_type || params.row.paymentType;
+      
+      // If no payment type, determine from payment status
+      if (!paymentType) {
+        const paymentStatus = params.row.payment_status || params.row.paymentStatus;
+        const creditAmount = params.row.creditAmount || params.row.credit_amount || 0;
+        const paymentAmount = params.row.paymentAmount || params.row.payment_amount || 0;
+        
+        if (creditAmount > 0 && paymentAmount > 0) {
+          paymentType = 'PARTIAL_PAYMENT';
+        } else if (creditAmount > 0 && paymentAmount === 0) {
+          paymentType = 'FULLY_CREDIT';
+        } else {
+          paymentType = 'FULL_PAYMENT';
+        }
+      }
+      
+      const typeColors = {
+        'FULL_PAYMENT': 'success',
+        'PARTIAL_PAYMENT': 'warning',
+        'FULLY_CREDIT': 'error'
+      }
+      
+      return (
+        <Chip 
+          label={paymentType.replace('_', ' ').toUpperCase()} 
+          color={typeColors[paymentType] || 'default'}
+          size="small"
+        />
+      );
+    }
+  },
+  { 
+    field: 'payment_terms', 
+    headerName: 'Payment Terms', 
+    width: 150,
+    renderCell: (params) => {
+      // First, get the payment method
+      let paymentMethod = params.row.paymentMethod || params.row.payment_method;
+      
+      // Check customer_info for payment method if not found directly
+      if (!paymentMethod && params.row.customer_info) {
+        try {
+          const customerInfo = typeof params.row.customer_info === 'string' 
+            ? JSON.parse(params.row.customer_info) 
+            : params.row.customer_info;
+          paymentMethod = customerInfo.paymentMethod;
+        } catch (e) {
+          // Silent error handling
+        }
+      }
+      
+      // Show payment terms for credit sales
+      if (paymentMethod === 'CREDIT') {
+        let customerInfo = params.row.customerInfo;
+        
+        // If not found, try to parse customer_info
+        if (!customerInfo && params.row.customer_info) {
+          try {
+            customerInfo = typeof params.row.customer_info === 'string' 
+              ? JSON.parse(params.row.customer_info) 
+              : params.row.customer_info;
+          } catch (e) {
+            // Silent error handling
+          }
+        }
+        
+        if (customerInfo && customerInfo.paymentTerms) {
+          return customerInfo.paymentTerms;
+        }
+        
+        return 'N/A';
+      }
+      
+      return '-';
+    }
+  },
+  { field: 'paymentStatus', headerName: 'Payment Status', width: 130, renderCell: (params) => {
+    const paymentStatus = params.row.paymentStatus || params.row.payment_status;
+    if (!paymentStatus) {
+      return <Chip label="N/A" color="default" size="small" />;
+    }
+    
+    const statusColors = {
+      'COMPLETED': 'success',
+      'PENDING': 'error',
+      'FAILED': 'error',
+      'REFUNDED': 'info',
+      'PARTIAL': 'warning'
+    };
+    
+    return (
+      <Chip 
+        label={paymentStatus.replace('_', ' ').toUpperCase()} 
+        color={statusColors[paymentStatus] || 'default'}
+        size="small"
+      />
+    );
+  }},
+  { field: 'paymentStatus', headerName: 'Payment Status', width: 120, renderCell: (params) => {
+    const paymentStatus = params.row.paymentStatus || params.row.payment_status;
+    if (!paymentStatus) {
+      return <Chip label="N/A" color="default" size="small" />;
+    }
+    return (
+      <Chip 
+        label={paymentStatus.replace('-', ' ').toUpperCase()} 
+        color={paymentStatus === 'COMPLETED' ? 'success' : paymentStatus === 'PENDING' ? 'error' : 'default'}
+        size="small"
+      />
+    );
+  }},
+  { field: 'branch_name', headerName: 'Branch', width: 120 },
+  { 
+    field: 'return_quantity', 
+    headerName: 'Returns', 
+    width: 100,
+    renderCell: (params) => {
+      // Check if this sale has any returns
+      const saleId = params.row.id;
+      const returns = salesReturns?.filter(returnItem => returnItem.sale_id === saleId) || [];
+      
+      if (returns.length === 0) {
+        return <Chip label="0" color="default" size="small" />;
+      }
+      
+      // Calculate total returned quantity
+      const totalReturnedQty = returns.reduce((sum, returnItem) => {
+        return sum + (returnItem.items?.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0) || 0);
+      }, 0);
+      
+      return (
+        <Chip 
+          label={totalReturnedQty} 
+          color="warning" 
+          size="small"
+          title={`${returns.length} return(s) - ${totalReturnedQty} items`}
+        />
+      );
+    }
+  },
+  { 
+    field: 'notes', 
+    headerName: 'Notes', 
+    width: 200,
+    renderCell: (params) => {
+      const notes = params.row.notes || '';
+      if (!notes) {
+        return <Chip label="No Notes" color="default" size="small" />;
+      }
+      
+      // Truncate long notes for display
+      const truncatedNotes = notes.length > 50 ? notes.substring(0, 50) + '...' : notes;
+      
+      return (
+        <Tooltip title={notes} arrow>
+          <Typography 
+            variant="body2" 
+            sx={{ 
+              fontFamily: 'monospace',
+              fontSize: '0.75rem',
+              maxWidth: '180px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {truncatedNotes}
+          </Typography>
+        </Tooltip>
+      );
+    }
+  },
+]
+
+// Sales returns columns
+const returnsColumns = [
+  { field: 'id', headerName: 'ID', width: 70 },
+  { field: 'originalSaleId', headerName: 'Original Sale', width: 120 },
+  { field: 'reason', headerName: 'Reason', width: 200 },
+  { field: 'refundAmount', headerName: 'Refund', width: 120, type: 'number', renderCell: (params) => {
+    if (!params || params.value === undefined || params.value === null) {
+      return '0.00';
+    }
+    return `${parseFloat(params.value).toFixed(2)}`;
+  }},
+  { field: 'status', headerName: 'Payment Type', width: 120, renderCell: (params) => {
+    // Show payment type instead of status
+    let paymentType = params.row.payment_type || params.row.paymentType;
+    
+    // If no payment type, determine from payment status
+    if (!paymentType) {
+      const paymentStatus = params.row.payment_status || params.row.paymentStatus;
+      const creditAmount = params.row.creditAmount || params.row.credit_amount || 0;
+      const paymentAmount = params.row.paymentAmount || params.row.payment_amount || 0;
+      
+      if (creditAmount > 0 && paymentAmount > 0) {
+        paymentType = 'PARTIAL_PAYMENT';
+      } else if (creditAmount > 0 && paymentAmount === 0) {
+        paymentType = 'FULLY_CREDIT';
+      } else {
+        paymentType = 'FULL_PAYMENT';
+      }
+    }
+    
+    const typeColors = {
+      'FULL_PAYMENT': 'success',
+      'PARTIAL_PAYMENT': 'warning',
+      'FULLY_CREDIT': 'error'
+    }
+    
+    return (
+      <Chip 
+        label={paymentType.replace('_', ' ').toUpperCase()} 
+        color={typeColors[paymentType] || 'default'}
+        size="small"
+      />
+    );
+  }},
+  { field: 'created_at', headerName: 'Date', width: 120, renderCell: (params) => {
+    if (!params || !params.value) {
+      return 'N/A';
+    }
+    try {
+      const date = new Date(params.value);
+      return (
+        <Tooltip title={date.toLocaleString()}>
+          <span>{date.toLocaleDateString()}</span>
+        </Tooltip>
+      );
+    } catch (e) {
+      return 'Invalid Date';
+    }
+  }},
+  { field: 'created_time', headerName: 'Time', width: 100, renderCell: (params) => {
+    if (!params || !params.row || !params.row.created_at) {
+      return 'N/A';
+    }
+    try {
+      const date = new Date(params.row.created_at);
+      const timeString = date.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+      return (
+        <Tooltip title={date.toLocaleString()}>
+          <span>{timeString}</span>
+        </Tooltip>
+      );
+    } catch (e) {
+      return 'Invalid Time';
+    }
+  }}
+]
+
+
+  const SalesManagement = () => {
+  const dispatch = useDispatch()
+  const { user: originalUser } = useSelector((state) => state.auth)
+    
+    // URL-based role switching (same as POS terminal)
+    const [urlParams, setUrlParams] = useState({})
+    const [isAdminMode, setIsAdminMode] = useState(false)
+    
+    // Parse URL parameters for role simulation
+    useEffect(() => {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search)
+        const role = params.get('role')
+        const scope = params.get('scope')
+        const id = params.get('id')
+        
+        if (role && scope && id && originalUser?.role === 'ADMIN') {
+          setUrlParams({ role, scope, id })
+          setIsAdminMode(true)
+        } else {
+          setUrlParams({})
+          setIsAdminMode(false)
+        }
+      }
+    }, [originalUser])
+    
+    // Get effective user based on URL parameters
+    const getEffectiveUser = useCallback((originalUser) => {
+      if (!isAdminMode || !urlParams.role) {
+        return originalUser
+      }
+      
+      return {
+        ...originalUser,
+        role: urlParams.role.toUpperCase(),
+        branchId: urlParams.scope === 'branch' ? parseInt(urlParams.id) : null,
+        warehouseId: urlParams.scope === 'warehouse' ? parseInt(urlParams.id) : null,
+        branchName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : null,
+        warehouseName: urlParams.scope === 'warehouse' ? `Warehouse ${urlParams.id}` : null,
+        isAdminMode: true,
+        originalRole: originalUser.role,
+        originalUser: originalUser
+      }
+    }, [isAdminMode, urlParams])
+    
+    // Get scope info
+    const getScopeInfo = useCallback(() => {
+      if (!isAdminMode || !urlParams.role) {
+        return null
+      }
+      
+      return {
+        scopeType: urlParams.scope === 'branch' ? 'BRANCH' : 'WAREHOUSE',
+        scopeId: urlParams.id,
+        scopeName: urlParams.scope === 'branch' ? `Branch ${urlParams.id}` : `Warehouse ${urlParams.id}`
+      }
+    }, [isAdminMode, urlParams])
+    
+  const user = useMemo(() => getEffectiveUser(originalUser), [getEffectiveUser, originalUser])
+  const scopeInfo = useMemo(() => getScopeInfo(), [getScopeInfo])
+
+  const baseScopeParams = useMemo(() => {
+    if (!user) return {}
+
+    if (scopeInfo?.scopeType && scopeInfo?.scopeId) {
+      const parsedId = Number(scopeInfo.scopeId)
+      return {
+        scopeType: scopeInfo.scopeType,
+        scopeId: Number.isNaN(parsedId) ? scopeInfo.scopeId : parsedId
+      }
+    }
+
+    if (user.role === 'CASHIER' && user.branchId) {
+      return {
+        scopeType: 'BRANCH',
+        scopeId: Number(user.branchId)
+      }
+    }
+
+    if (user.role === 'WAREHOUSE_KEEPER' && user.warehouseId) {
+      return {
+        scopeType: 'WAREHOUSE',
+        scopeId: Number(user.warehouseId)
+      }
+    }
+
+    return {}
+  }, [user, scopeInfo])
+  
+  const { data: inventoryItems } = useSelector((state) => state.inventory)
+  const { branchSettings, data: branches } = useSelector((state) => state.branches)
+  const { data: warehouses, warehouseSettings } = useSelector((state) => state.warehouses)
+  const { data: companies } = useSelector((state) => state.companies)
+  const { data: retailers } = useSelector((state) => state.retailers)
+  const { data: sales = [], loading: salesLoading, error: salesError, returns: salesReturns = [], pagination: salesPagination = {}, summary: salesSummary = {} } = useSelector((state) => state.sales || {})
+  
+  // Filter state for admin and warehouse keepers
+  const [filters, setFilters] = useState({
+    scopeType: 'all',
+    scopeId: 'all',
+    companyId: 'all',
+    retailerId: 'all',
+    startDate: '',
+    endDate: ''
+  })
+
+  // New filter states for the integrated filters
+  const [searchTerm, setSearchTerm] = useState('')
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [scopeTypeFilter, setScopeTypeFilter] = useState('all')
+  const [scopeSearch, setScopeSearch] = useState('')
+  const [sortBy, setSortBy] = useState('created_at')
+  const [sortOrder, setSortOrder] = useState('desc')
+  
+  // Date filter states - No default filter to show all sales
+  const [startDate, setStartDate] = useState(null)
+  const [endDate, setEndDate] = useState(null)
+  
+  // Pagination states
+  const [page, setPage] = useState(1)
+  const [rowsPerPage, setRowsPerPage] = useState(25)
+  
+  // Drawer state
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false)
+  const [filteredSales, setFilteredSales] = useState([])
+  
+  // Export state
+  const [exportAnchorEl, setExportAnchorEl] = useState(null)
+  
+  // Refresh state
+  const [refreshKey, setRefreshKey] = useState(0)
+  
+  // Individual sale state for viewing
+  const [selectedSale, setSelectedSale] = useState(null)
+  const [saleItems, setSaleItems] = useState([])
+  const [showItemsDialog, setShowItemsDialog] = useState(false)
+  const [viewingSale, setViewingSale] = useState(null)
+  
+  // Editable invoice form state
+  const [editingSale, setEditingSale] = useState(null)
+  const [showEditableInvoice, setShowEditableInvoice] = useState(false)
+
+  // Debug saleItems changes
+  useEffect(() => {
+    console.log('[Sales] saleItems state changed:', saleItems);
+  }, [saleItems]);
+  
+  
+  // Check if user can manage sales
+  const canManageSales = () => {
+    if (user?.role === 'ADMIN') return true
+    if (user?.role === 'CASHIER') {
+      return branchSettings?.allowCashierSalesEdit || false
+    }
+    if (user?.role === 'WAREHOUSE_KEEPER') {
+      return warehouseSettings?.allowWarehouseSales || false
+    }
+    return false
+  }
+  
+  const canEdit = canManageSales()
+  
+  // Dialog state management
+  const [openDeleteDialog, setOpenDeleteDialog] = useState(false)
+  const [entityToDelete, setEntityToDelete] = useState(null)
+
+
+  // Manual refresh function
+  const handleManualRefresh = useCallback(() => {
+    console.log('[Sales] Manual refresh triggered')
+    setRefreshKey(prev => prev + 1)
+    const timestamp = Date.now()
+    const paramsWithTimestamp = {
+      ...baseScopeParams,
+      page,
+      limit: rowsPerPage,
+      _t: timestamp
+    }
+    if (user?.role === 'ADMIN' && scopeSearch) {
+      paramsWithTimestamp.scopeSearch = scopeSearch
+    }
+    dispatch(fetchSales(paramsWithTimestamp))
+    dispatch(fetchSalesReturns(paramsWithTimestamp))
+  }, [dispatch, baseScopeParams, page, rowsPerPage, user, scopeSearch])
+
+  // Memoize the data update callback to prevent infinite loops
+  const handleDataUpdate = useCallback(() => {
+    console.log('[Sales] Data update callback triggered')
+    const timestamp = Date.now()
+    const paramsWithTimestamp = {
+      ...baseScopeParams,
+      page,
+      limit: rowsPerPage,
+      _t: timestamp
+    }
+    if (user?.role === 'ADMIN' && scopeSearch) {
+      paramsWithTimestamp.scopeSearch = scopeSearch
+    }
+    dispatch(fetchSales(paramsWithTimestamp))
+    dispatch(fetchSalesReturns(paramsWithTimestamp))
+  }, [dispatch, baseScopeParams, page, rowsPerPage, user, scopeSearch])
+
+  // Polling for real-time updates - DISABLED to prevent rate limiting
+  // Enable only when needed, with longer intervals
+  const { isPolling, lastUpdate, refreshData } = useSalesPolling({
+    enabled: false, // Disable auto-polling to prevent 429 errors
+    interval: 60000, // 60 seconds if enabled
+    onDataUpdate: handleDataUpdate
+  })
+
+  useEffect(() => {
+    // Debounce API calls to prevent rate limiting (429 errors)
+    const timeoutId = setTimeout(() => {
+      // Load sales data with filters
+      const salesParams = { ...baseScopeParams }
+
+      if (user?.role === 'ADMIN') {
+        if (filters.scopeType !== 'all') {
+        salesParams.scopeType = filters.scopeType
+        if (filters.scopeId !== 'all') {
+            const parsedScopeId = Number(filters.scopeId)
+            salesParams.scopeId = Number.isNaN(parsedScopeId) ? filters.scopeId : parsedScopeId
+          } else {
+            delete salesParams.scopeId
+          }
+        } else if (!scopeInfo) {
+          delete salesParams.scopeType
+          delete salesParams.scopeId
+        }
+
+        if (filters.companyId !== 'all') {
+          salesParams.companyId = filters.companyId
+        }
+      }
+
+      if (user?.role === 'WAREHOUSE_KEEPER' && filters.retailerId !== 'all') {
+        salesParams.retailerId = filters.retailerId
+      }
+
+      // Use new date filter states
+      if (startDate) {
+        salesParams.startDate = startDate.toISOString().split('T')[0]
+      }
+      if (endDate) {
+        salesParams.endDate = endDate.toISOString().split('T')[0]
+      }
+
+      if (user?.role === 'ADMIN' && scopeSearch) {
+        salesParams.scopeSearch = scopeSearch
+      }
+
+      salesParams.page = page
+      salesParams.limit = rowsPerPage
+
+      dispatch(fetchSales(salesParams))
+      dispatch(fetchSalesReturns(salesParams))
+    }, 500) // 500ms debounce to prevent rapid successive calls
+
+    // Load branches and warehouses for admin filter (not debounced, only once)
+    if (user?.role === 'ADMIN') {
+      dispatch(fetchBranches())
+      dispatch(fetchWarehouses())
+    }
+    
+    // Load branch settings for cashier permissions (not debounced, only once)
+    if (user?.role === 'CASHIER' && user?.branchId) {
+      dispatch(fetchBranchSettings(user.branchId))
+    }
+
+    // Load warehouse settings for warehouse keeper permissions (not debounced, only once)
+    if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
+      dispatch(fetchWarehouseSettings(user.warehouseId))
+      // Load retailers for warehouse keepers
+      dispatch(fetchRetailers({ warehouseId: user.warehouseId }))
+    }
+    
+    // Load inventory items for user's scope (not debounced, only once)
+    if (user) {
+      const inventoryParams = { ...baseScopeParams }
+      dispatch(fetchInventory(inventoryParams))
+    }
+
+    return () => clearTimeout(timeoutId)
+  }, [dispatch, user, filters, startDate, endDate, baseScopeParams, scopeInfo, page, rowsPerPage, scopeSearch])
+
+  // Debug: Log sales data when it changes
+  useEffect(() => {
+    console.log('[Sales] Sales data state:', {
+      salesCount: sales?.length || 0,
+      salesLoading,
+      salesError: salesError?.message || salesError,
+      salesErrorFull: salesError, // Log full error object
+      sampleSales: sales?.slice(0, 3).map(s => ({
+        id: s.id,
+        invoice_no: s.invoice_no,
+        scope_type: s.scope_type || s.scopeType,
+        scope_id: s.scope_id || s.scopeId,
+        created_at: s.created_at,
+        customerName: s.customerName || s.customer_name
+      })) || [],
+      baseScopeParams, // Log scope params being used
+      user: {
+        role: user?.role,
+        branchId: user?.branchId,
+        branchName: user?.branchName,
+        warehouseId: user?.warehouseId,
+        warehouseName: user?.warehouseName
+      }
+    })
+    
+    // Log error details if there's an error
+    if (salesError) {
+      console.error('[Sales] Sales fetch error:', {
+        error: salesError,
+        message: salesError?.message,
+        stack: salesError?.stack,
+        response: salesError?.response?.data
+      })
+    }
+  }, [sales, salesLoading, salesError, baseScopeParams, user])
+
+
+  // Handle filter changes
+  const handleFilterChange = (field, value) => {
+    setFilters(prev => {
+      const newFilters = { ...prev, [field]: value }
+      // Reset scopeId when scopeType changes
+      if (field === 'scopeType') {
+        newFilters.scopeId = 'all'
+      }
+      return newFilters
+    })
+  }
+
+  // Clear all filters
+  const clearFilters = () => {
+    setSearchTerm('')
+    setPaymentMethodFilter('all')
+    setStatusFilter('all')
+    setScopeTypeFilter('all')
+    setScopeSearch('')
+    setSortBy('created_at')
+    setSortOrder('desc')
+    setPage(1) // Reset to first page when clearing filters
+  }
+
+  // Get filter summary
+  const getFilterSummary = () => {
+    const filters = []
+    if (searchTerm) filters.push(`Search: "${searchTerm}"`)
+    if (scopeSearch && user?.role === 'ADMIN') filters.push(`Scope: "${scopeSearch}"`)
+    if (paymentMethodFilter !== 'all') filters.push(`Payment: ${paymentMethodFilter}`)
+    if (statusFilter !== 'all') filters.push(`Status: ${statusFilter}`)
+    if (scopeTypeFilter !== 'all') filters.push(`Scope: ${scopeTypeFilter}`)
+    return filters
+  }
+
+  // Filter and sort sales
+  const getFilteredAndSortedSales = () => {
+    const filteredOut = [] // Track filtered out sales for debugging
+    let filtered = (sales || []).filter(sale => {
+      let filterReason = null
+      
+      // Search filter
+      if (searchTerm) {
+        const searchLower = searchTerm.toLowerCase()
+        const invoiceMatch = sale.invoice_no?.toLowerCase().includes(searchLower)
+        const customerMatch = sale.customerName?.toLowerCase().includes(searchLower)
+        if (!invoiceMatch && !customerMatch) {
+          filterReason = `Search: "${searchTerm}" not found in invoice/customer`
+          filteredOut.push({ sale: sale.invoice_no || sale.id, reason: filterReason })
+          return false
+        }
+      }
+
+      // Payment method filter
+      if (paymentMethodFilter !== 'all') {
+        const paymentMethod = sale.paymentMethod || sale.payment_method
+        const paymentStatus = sale.paymentStatus || sale.payment_status
+        const creditAmount = sale.creditAmount || 0
+        
+        if (paymentMethodFilter === 'partial_payment') {
+          // Check if this is a partial payment
+          if (paymentStatus !== 'PARTIAL' && creditAmount <= 0) {
+            filterReason = `Payment method: Not partial payment (status: ${paymentStatus}, credit: ${creditAmount})`
+            filteredOut.push({ sale: sale.invoice_no || sale.id, reason: filterReason })
+            return false
+          }
+        } else {
+          // For other payment methods, check the actual payment method
+          if (paymentMethod?.toLowerCase() !== paymentMethodFilter.toLowerCase()) {
+            filterReason = `Payment method: ${paymentMethod} !== ${paymentMethodFilter}`
+            filteredOut.push({ sale: sale.invoice_no || sale.id, reason: filterReason })
+            return false
+          }
+        }
+      }
+
+      // Status filter
+      if (statusFilter !== 'all') {
+        const status = sale.status?.toLowerCase()
+        if (status !== statusFilter.toLowerCase()) {
+          filterReason = `Status: ${status} !== ${statusFilter}`
+          filteredOut.push({ sale: sale.invoice_no || sale.id, reason: filterReason })
+          return false
+        }
+      }
+
+      // Scope type filter
+      if (scopeTypeFilter !== 'all') {
+        const scopeType = sale.scope_type || sale.scopeType
+        if (scopeType !== scopeTypeFilter) {
+          filterReason = `Scope type: ${scopeType} !== ${scopeTypeFilter}`
+          filteredOut.push({ sale: sale.invoice_no || sale.id, reason: filterReason })
+          return false
+        }
+      }
+
+      // Date filter - Compare dates only (ignore time)
+      if (startDate || endDate) {
+        const saleDate = new Date(sale.created_at || sale.createdAt || 0)
+        
+        // Check if saleDate is valid
+        if (isNaN(saleDate.getTime())) {
+          filterReason = `Date: Invalid date (${sale.created_at || sale.createdAt})`
+          filteredOut.push({ sale: sale.invoice_no || sale.id, reason: filterReason })
+          return false
+        }
+        
+        if (startDate) {
+          const start = new Date(startDate)
+          start.setHours(0, 0, 0, 0)
+          const saleDateStart = new Date(saleDate)
+          saleDateStart.setHours(0, 0, 0, 0)
+          if (saleDateStart < start) {
+            filterReason = `Date: ${saleDateStart.toLocaleDateString()} < ${start.toLocaleDateString()} (sale: ${sale.created_at})`
+            filteredOut.push({ sale: sale.invoice_no || sale.id, reason: filterReason })
+            return false
+          }
+        }
+        
+        if (endDate) {
+          const end = new Date(endDate)
+          end.setHours(23, 59, 59, 999)
+          const saleDateEnd = new Date(saleDate)
+          saleDateEnd.setHours(23, 59, 59, 999)
+          if (saleDateEnd > end) {
+            filterReason = `Date: ${saleDateEnd.toLocaleDateString()} > ${end.toLocaleDateString()} (sale: ${sale.created_at})`
+            filteredOut.push({ sale: sale.invoice_no || sale.id, reason: filterReason })
+            return false
+          }
+        }
+      }
+
+      return true
+    })
+    
+    // Debug: Log filtered out sales with full details
+    if (filteredOut.length > 0) {
+      console.log('[Sales] Filtered out sales:', filteredOut)
+      console.log('[Sales] Filtered out sales details:', filteredOut.map(f => ({
+        sale: f.sale,
+        reason: f.reason,
+        saleData: sales.find(s => (s.invoice_no || s.id) === f.sale)
+      })))
+      console.log('[Sales] Active filters:', {
+        searchTerm,
+        paymentMethodFilter,
+        statusFilter,
+        scopeTypeFilter,
+        startDate: startDate?.toLocaleDateString(),
+        endDate: endDate?.toLocaleDateString()
+      })
+    }
+
+    // Sort
+    filtered.sort((a, b) => {
+      let aValue, bValue
+      
+      switch (sortBy) {
+        case 'total':
+          aValue = parseFloat(a.total || 0)
+          bValue = parseFloat(b.total || 0)
+          break
+        case 'invoice_no':
+          aValue = a.invoice_no || ''
+          bValue = b.invoice_no || ''
+          break
+        case 'customerName':
+          aValue = a.customerName || ''
+          bValue = b.customerName || ''
+          break
+        case 'created_at':
+        default:
+          aValue = new Date(a.created_at || a.createdAt || 0)
+          bValue = new Date(b.created_at || b.createdAt || 0)
+          break
+      }
+
+      if (sortOrder === 'asc') {
+        return aValue > bValue ? 1 : -1
+      } else {
+        return aValue < bValue ? 1 : -1
+      }
+    })
+
+    return filtered
+  }
+
+  // Pagination logic (server-paginated)
+  const allFilteredSales = getFilteredAndSortedSales()
+  const totalItems = salesPagination?.total ?? allFilteredSales.length
+  const totalPages = Math.max(1, Math.ceil(totalItems / rowsPerPage))
+  const startIndex = (page - 1) * rowsPerPage
+  const endIndex = startIndex + rowsPerPage
+  const paginatedSales = allFilteredSales // already limited by backend
+  
+  // Debug: Log pagination info and filter details
+  useEffect(() => {
+    if (sales?.length > 0 || salesLoading) {
+      console.log('[Sales] Pagination Debug:', {
+        totalSales: sales?.length || 0,
+        filteredSales: totalItems,
+        rowsPerPage,
+        totalPages,
+        currentPage: page,
+        startIndex,
+        endIndex,
+        paginatedCount: paginatedSales.length,
+        userRole: user?.role,
+        scopeTypeFilter,
+        searchTerm,
+        paymentMethodFilter,
+        statusFilter,
+        startDate: startDate?.toLocaleDateString(),
+        endDate: endDate?.toLocaleDateString(),
+        warehouseSales: sales?.filter(s => (s.scope_type || s.scopeType) === 'WAREHOUSE').length || 0,
+        branchSales: sales?.filter(s => (s.scope_type || s.scopeType) === 'BRANCH').length || 0,
+        shouldShowPagination: totalItems > 0 && totalPages > 1,
+        baseScopeParams
+      })
+    }
+  }, [sales, totalItems, page, rowsPerPage, scopeTypeFilter, searchTerm, paymentMethodFilter, statusFilter, startDate, endDate, user, baseScopeParams, salesLoading, paginatedSales.length])
+
+  // Handle page change
+  const handlePageChange = (event, newPage) => {
+    setPage(newPage)
+  }
+
+  // Handle rows per page change
+  const handleRowsPerPageChange = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10))
+    setPage(1) // Reset to first page when changing page size
+  }
+
+  // Apply filters and show in drawer
+  const applyFilters = () => {
+    if (filters.scopeType === 'all' && filters.scopeId === 'all' && !filters.startDate && !filters.endDate) {
+      setFilteredSales(sales || [])
+    } else {
+      const filtered = (sales || []).filter(sale => {
+        const saleScopeType = sale.scope_type || sale.scopeType
+        const saleScopeId = sale.scope_id || sale.scopeId
+        const saleDate = new Date(sale.createdAt || sale.date)
+        
+        let matchesScopeType = true
+        let matchesScopeId = true
+        let matchesDateRange = true
+        
+        if (filters.scopeType !== 'all') {
+          matchesScopeType = saleScopeType === filters.scopeType
+        }
+        
+        if (filters.scopeId !== 'all') {
+          matchesScopeId = parseInt(saleScopeId) === parseInt(filters.scopeId)
+        }
+        
+        // Date range filtering
+        if (filters.startDate) {
+          const startDate = new Date(filters.startDate)
+          startDate.setHours(0, 0, 0, 0)
+          matchesDateRange = matchesDateRange && saleDate >= startDate
+        }
+        
+        if (filters.endDate) {
+          const endDate = new Date(filters.endDate)
+          endDate.setHours(23, 59, 59, 999)
+          matchesDateRange = matchesDateRange && saleDate <= endDate
+        }
+        
+        return matchesScopeType && matchesScopeId && matchesDateRange
+      })
+      
+      setFilteredSales(filtered)
+    }
+    setFilterDrawerOpen(true)
+  }
+
+  // Clear old filters (for drawer)
+  const clearOldFilters = () => {
+    setFilters({
+      scopeType: 'all',
+      scopeId: 'all',
+      companyId: 'all',
+      retailerId: 'all',
+      startDate: '',
+      endDate: ''
+    })
+    setFilteredSales([])
+    setFilterDrawerOpen(false)
+  }
+
+  // Check if filters are active
+  const hasActiveFilters = filters.scopeType !== 'all' || filters.scopeId !== 'all' || filters.companyId !== 'all' || filters.retailerId !== 'all' || filters.startDate || filters.endDate
+
+  // Function to fetch sale details with items for editing
+  const fetchSaleForEdit = async (saleId) => {
+    try {
+      const result = await dispatch(getSale(saleId));
+      if (getSale.fulfilled.match(result)) {
+        const saleData = result.payload.data || result.payload;
+        console.log('[Sales] fetchSaleForEdit saleData:', saleData);
+        console.log('[Sales] fetchSaleForEdit items:', saleData.items);
+        if (saleData.items && saleData.items.length > 0) {
+          console.log('[Sales] First item structure:', saleData.items[0]);
+          console.log('[Sales] First item unitPrice type:', typeof saleData.items[0].unitPrice);
+          console.log('[Sales] First item unitPrice value:', saleData.items[0].unitPrice);
+        }
+        setSelectedSale(saleData);
+        setSaleItems(saleData.items || []);
+        return saleData;
+      } else {
+        console.error('Failed to fetch sale details:', result.payload);
+        return null;
+      }
+    } catch (error) {
+      console.error('Error fetching sale details:', error);
+      return null;
+    }
+  };
+
+
+  const handleDeleteSale = async () => {
+    try {
+      const result = await dispatch(deleteSale(entityToDelete.id))
+      
+      if (deleteSale.fulfilled.match(result)) {
+        // Success - close dialog and refresh data
+        setOpenDeleteDialog(false)
+        setEntityToDelete(null)
+        // Refresh the data to show updated list
+        dispatch(fetchSales({ ...baseScopeParams, page, limit: rowsPerPage }))
+      } else if (deleteSale.rejected.match(result)) {
+        // Error - show error message
+        // You could show a toast notification here
+        alert(`Failed to delete sale: ${result.payload || 'Unknown error'}`)
+      }
+    } catch (error) {
+      alert(`Failed to delete sale: ${error.message || 'Unknown error'}`)
+    }
+  }
+
+  const handleCreateReturn = (returnData) => {
+    dispatch(createSalesReturn(returnData))
+    setOpenDialog(false)
+  }
+
+  // Editable invoice handlers
+  const handleEditInvoice = async (sale) => {
+    try {
+      // Fetch full sale details with items
+      const response = await api.get(`/sales/${sale.id}`)
+      if (response.data.success) {
+        setEditingSale(response.data.data)
+        setShowEditableInvoice(true)
+      } else {
+        alert('Failed to load sale details')
+      }
+    } catch (error) {
+      console.error('Error loading sale details:', error)
+      alert('Failed to load sale details')
+    }
+  }
+
+  const handleCloseEditableInvoice = () => {
+    setShowEditableInvoice(false)
+    setEditingSale(null)
+  }
+
+  const handleSaveEditableInvoice = (updatedSale) => {
+    // Refresh sales data
+    dispatch(fetchSales({ ...baseScopeParams, page, limit: rowsPerPage }))
+    dispatch(fetchInventory(baseScopeParams))
+    
+    // Close the dialog
+    setShowEditableInvoice(false)
+    setEditingSale(null)
+  }
+
+  // Export functions
+  const handleExportClick = (event) => {
+    setExportAnchorEl(event.currentTarget)
+  }
+
+  const handleExportClose = () => {
+    setExportAnchorEl(null)
+  }
+
+  const buildItemSummary = (salesData) => {
+    const summaryMap = new Map()
+
+    salesData.forEach((sale) => {
+      if (!sale?.items || !Array.isArray(sale.items)) return
+
+      sale.items.forEach((item) => {
+        const name = item?.itemName || item?.name || item?.productName || 'Unknown Item'
+        const sku = item?.sku || 'N/A'
+        const quantity = Number(item?.quantity) || 0
+        const lineTotal = Number(item?.total ?? (item?.unitPrice || 0) * quantity) || 0
+
+        const key = `${name}|||${sku}`
+        if (!summaryMap.has(key)) {
+          summaryMap.set(key, {
+            name,
+            sku,
+            totalQuantity: 0,
+            totalSales: 0
+          })
+        }
+
+        const entry = summaryMap.get(key)
+        entry.totalQuantity += quantity
+        entry.totalSales += lineTotal
+      })
+    })
+
+    return Array.from(summaryMap.values()).sort((a, b) => b.totalQuantity - a.totalQuantity)
+  }
+
+  const exportToCSV = () => {
+    const salesToExport = getFilteredAndSortedSales()
+    const csvContent = generateCSV(salesToExport)
+    downloadFile(csvContent, 'sales-data.csv', 'text/csv')
+    handleExportClose()
+  }
+
+  const exportToExcel = async () => {
+    const salesToExport = getFilteredAndSortedSales()
+    const excelData = await generateExcel(salesToExport)
+    
+    // Determine if we got a buffer (proper Excel) or string (CSV fallback)
+    const isBuffer = excelData instanceof ArrayBuffer || excelData instanceof Uint8Array
+    const mimeType = isBuffer 
+      ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : 'text/csv'
+    const fileExtension = isBuffer ? 'xlsx' : 'csv'
+    
+    // Create blob from Excel buffer or CSV string
+    const blob = new Blob([excelData], { type: mimeType })
+    
+    // Create download link
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `sales-data-${new Date().toISOString().split('T')[0]}.${fileExtension}`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    
+    handleExportClose()
+  }
+
+  const exportToPDF = () => {
+    const salesToExport = getFilteredAndSortedSales()
+    const pdfContent = generatePDF(salesToExport)
+    downloadFile(pdfContent, 'sales-data.pdf', 'application/pdf')
+    handleExportClose()
+  }
+
+  const generateCSV = (salesData) => {
+    // Calculate summary statistics
+    const totalRevenue = salesData.reduce((sum, sale) => sum + parseFloat(sale.total || 0), 0)
+    const totalSubtotal = salesData.reduce((sum, sale) => sum + parseFloat(sale.subtotal || 0), 0)
+    const totalTax = salesData.reduce((sum, sale) => sum + parseFloat(sale.tax || 0), 0)
+    const totalDiscount = salesData.reduce((sum, sale) => sum + parseFloat(sale.discount || 0), 0)
+    const totalPayment = salesData.reduce((sum, sale) => sum + parseFloat(sale.payment_amount || 0), 0)
+    const transactionCount = salesData.length
+    
+    const itemSummary = buildItemSummary(salesData)
+
+    // Summary section
+    const summary = [
+      ['Sales Report Summary'],
+      ['Report Date Range', `${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`],
+      ['Total Transactions', transactionCount],
+      ['Total Subtotal', totalSubtotal.toFixed(2)],
+      ['Total Tax', totalTax.toFixed(2)],
+      ['Total Discount', totalDiscount.toFixed(2)],
+      ['Total Revenue', totalRevenue.toFixed(2)],
+      ['Total Payments Received', totalPayment.toFixed(2)],
+      [''] // Empty row separator
+    ]
+
+    if (itemSummary.length > 0) {
+      summary.push(['Product Summary'])
+      summary.push(['Product', 'SKU', 'Total Quantity', 'Total Sales'])
+      itemSummary.forEach((item) => {
+        summary.push([
+          item.name,
+          item.sku,
+          item.totalQuantity,
+          item.totalSales.toFixed(2)
+        ])
+      })
+      summary.push([''])
+    }
+    
+    // Conditionally include Salesperson in headers only if there are warehouse sales
+    const hasWarehouseSalesInExport = salesData.some(sale => (sale.scope_type || sale.scopeType) === 'WAREHOUSE')
+    const headers = hasWarehouseSalesInExport
+      ? ['ID', 'Date', 'Time', 'Invoice #', 'Customer', 'Salesperson', 'Subtotal', 'Tax', 'Discount', 'Total', 'Payment', 'Credit', 'Balance', 'Payment Method', 'Payment Type', 'Payment Status', 'Returns', 'Notes', 'Created By']
+      : ['ID', 'Date', 'Time', 'Invoice #', 'Customer', 'Subtotal', 'Tax', 'Discount', 'Total', 'Payment', 'Credit', 'Balance', 'Payment Method', 'Payment Type', 'Payment Status', 'Returns', 'Notes', 'Created By']
+    const rows = salesData.map(sale => {
+      // Calculate returns for this sale
+      const returns = salesReturns?.filter(returnItem => returnItem.sale_id === sale.id) || [];
+      const totalReturnedQty = returns.reduce((sum, returnItem) => {
+        return sum + (returnItem.items?.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0) || 0);
+      }, 0);
+      
+      const saleDate = new Date(sale.created_at);
+      
+      return [
+        sale.id,
+        saleDate.toLocaleDateString(),
+        saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+        sale.invoice_no || 'N/A',
+        (() => {
+          if (sale.customerInfo && sale.customerInfo.name) return sale.customerInfo.name;
+          if (sale.customer_info) {
+            try {
+              const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+              return ci.name || 'Walk-in Customer';
+            } catch (e) { return 'Walk-in Customer'; }
+          }
+          return sale.customer_name || 'Walk-in Customer';
+        })(),
+        // Conditionally include Salesperson in CSV only if there are warehouse sales
+        ...(hasWarehouseSalesInExport ? [(() => {
+          // Only include salesperson data for warehouse sales
+          if (sale.scope_type !== 'WAREHOUSE' && sale.scopeType !== 'WAREHOUSE') {
+            return 'N/A'; // Empty for non-warehouse sales
+          }
+          if (sale.customerInfo && sale.customerInfo.salesperson) {
+            return sale.customerInfo.salesperson.name || (sale.customerInfo.salesperson.id ? `Salesperson ${sale.customerInfo.salesperson.id}` : 'N/A');
+          }
+          if (sale.customer_info) {
+            try {
+              const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+              if (ci.salesperson) {
+                return ci.salesperson.name || (ci.salesperson.id ? `Salesperson ${ci.salesperson.id}` : 'N/A');
+              }
+            } catch (e) {}
+          }
+          return 'N/A';
+        })()] : []),
+        parseFloat(sale.subtotal || 0).toFixed(2),
+        parseFloat(sale.tax || 0).toFixed(2),
+        parseFloat(sale.discount || 0).toFixed(2),
+        parseFloat(sale.total || 0).toFixed(2),
+        parseFloat(sale.payment_amount || 0).toFixed(2),
+        parseFloat(sale.credit_amount || sale.creditAmount || 0).toFixed(2),
+        parseFloat(sale.running_balance || sale.runningBalance || 0).toFixed(2),
+        sale.paymentMethod || sale.payment_method || 'N/A',
+        sale.paymentType || sale.payment_type || 'N/A',
+        sale.paymentStatus || sale.payment_status || 'N/A',
+        totalReturnedQty,
+        sale.notes || 'No Notes',
+        sale.created_by || sale.username || sale.user_name || 'Unknown'
+      ]
+    })
+    
+    return [...summary, headers, ...rows].map(row => Array.isArray(row) ? row.join(',') : `${row}`).join('\n')
+  }
+
+  const generateExcel = async (salesData) => {
+    try {
+      // Try to use XLSX library for proper Excel format
+      const XLSX = await import('xlsx')
+      
+      // Prepare data for Excel
+      const excelData = salesData.map(sale => {
+        // Calculate returns for this sale
+        const returns = salesReturns?.filter(returnItem => returnItem.sale_id === sale.id) || [];
+        const totalReturnedQty = returns.reduce((sum, returnItem) => {
+          return sum + (returnItem.items?.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0) || 0);
+        }, 0);
+        
+        const saleDate = new Date(sale.created_at);
+        
+        return {
+          'ID': sale.id,
+          'Date': saleDate.toLocaleDateString(),
+          'Time': saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+          'Invoice #': sale.invoice_no || 'N/A',
+          'Customer': (() => {
+            if (sale.customerInfo && sale.customerInfo.name) return sale.customerInfo.name;
+            if (sale.customer_info) {
+              try {
+                const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+                return ci.name || 'Walk-in Customer';
+              } catch (e) { return 'Walk-in Customer'; }
+            }
+            return sale.customer_name || 'Walk-in Customer';
+          })(),
+          // Conditionally include Salesperson only if there are warehouse sales
+          ...(salesData.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE') ? {
+            'Salesperson': (() => {
+              // Only include salesperson data for warehouse sales
+              if (sale.scope_type !== 'WAREHOUSE' && sale.scopeType !== 'WAREHOUSE') {
+                return 'N/A'; // Empty for non-warehouse sales
+              }
+              if (sale.customerInfo && sale.customerInfo.salesperson) {
+                return sale.customerInfo.salesperson.name || (sale.customerInfo.salesperson.id ? `Salesperson ${sale.customerInfo.salesperson.id}` : 'N/A');
+              }
+              if (sale.customer_info) {
+                try {
+                  const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+                  if (ci.salesperson) {
+                    return ci.salesperson.name || (ci.salesperson.id ? `Salesperson ${ci.salesperson.id}` : 'N/A');
+                  }
+                } catch (e) {}
+              }
+              return 'N/A';
+            })()
+          } : {}),
+          'Subtotal': parseFloat(sale.subtotal || 0).toFixed(2),
+          'Tax': parseFloat(sale.tax || 0).toFixed(2),
+          'Discount': parseFloat(sale.discount || 0).toFixed(2),
+          'Total': parseFloat(sale.total || 0).toFixed(2),
+          'Payment': parseFloat(sale.payment_amount || 0).toFixed(2),
+          'Credit': parseFloat(sale.credit_amount || sale.creditAmount || 0).toFixed(2),
+          'Balance': parseFloat(sale.running_balance || sale.runningBalance || 0).toFixed(2),
+          'Payment Method': sale.paymentMethod || sale.payment_method || 'N/A',
+          'Payment Type': sale.paymentType || sale.payment_type || 'N/A',
+          'Payment Status': sale.paymentStatus || sale.payment_status || 'N/A',
+          'Returns': totalReturnedQty,
+          'Notes': sale.notes || 'No Notes',
+          'Created By': sale.created_by || sale.username || sale.user_name || 'Unknown'
+        };
+      })
+      
+      const itemSummary = buildItemSummary(salesData)
+
+      // Create workbook and worksheet
+      const workbook = XLSX.utils.book_new()
+      const worksheet = XLSX.utils.json_to_sheet(excelData)
+      
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Sales Data')
+
+      const itemSummarySheetData = itemSummary.length > 0
+        ? itemSummary.map(item => ({
+            'Product': item.name,
+            'SKU': item.sku === 'N/A' ? '' : item.sku,
+            'Total Quantity': item.totalQuantity,
+            'Total Sales': item.totalSales.toFixed(2)
+          }))
+        : [{
+            'Product': 'No item data for selected filters',
+            'SKU': '',
+            'Total Quantity': 0,
+            'Total Sales': '0.00'
+          }]
+
+      const itemSummarySheet = XLSX.utils.json_to_sheet(itemSummarySheetData)
+      XLSX.utils.book_append_sheet(workbook, itemSummarySheet, 'Item Summary')
+      
+      // Generate Excel file buffer
+      const excelBuffer = XLSX.write(workbook, { 
+        type: 'array', 
+        bookType: 'xlsx' 
+      })
+      
+      return excelBuffer
+    } catch (error) {
+      console.warn('XLSX library not available, falling back to CSV format:', error)
+      // Fallback to CSV format with Excel MIME type
+      return generateCSV(salesData)
+    }
+  }
+
+  const generatePDF = (salesData) => {
+    const itemSummary = buildItemSummary(salesData)
+
+    const itemSummaryHtml = itemSummary.length > 0 ? `
+      <div class="summary">
+        <h3>Item Summary</h3>
+        <table class="item-summary-table">
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>SKU</th>
+              <th>Total Quantity</th>
+              <th>Total Sales</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemSummary.map(item => `
+              <tr>
+                <td>${item.name}</td>
+                <td>${item.sku}</td>
+                <td>${item.totalQuantity}</td>
+                <td>${item.totalSales.toFixed(2)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : ''
+
+    // Generate HTML content for PDF
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Sales Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #333; padding-bottom: 20px; }
+            .summary { background: #f5f5f5; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; font-weight: bold; }
+            .total-row { font-weight: bold; background-color: #e6f3ff; }
+            .status-completed { color: #28a745; }
+            .status-pending { color: #ffc107; }
+            .status-cancelled { color: #dc3545; }
+            .item-summary-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            .item-summary-table th, .item-summary-table td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+            .item-summary-table th { background-color: #e9f5ff; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Sales Report</h1>
+            <p>Generated on: ${new Date().toLocaleDateString()}</p>
+            <p>Date Range: ${startDate.toLocaleDateString()} to ${endDate.toLocaleDateString()}</p>
+            <p>Total Records: ${salesData.length}</p>
+          </div>
+          
+          <div class="summary">
+            <h3>Summary Statistics</h3>
+            <p><strong>Total Transactions:</strong> ${salesData.length}</p>
+            <p><strong>Total Subtotal:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.subtotal || 0), 0).toFixed(2)}</p>
+            <p><strong>Total Tax:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.tax || 0), 0).toFixed(2)}</p>
+            <p><strong>Total Discount:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.discount || 0), 0).toFixed(2)}</p>
+            <p><strong>Total Revenue:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.total || 0), 0).toFixed(2)}</p>
+            <p><strong>Total Payments Received:</strong> ${salesData.reduce((sum, sale) => sum + parseFloat(sale.payment_amount || 0), 0).toFixed(2)}</p>
+            <p><strong>Completed Payments:</strong> ${salesData.filter(sale => (sale.paymentStatus || sale.payment_status) === 'COMPLETED').length}</p>
+            <p><strong>Pending Payments:</strong> ${salesData.filter(sale => (sale.paymentStatus || sale.payment_status) === 'PENDING').length}</p>
+          </div>
+          ${itemSummaryHtml}
+          
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Time</th>
+                <th>Invoice #</th>
+                <th>Customer</th>
+                ${salesData.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE') ? '<th>Salesperson</th>' : ''}
+                <th>Subtotal</th>
+                <th>Tax</th>
+                <th>Discount</th>
+                <th>Total</th>
+                <th>Payment</th>
+                <th>Credit</th>
+                <th>Balance</th>
+                <th>Payment Method</th>
+                <th>Payment Type</th>
+                <th>Payment Status</th>
+                <th>Returns</th>
+                <th>Notes</th>
+                <th>Created By</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${salesData.map(sale => {
+                // Calculate returns for this sale
+                const returns = salesReturns?.filter(returnItem => returnItem.sale_id === sale.id) || [];
+                const totalReturnedQty = returns.reduce((sum, returnItem) => {
+                  return sum + (returnItem.items?.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0) || 0);
+                }, 0);
+                
+                const saleDate = new Date(sale.created_at);
+                
+                return `
+                <tr>
+                  <td>${saleDate.toLocaleDateString()}</td>
+                  <td>${saleDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}</td>
+                  <td>${sale.invoice_no || 'N/A'}</td>
+                  <td>${(() => {
+                    if (sale.customerInfo && sale.customerInfo.name) return sale.customerInfo.name;
+                    if (sale.customer_info) {
+                      try {
+                        const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+                        return ci.name || 'Walk-in Customer';
+                      } catch (e) { return 'Walk-in Customer'; }
+                    }
+                    return sale.customer_name || 'Walk-in Customer';
+                  })()}</td>
+                  ${salesData.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE') ? `<td>${
+                    (() => {
+                      // Only show salesperson for warehouse sales
+                      if (sale.scope_type !== 'WAREHOUSE' && sale.scopeType !== 'WAREHOUSE') {
+                        return 'N/A'; // Empty for non-warehouse sales
+                      }
+                      if (sale.customerInfo && sale.customerInfo.salesperson) {
+                        return sale.customerInfo.salesperson.name || (sale.customerInfo.salesperson.id ? `Salesperson ${sale.customerInfo.salesperson.id}` : 'N/A');
+                      }
+                      if (sale.customer_info) {
+                        try {
+                          const ci = typeof sale.customer_info === 'string' ? JSON.parse(sale.customer_info) : sale.customer_info;
+                          if (ci.salesperson) {
+                            return ci.salesperson.name || (ci.salesperson.id ? `Salesperson ${ci.salesperson.id}` : 'N/A');
+                          }
+                        } catch (e) {}
+                      }
+                      return 'N/A';
+                    })()
+                  }</td>` : ''}
+                  <td>${parseFloat(sale.subtotal || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.tax || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.discount || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.total || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.payment_amount || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.credit_amount || sale.creditAmount || 0).toFixed(2)}</td>
+                  <td>${parseFloat(sale.running_balance || sale.runningBalance || 0).toFixed(2)}</td>
+                  <td>${sale.paymentMethod || sale.payment_method || 'N/A'}</td>
+                  <td>${sale.paymentType || sale.payment_type || 'N/A'}</td>
+                  <td class="status-${(sale.paymentStatus || sale.payment_status)?.toLowerCase() || 'unknown'}">${sale.paymentStatus || sale.payment_status || 'N/A'}</td>
+                  <td>${totalReturnedQty}</td>
+                  <td>${sale.notes || 'No Notes'}</td>
+                  <td>${sale.created_by || sale.username || sale.user_name || 'Unknown'}</td>
+                </tr>
+              `;
+              }).join('')}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `
+    
+    return htmlContent
+  }
+
+  const downloadFile = (content, filename, mimeType) => {
+    if (mimeType === 'application/pdf') {
+      // For PDF, open in new window and trigger print
+      const printWindow = window.open('', '_blank')
+      printWindow.document.write(content)
+      printWindow.document.close()
+      
+      // Wait for content to load, then trigger print
+      printWindow.onload = () => {
+        printWindow.print()
+        printWindow.close()
+      }
+    } else {
+      // For other formats (CSV, Excel), use blob download
+      const blob = new Blob([content], { type: mimeType })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    }
+  }
+
+  // Sales statistics (from backend summary so they reflect all filtered rows, not just current page)
+  const salesStats = useMemo(() => ({
+    totalSales: Number(salesSummary.totalSales || 0),
+    totalTransactions: Number(salesSummary.totalTransactions || 0),
+    averageOrderValue: Number(salesSummary.averageOrderValue || 0),
+    completedSales: Number(salesSummary.completedSales || 0)
+  }), [salesSummary])
+
+  // Check if there are any warehouse sales (to conditionally show Salesperson column)
+  const hasWarehouseSales = useMemo(() => {
+    if (!sales || sales.length === 0) return false
+    // Check all sales, not just filtered ones, to determine if column should be visible
+    return sales.some(sale => (sale.scope_type || sale.scopeType) === 'WAREHOUSE')
+  }, [sales])
+
+  // Create filtered columns array - conditionally include salesperson column
+  const visibleColumns = useMemo(() => {
+    return hasWarehouseSales 
+      ? columns // Include salesperson column
+      : columns.filter(col => col.field !== 'salesperson') // Exclude salesperson column
+  }, [hasWarehouseSales])
+
+  return (
+    <DashboardLayout>
+      <RouteGuard allowedRoles={['ADMIN', 'WAREHOUSE_KEEPER', 'CASHIER']}>
+        <PermissionCheck roles={['ADMIN', 'MANAGER', 'CASHIER', 'WAREHOUSE_KEEPER']}>
+          <Box sx={{ p: 3 }}>
+            {/* Admin Mode Indicator */}
+            {isAdminMode && scopeInfo && (
+              <Box sx={{ 
+                bgcolor: 'warning.light', 
+                color: 'warning.contrastText', 
+                p: 1, 
+                textAlign: 'center',
+                borderBottom: 1,
+                borderColor: 'warning.main',
+                mb: 2
+              }}>
+                <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                  🔧 ADMIN MODE: Operating as {scopeInfo.scopeType === 'BRANCH' ? 'Cashier' : 'Warehouse Keeper'} for {scopeInfo.scopeName}
+                </Typography>
+              </Box>
+            )}
+            
+            {/* Header */}
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+              <Typography variant="h4" component="h1">
+                Sales Management
+              </Typography>
+            </Box>
+
+            {/* Sales Statistics */}
+            <Grid container spacing={3} sx={{ mb: 3 }}>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card>
+                  <CardContent>
+                    <Typography color="textSecondary" gutterBottom>
+                      Total Sales
+                    </Typography>
+                    <Typography variant="h5" component="div">
+                      {salesStats.totalSales.toFixed(2)}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card>
+                  <CardContent>
+                    <Typography color="textSecondary" gutterBottom>
+                      Total Transactions
+                    </Typography>
+                    <Typography variant="h5" component="div">
+                      {salesStats.totalTransactions}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card>
+                  <CardContent>
+                    <Typography color="textSecondary" gutterBottom>
+                      Average Order Value
+                    </Typography>
+                    <Typography variant="h5" component="div">
+                      {salesStats.averageOrderValue.toFixed(2)}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Card>
+                  <CardContent>
+                    <Typography color="textSecondary" gutterBottom>
+                      Completed Sales
+                    </Typography>
+                    <Typography variant="h5" component="div">
+                      {salesStats.completedSales}
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            </Grid>
+
+            {/* Sales Transactions Table */}
+            <Box sx={{ mb: 4 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Typography variant="h6">
+                  Sales Transactions
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<RefreshIcon />}
+                    onClick={handleManualRefresh}
+                    disabled={salesLoading}
+                    sx={{ minWidth: 120 }}
+                  >
+                    Refresh
+                  </Button>
+                  <Button 
+                    variant="outlined" 
+                    startIcon={<ExportIcon />}
+                    onClick={handleExportClick}
+                    sx={{ minWidth: 120 }}
+                  >
+                    Export
+                  </Button>
+                </Box>
+              </Box>
+              
+              {/* Simple Sales Table */}
+              <Card>
+                <CardContent>
+                  {/* Search and Filter Section */}
+                  <Box sx={{ mb: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                      <FilterIcon sx={{ mr: 1, fontSize: 20 }} />
+                      <Typography variant="subtitle2">Search & Filters</Typography>
+                    </Box>
+                    
+                    <Grid container spacing={2} sx={{ mb: 1 }} alignItems="center">
+                      {/* Search Input */}
+                      <Grid item xs={12} md={4}>
+                        <TextField
+                          fullWidth
+                        size="small"
+                          label="Search Sales"
+                          placeholder="Search by invoice, customer..."
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          InputProps={{
+                            startAdornment: (
+                              <InputAdornment position="start">
+                                <SearchIcon />
+                              </InputAdornment>
+                            ),
+                            endAdornment: searchTerm && (
+                              <InputAdornment position="end">
+                                <IconButton
+                        size="small"
+                                  onClick={() => setSearchTerm('')}
+                                  edge="end"
+                                >
+                                  <ClearIcon />
+                                </IconButton>
+                              </InputAdornment>
+                            )
+                          }}
+                        />
+                      </Grid>
+
+                      {/* Start Date Filter */}
+                      <Grid item xs={12} md={2}>
+                        <LocalizationProvider dateAdapter={AdapterDateFns}>
+                          <DatePicker
+                            label="Start Date"
+                            value={startDate}
+                            onChange={(newValue) => setStartDate(newValue)}
+                            slotProps={{
+                              textField: {
+                                size: 'small',
+                                fullWidth: true
+                              }
+                            }}
+                          />
+                        </LocalizationProvider>
+                      </Grid>
+
+                      {/* End Date Filter */}
+                      <Grid item xs={12} md={2}>
+                        <LocalizationProvider dateAdapter={AdapterDateFns}>
+                          <DatePicker
+                            label="End Date"
+                            value={endDate}
+                            onChange={(newValue) => setEndDate(newValue)}
+                            slotProps={{
+                              textField: {
+                                size: 'small',
+                                fullWidth: true
+                              }
+                            }}
+                          />
+                        </LocalizationProvider>
+                      </Grid>
+
+                      {/* Payment Method Filter */}
+                      <Grid item xs={12} md={2}>
+                        <FormControl fullWidth size="small">
+                          <InputLabel>Payment Method</InputLabel>
+                        <Select
+                            value={paymentMethodFilter}
+                            label="Payment Method"
+                            onChange={(e) => setPaymentMethodFilter(e.target.value)}
+                          >
+                            <MenuItem value="all">All Methods</MenuItem>
+                            <MenuItem value="cash">Cash</MenuItem>
+                            <MenuItem value="card">Card</MenuItem>
+                            <MenuItem value="upi">UPI</MenuItem>
+                            <MenuItem value="netbanking">Net Banking</MenuItem>
+                            <MenuItem value="partial_payment">Partial Payment</MenuItem>
+                        </Select>
+                      </FormControl>
+                      </Grid>
+
+                      {/* Status Filter */}
+                      <Grid item xs={12} md={2}>
+                        <FormControl fullWidth size="small">
+                          <InputLabel>Status</InputLabel>
+                        <Select
+                            value={statusFilter}
+                            label="Status"
+                            onChange={(e) => setStatusFilter(e.target.value)}
+                          >
+                            <MenuItem value="all">All Status</MenuItem>
+                            <MenuItem value="completed">Completed</MenuItem>
+                            <MenuItem value="pending">Pending</MenuItem>
+                            <MenuItem value="cancelled">Cancelled</MenuItem>
+                        </Select>
+                      </FormControl>
+                      </Grid>
+
+                      {/* Scope Type Filter */}
+                      <Grid item xs={12} md={2}>
+                        <FormControl fullWidth size="small">
+                          <InputLabel>Scope</InputLabel>
+                        <Select
+                            value={scopeTypeFilter}
+                            label="Scope"
+                            onChange={(e) => setScopeTypeFilter(e.target.value)}
+                          >
+                            <MenuItem value="all">All Scopes</MenuItem>
+                            <MenuItem value="BRANCH">Branch</MenuItem>
+                            <MenuItem value="WAREHOUSE">Warehouse</MenuItem>
+                        </Select>
+                      </FormControl>
+                      </Grid>
+
+                      {user?.role === 'ADMIN' && (
+                        <Grid item xs={12} md={3}>
+                          <TextField
+                            fullWidth
+                            size="small"
+                            label="Search Branch/Warehouse"
+                            placeholder="Name or ID"
+                            value={scopeSearch}
+                            onChange={(e) => {
+                              setScopeSearch(e.target.value)
+                              setPage(1)
+                            }}
+                            InputProps={{
+                              startAdornment: (
+                                <InputAdornment position="start">
+                                  <SearchIcon fontSize="small" />
+                                </InputAdornment>
+                              ),
+                              endAdornment: scopeSearch && (
+                                <InputAdornment position="end">
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => {
+                                      setScopeSearch('')
+                                      setPage(1)
+                                    }}
+                                    edge="end"
+                                  >
+                                    <ClearIcon fontSize="small" />
+                                  </IconButton>
+                                </InputAdornment>
+                              )
+                            }}
+                          />
+                        </Grid>
+                      )}
+
+                      {/* Sort By */}
+                      <Grid item xs={12} md={1}>
+                        <FormControl fullWidth size="small">
+                          <InputLabel>Sort By</InputLabel>
+                          <Select
+                            value={sortBy}
+                            label="Sort By"
+                            onChange={(e) => setSortBy(e.target.value)}
+                          >
+                            <MenuItem value="created_at">Date</MenuItem>
+                            <MenuItem value="total">Total</MenuItem>
+                            <MenuItem value="invoice_no">Invoice</MenuItem>
+                            <MenuItem value="customerName">Customer</MenuItem>
+                          </Select>
+                        </FormControl>
+                      </Grid>
+
+                      {/* Action Icons */}
+                      <Grid item xs={12} md={1}>
+                        <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
+                          <Tooltip title="Clear all filters">
+                            <IconButton
+                      size="small"
+                              onClick={clearFilters}
+                              disabled={getFilterSummary().length === 0}
+                            >
+                              <ClearIcon />
+                            </IconButton>
+                          </Tooltip>
+                          
+                          <Tooltip title={sortOrder === 'asc' ? 'Sort Descending' : 'Sort Ascending'}>
+                            <IconButton
+                      size="small"
+                              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                            >
+                              {sortOrder === 'asc' ? '↑' : '↓'}
+                            </IconButton>
+                          </Tooltip>
+                  </Box>
+                      </Grid>
+                    </Grid>
+
+                    {/* Filter Summary */}
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                      {getFilterSummary().length > 0 && (
+                        <>
+                          <Typography variant="body2" color="text.secondary">
+                            Active filters:
+                          </Typography>
+                          {getFilterSummary().map((filter, index) => (
+                        <Chip
+                              key={index}
+                              label={filter}
+                          size="small"
+                              color="primary"
+                              variant="outlined"
+                            />
+                          ))}
+                        </>
+                      )}
+                      {getFilterSummary().length === 0 && (
+                        <Typography variant="body2" color="text.secondary">
+                          No filters applied - showing all items
+                        </Typography>
+                      )}
+                    </Box>
+
+                    {/* Results Summary */}
+                    <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 2 }}>
+                      <Typography variant="body2" color="text.secondary">
+                        Showing {startIndex + 1}-{Math.min(endIndex, totalItems)} of {totalItems} sales
+                      </Typography>
+                    </Box>
+                  </Box>
+                  {salesLoading ? (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+                      <CircularProgress />
+                    </Box>
+                  ) : salesError ? (
+                    <Alert severity="error" sx={{ mb: 2 }}>
+                      {typeof salesError === 'string' ? salesError : salesError.message || 'Failed to load sales data'}
+                    </Alert>
+                  ) : (
+                    <TableContainer component={Paper}>
+                      <Table>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>ID</TableCell>
+                            <TableCell>Date</TableCell>
+                            <TableCell>Time</TableCell>
+                            <TableCell>Invoice #</TableCell>
+                            <TableCell>Location</TableCell>
+                            <TableCell>Customer</TableCell>
+                            {(() => {
+                              // Only show Salesperson header if there are warehouse sales
+                              const hasWarehouseSales = paginatedSales.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE');
+                              return hasWarehouseSales ? <TableCell>Salesperson</TableCell> : null;
+                            })()}
+                            <TableCell align="right">Subtotal</TableCell>
+                            <TableCell align="right">Tax</TableCell>
+                            <TableCell align="right">Discount</TableCell>
+                            <TableCell align="right">Total</TableCell>
+                            <TableCell>Payment Method</TableCell>
+                              <TableCell>Payment Type</TableCell>
+                            <TableCell>Payment Terms</TableCell>
+                            <TableCell>Payment Status</TableCell>
+                            <TableCell>Created By</TableCell>
+                            <TableCell>Actions</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {paginatedSales.map((sale) => (
+                            <TableRow key={sale.id}>
+                              <TableCell>{sale.id}</TableCell>
+                              <TableCell>
+                                {(() => {
+                                  try {
+                                    const date = new Date(sale.created_at);
+                                    if (isNaN(date.getTime())) return 'N/A';
+                                    return date.toLocaleDateString();
+                                  } catch (e) {
+                                    return 'N/A';
+                                  }
+                                })()}
+                              </TableCell>
+                              <TableCell>
+                                {(() => {
+                                  try {
+                                    const date = new Date(sale.created_at);
+                                    return date.toLocaleTimeString('en-US', {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                      hour12: true
+                                    });
+                                  } catch (e) {
+                                    return 'N/A';
+                                  }
+                                })()}
+                              </TableCell>
+                            <TableCell>{sale.invoice_no || 'N/A'}</TableCell>
+                           <TableCell>
+                             {(() => {
+                               const scopeType = sale.scope_type || sale.scopeType
+                               const scopeId = sale.scope_id || sale.scopeId
+                           
+                               if (scopeType === 'WAREHOUSE') {
+                                 const warehouse = (warehouses || []).find(w => w.id === scopeId || w.id === Number(scopeId))
+                                 return warehouse?.name || `Warehouse ${scopeId}`
+                               } else {
+                                 const branch = (branches || []).find(b => b.id === scopeId || b.id === Number(scopeId))
+                                 return branch?.name || `Branch ${scopeId}`
+                               }
+                             })()}
+                           </TableCell>
+                              <TableCell>
+                                {(() => {
+                                  if (sale.customerInfo && sale.customerInfo.name) {
+                                    return sale.customerInfo.name;
+                                  }
+                                  if (sale.customer_info) {
+                                    try {
+                                      const customerInfo = JSON.parse(sale.customer_info);
+                                      return customerInfo.name || 'No Customer';
+                                    } catch (e) {
+                                      return 'No Customer';
+                                    }
+                                  }
+                                  return 'No Customer';
+                                })()}
+                              </TableCell>
+                              {/* Only show Salesperson column if there are warehouse sales */}
+                              {(() => {
+                                const hasWarehouseSales = paginatedSales.some(s => (s.scope_type || s.scopeType) === 'WAREHOUSE');
+                                if (!hasWarehouseSales) return null;
+                                
+                                return (
+                                  <TableCell>
+                                    {(() => {
+                                      // Only show salesperson for warehouse sales
+                                      if (sale.scope_type !== 'WAREHOUSE' && sale.scopeType !== 'WAREHOUSE') {
+                                        return null; // Empty cell for branch sales
+                                      }
+                                      
+                                      // Check for customerInfo with salesperson (parsed from JSON)
+                                      if (sale.customerInfo && sale.customerInfo.salesperson) {
+                                        const sp = sale.customerInfo.salesperson;
+                                        return sp.name || (sp.id ? `Salesperson ${sp.id}` : null);
+                                      }
+                                      
+                                      // Check for customer_info (raw JSON string)
+                                      if (sale.customer_info) {
+                                        try {
+                                          const customerInfo = JSON.parse(sale.customer_info);
+                                          if (customerInfo.salesperson) {
+                                            const sp = customerInfo.salesperson;
+                                            return sp.name || (sp.id ? `Salesperson ${sp.id}` : null);
+                                          }
+                                        } catch (e) {
+                                          // Silent error
+                                        }
+                                      }
+                                      
+                                      return null; // Return null for warehouse sales without salesperson
+                                    })()}
+                                  </TableCell>
+                                );
+                              })()}
+                              <TableCell align="right">{parseFloat(sale.subtotal || 0).toFixed(2)}</TableCell>
+                              <TableCell align="right">{parseFloat(sale.tax || 0).toFixed(2)}</TableCell>
+                              <TableCell align="right">{parseFloat(sale.discount || 0).toFixed(2)}</TableCell>
+                              <TableCell align="right">{parseFloat(sale.total || 0).toFixed(2)}</TableCell>
+                              <TableCell>
+                                {(() => {
+                                  // Get payment details
+                                  const paymentStatus = sale.paymentStatus || sale.payment_status;
+                                  const creditAmount = parseFloat(sale.creditAmount || 0);
+                                  const paymentAmount = parseFloat(sale.paymentAmount || 0);
+                                  const total = parseFloat(sale.total || 0);
+                                  
+                                  // Get payment method first
+                                  let paymentMethod = sale.paymentMethod || sale.payment_method;
+                                  if (!paymentMethod && sale.customer_info) {
+                                    try {
+                                      const customerInfo = typeof sale.customer_info === 'string' 
+                                        ? JSON.parse(sale.customer_info) 
+                                        : sale.customer_info;
+                                      paymentMethod = customerInfo.paymentMethod;
+                                    } catch (e) {
+                                      // Silent error handling
+                                    }
+                                  }
+
+                                  // ✅ CORRECTED LOGIC: Show payment method based on actual payment_method field
+                                  if (paymentMethod === 'FULLY_CREDIT') {
+                                    return <Chip label="FULLY CREDIT" color="error" size="small" />;
+                                  }
+                                  
+                                  if (paymentMethod === 'PARTIAL_PAYMENT') {
+                                    return <Chip label="PARTIAL PAYMENT" color="warning" size="small" />;
+                                  }
+                                  
+                                  // For other payment methods, show the method
+                                  const methodColors = {
+                                    'CASH': 'success',
+                                    'CARD': 'primary',
+                                    'BANK_TRANSFER': 'info',
+                                    'MOBILE_PAYMENT': 'secondary',
+                                    'CHEQUE': 'warning'
+                                  };
+                                  
+                                  return (
+                                    <Chip 
+                                      label={paymentMethod?.replace('_', ' ').toUpperCase() || 'N/A'} 
+                                      color={methodColors[paymentMethod] || 'default'}
+                                      size="small"
+                                    />
+                                  );
+                                })()}
+                              </TableCell>
+                                <TableCell>
+                                  {(() => {
+                                    // Get payment type
+                                    let paymentType = sale.paymentType || sale.payment_type;
+                                    if (!paymentType && sale.customer_info) {
+                                      try {
+                                        const customerInfo = typeof sale.customer_info === 'string' 
+                                          ? JSON.parse(sale.customer_info) 
+                                          : sale.customer_info;
+                                        paymentType = customerInfo.paymentType;
+                                      } catch (e) {
+                                        // Silent error handling
+                                      }
+                                    }
+                                    
+                                    // Format payment type
+                                    const typeColors = {
+                                      'FULL_PAYMENT': 'success',
+                                      'PARTIAL_PAYMENT': 'warning',
+                                      'FULLY_CREDIT': 'error',
+                                      'CASH': 'success',
+                                      'CARD': 'primary',
+                                      'BANK_TRANSFER': 'info',
+                                      'CHEQUE': 'warning'
+                                    };
+                                    
+                                    const typeLabels = {
+                                      'FULL_PAYMENT': 'Full Payment',
+                                      'PARTIAL_PAYMENT': 'Partial Payment',
+                                      'FULLY_CREDIT': 'Fully Credit',
+                                      'CASH': 'Cash',
+                                      'CARD': 'Card',
+                                      'BANK_TRANSFER': 'Bank Transfer',
+                                      'CHEQUE': 'Cheque'
+                                    };
+                                    
+                                    return (
+                                      <Chip 
+                                        label={typeLabels[paymentType] || paymentType || 'N/A'} 
+                                        color={typeColors[paymentType] || 'default'}
+                                        size="small"
+                                      />
+                                    );
+                                  })()}
+                                </TableCell>
+                              <TableCell>
+                                {(() => {
+                                  let paymentMethod = sale.paymentMethod || sale.payment_method;
+                                  if (!paymentMethod && sale.customer_info) {
+                                    try {
+                                      const customerInfo = typeof sale.customer_info === 'string' 
+                                        ? JSON.parse(sale.customer_info) 
+                                        : sale.customer_info;
+                                      paymentMethod = customerInfo.paymentMethod;
+                                    } catch (e) {
+                                      // Silent error handling
+                                    }
+                                  }
+                                  
+                                  if (paymentMethod === 'CREDIT') {
+                                    let customerInfo = sale.customerInfo;
+                                    if (!customerInfo && sale.customer_info) {
+                                      try {
+                                        customerInfo = typeof sale.customer_info === 'string' 
+                                          ? JSON.parse(sale.customer_info) 
+                                          : sale.customer_info;
+                                      } catch (e) {
+                                        // Silent error handling
+                                      }
+                                    }
+                                    
+                                    if (customerInfo && customerInfo.paymentTerms) {
+                                      return customerInfo.paymentTerms;
+                                    }
+                                    return 'N/A';
+                                  }
+                                  return '-';
+                                })()}
+                              </TableCell>
+                              <TableCell>
+                        <Chip
+                                  label={sale.paymentStatus || sale.payment_status || 'N/A'} 
+                                  color={(sale.paymentStatus || sale.payment_status) === 'COMPLETED' ? 'success' : (sale.paymentStatus || sale.payment_status) === 'PENDING' ? 'error' : 'default'}
+                          size="small"
+                        />
+                              </TableCell>
+                              <TableCell>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                  <Typography variant="body2" fontWeight="medium">
+                                    {sale.created_by || sale.username || sale.user_name || 'Unknown'}
+                                  </Typography>
+                                </Box>
+                              </TableCell>
+                              <TableCell>
+                                <Box sx={{ display: 'flex', gap: 1 }}>
+                                  {canEdit && (
+                                    <>
+                                      <Tooltip title="View Items">
+                                        <IconButton
+                                          size="small"
+                                          onClick={async () => {
+                                            setViewingSale(sale)
+                                            await fetchSaleForEdit(sale.id)
+                                            setShowItemsDialog(true)
+                                          }}
+                                          color="info"
+                                        >
+                                          <ViewIcon />
+                                        </IconButton>
+                                      </Tooltip>
+                                      <Tooltip title="Edit Invoice">
+                                        <IconButton
+                                          size="small"
+                                          onClick={() => handleEditInvoice(sale)}
+                                          color="secondary"
+                                        >
+                                          <ReceiptIcon />
+                                        </IconButton>
+                                      </Tooltip>
+                                      <Tooltip title="Delete">
+                                        <IconButton
+                                          size="small"
+                                          onClick={() => {
+                                            setEntityToDelete(sale)
+                                                                       setOpenDeleteDialog(true)
+                                          }}
+                                          color="error"
+                                        >
+                                          <DeleteIcon />
+                                        </IconButton>
+                                      </Tooltip>
+                                    </>
+                      )}
+                    </Box>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+
+                  {/* Pagination Controls - Show if there are items and more than one page, OR if there are items (always show for better UX) */}
+                  {totalItems > 0 && (
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          Rows per page:
+                        </Typography>
+                        <FormControl size="small" sx={{ minWidth: 80 }}>
+                          <Select
+                            value={rowsPerPage}
+                            onChange={handleRowsPerPageChange}
+                            displayEmpty
+                          >
+                            <MenuItem value={10}>10</MenuItem>
+                            <MenuItem value={25}>25</MenuItem>
+                            <MenuItem value={50}>50</MenuItem>
+                            <MenuItem value={100}>100</MenuItem>
+                          </Select>
+                        </FormControl>
+            </Box>
+
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          Page {page} of {totalPages}
+                </Typography>
+                        <Pagination
+                          count={totalPages}
+                          page={page}
+                          onChange={handlePageChange}
+                          color="primary"
+                          size="small"
+                          showFirstButton
+                          showLastButton
+                          disabled={totalPages <= 1}
+                        />
+                      </Box>
+              </Box>
+            )}
+                </CardContent>
+              </Card>
+            </Box>
+
+          </Box>
+        </PermissionCheck>
+      </RouteGuard>
+      
+      
+      
+      {/* Delete Confirmation Dialog */}
+      <ConfirmationDialog
+        open={openDeleteDialog}
+        onClose={() => {
+          setOpenDeleteDialog(false)
+          setEntityToDelete(null)
+        }}
+        onConfirm={handleDeleteSale}
+        title="Delete Sale"
+        message={`Are you sure you want to delete this sale? This action cannot be undone.`}
+      />
+      
+      {/* Sale Items Dialog */}
+      <Dialog open={showItemsDialog} onClose={() => setShowItemsDialog(false)} maxWidth="md" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="h6">Sale Items - {viewingSale?.invoice_no}</Typography>
+            <Button onClick={() => setShowItemsDialog(false)}>Close</Button>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          {saleItems.length > 0 ? (
+            <TableContainer component={Paper} sx={{ mt: 2 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Item Name</TableCell>
+                    <TableCell>SKU</TableCell>
+                    <TableCell align="right">Quantity</TableCell>
+                    <TableCell align="right">Unit Price</TableCell>
+                    <TableCell align="right">Discount</TableCell>
+                    <TableCell align="right">Total</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {saleItems.map((item, index) => (
+                    <TableRow key={index}>
+                      <TableCell>{item.itemName || item.name}</TableCell>
+                      <TableCell>{item.sku}</TableCell>
+                      <TableCell align="right">{item.quantity}</TableCell>
+                      <TableCell align="right">{parseFloat(item.unitPrice || 0).toFixed(2)}</TableCell>
+                      <TableCell align="right">{parseFloat(item.discount || 0).toFixed(2)}</TableCell>
+                      <TableCell align="right">{parseFloat(item.total || 0).toFixed(2)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          ) : (
+            <Box sx={{ p: 3, textAlign: 'center' }}>
+              <Typography variant="body1" color="text.secondary">
+                No items found for this sale.
+              </Typography>
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
+      
+      {/* Filter Results Drawer */}
+      <Drawer
+        anchor="bottom"
+        open={filterDrawerOpen}
+        onClose={() => setFilterDrawerOpen(false)}
+        sx={{
+          '& .MuiDrawer-paper': {
+            height: '70vh',
+            borderTopLeftRadius: 16,
+            borderTopRightRadius: 16,
+          },
+        }}
+      >
+        <Box sx={{ p: 2 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Typography variant="h6">
+              Filtered Sales Results
+              <Badge badgeContent={filteredSales.length} color="primary" sx={{ ml: 2 }} />
+            </Typography>
+            <IconButton onClick={() => setFilterDrawerOpen(false)}>
+              <CloseIcon />
+            </IconButton>
+          </Box>
+          
+          <Divider sx={{ mb: 2 }} />
+          
+          {filteredSales.length === 0 ? (
+            <Box sx={{ textAlign: 'center', py: 4 }}>
+              <Typography variant="body1" color="text.secondary">
+                No sales found matching the selected filters.
+              </Typography>
+            </Box>
+          ) : (
+            <Box sx={{ height: 'calc(70vh - 120px)', overflow: 'auto' }}>
+              <List>
+                {filteredSales.map((sale, index) => (
+                  <React.Fragment key={sale.id || index}>
+                    <ListItem sx={{ flexDirection: 'column', alignItems: 'flex-start', py: 2 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', mb: 1 }}>
+                        <Typography variant="subtitle1" fontWeight="bold">
+                          Sale #{sale.receiptNumber || sale.id}
+                        </Typography>
+                       {(() => {
+                          const scopeType = sale.scope_type || sale.scopeType
+                          const scopeId = sale.scope_id || sale.scopeId
+                          if (scopeType === 'WAREHOUSE') {
+                            const warehouse = (warehouses || []).find(w => w.id === scopeId || w.id === Number(scopeId))
+                            return <Typography variant="body2" fontWeight="bold">{warehouse?.name || `Warehouse ${scopeId}`}</Typography>
+                          } else {
+                            const branch = (branches || []).find(b => b.id === scopeId || b.id === Number(scopeId))
+                            return <Typography variant="body2" fontWeight="bold">{branch?.name || `Branch ${scopeId}`}</Typography>
+                          }
+                        })()}
+                      </Box>
+                      
+                      <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', width: '100%' }}>
+                        <ListItemText
+                          primary="Date"
+                          secondary={new Date(sale.createdAt || sale.date).toLocaleDateString()}
+                          sx={{ minWidth: 100 }}
+                        />
+                        <ListItemText
+                          primary="Time"
+                          secondary={new Date(sale.createdAt || sale.date).toLocaleTimeString()}
+                          sx={{ minWidth: 100 }}
+                        />
+                        <ListItemText
+                          primary="Customer"
+                          secondary={sale.customerName || 'Walk-in'}
+                          sx={{ minWidth: 120 }}
+                        />
+                        <ListItemText
+                          primary="Total"
+                          secondary={`${parseFloat(sale.total || 0).toFixed(2)}`}
+                          sx={{ minWidth: 100 }}
+                        />
+                        <ListItemText
+                          primary="Payment"
+                          secondary={sale.paymentMethod || 'Cash'}
+                          sx={{ minWidth: 100 }}
+                        />
+                        <ListItemText
+                          primary="Location"
+                          secondary={
+                            sale.scope_type === 'BRANCH' || sale.scopeType === 'BRANCH'
+                              ? (branches || []).find(b => b.id === (sale.scope_id || sale.scopeId))?.name || `Branch ${sale.scope_id || sale.scopeId}`
+                              : (warehouses || []).find(w => w.id === (sale.scope_id || sale.scopeId))?.name || `Warehouse ${sale.scope_id || sale.scopeId}`
+                          }
+                          sx={{ minWidth: 150 }}
+                        />
+                      </Box>
+                      
+                      {sale.items && sale.items.length > 0 && (
+                        <Box sx={{ mt: 1, width: '100%' }}>
+                          <Typography variant="caption" color="text.secondary">
+                            Items: {sale.items.map(item => `${item.name} (${item.quantity})`).join(', ')}
+                          </Typography>
+                        </Box>
+                      )}
+                    </ListItem>
+                    {index < filteredSales.length - 1 && <Divider />}
+                  </React.Fragment>
+                ))}
+              </List>
+            </Box>
+          )}
+        </Box>
+      </Drawer>
+      
+      {/* Export Menu */}
+      <Menu
+        anchorEl={exportAnchorEl}
+        open={Boolean(exportAnchorEl)}
+        onClose={handleExportClose}
+        anchorOrigin={{
+          vertical: 'bottom',
+          horizontal: 'left',
+        }}
+        transformOrigin={{
+          vertical: 'top',
+          horizontal: 'left',
+        }}
+      >
+        <MenuItem onClick={exportToCSV}>
+          <ListItemIcon>
+            <DownloadIcon fontSize="small" />
+          </ListItemIcon>
+          Export as CSV
+        </MenuItem>
+        <MenuItem onClick={exportToExcel}>
+          <ListItemIcon>
+            <DownloadIcon fontSize="small" />
+          </ListItemIcon>
+          Export as Excel
+        </MenuItem>
+        <MenuItem onClick={exportToPDF}>
+          <ListItemIcon>
+            <DownloadIcon fontSize="small" />
+          </ListItemIcon>
+          Export as PDF
+        </MenuItem>
+      </Menu>
+      
+      {/* Editable Invoice Form */}
+      <EditableInvoiceForm
+        open={showEditableInvoice}
+        onClose={handleCloseEditableInvoice}
+        sale={editingSale}
+        onSave={handleSaveEditableInvoice}
+      />
+    </DashboardLayout>
+  )
+}
+
+  export default withAuth(SalesManagement)

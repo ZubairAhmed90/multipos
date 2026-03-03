@@ -14,18 +14,24 @@ const getDashboardAnalytics = async (req, res) => {
     }
 
     // Build role-based filtering conditions
+    const scopeTypeParam = req.query.scopeType ? req.query.scopeType.toUpperCase() : null
+    const scopeIdParam = req.query.scopeId || null
     let salesWhereClause = ''
     let inventoryWhereClause = ''
     let salesParams = []
     let inventoryParams = []
 
-    if (req.user.role === 'CASHIER') {
+    if (scopeTypeParam && scopeIdParam) {
+      // Explicit scope from query overrides defaults (used by dashboards for scoped counts)
+      inventoryWhereClause = 'WHERE scope_type = ? AND scope_id = ?'
+      inventoryParams = [scopeTypeParam, scopeIdParam]
+    } else if (req.user.role === 'CASHIER') {
       // Cashiers see only their branch data for sales
       salesWhereClause = 'AND s.scope_type = ? AND s.scope_id = ?'
       salesParams = ['BRANCH', req.user.branchId]
-      // Cashiers can see ALL branch inventory (not just their own branch)
-      inventoryWhereClause = 'WHERE scope_type = ?'
-      inventoryParams = ['BRANCH']
+      // Cashiers: scope inventory to their branch
+      inventoryWhereClause = 'WHERE scope_type = ? AND scope_id = ?'
+      inventoryParams = ['BRANCH', req.user.branchId]
     } else if (req.user.role === 'WAREHOUSE_KEEPER') {
       // Warehouse keepers see only their warehouse data
       salesWhereClause = 'AND s.scope_type = ? AND s.scope_id = ?'
@@ -208,6 +214,11 @@ const getDashboardSummary = async (req, res) => {
       },
       { 
         key: 'totalProducts', 
+        query: `SELECT COUNT(*) as value FROM inventory_items ${inventoryWhereClause}`,
+        params: inventoryParams
+      },
+      {
+        key: 'scopeProductCount',
         query: `SELECT COUNT(*) as value FROM inventory_items ${inventoryWhereClause}`,
         params: inventoryParams
       },

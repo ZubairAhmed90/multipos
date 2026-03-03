@@ -224,6 +224,187 @@ class LedgerService {
   }
   
   /**
+   * Record a sales return transaction in the ledger with proper debit/credit entries
+   * This reverses the original sale transaction following double-entry bookkeeping principles
+   */
+  static async recordReturnTransaction(returnData) {
+    const connection = await pool.getConnection();
+    
+    try {
+      await connection.beginTransaction();
+      
+      const {
+        returnId,
+        returnNo,
+        originalSaleId,
+        originalSale,
+        scopeType,
+        scopeId,
+        totalRefund,
+        items = [],
+        userId
+      } = returnData;
+      
+      console.log('[LedgerService] Recording return transaction:', {
+        returnId,
+        returnNo,
+        originalSaleId,
+        totalRefund,
+        scopeType,
+        scopeId
+      });
+      
+      // Get original sale details if not provided
+      let sale = originalSale;
+      if (!sale) {
+        const [sales] = await connection.execute(
+          'SELECT * FROM sales WHERE id = ?',
+          [originalSaleId]
+        );
+        if (sales.length === 0) {
+          throw new Error(`Original sale ${originalSaleId} not found`);
+        }
+        sale = sales[0];
+      }
+      
+      // Get or create ledger accounts
+      const cashAccount = await this.getOrCreateAccount('Cash Account', 'asset', scopeType, scopeId);
+      const salesRevenueAccount = await this.getOrCreateAccount('Sales Revenue', 'revenue', scopeType, scopeId);
+      const accountsReceivableAccount = await this.getOrCreateAccount('Accounts Receivable', 'asset', scopeType, scopeId);
+      const inventoryAccount = await this.getOrCreateAccount('Inventory', 'asset', scopeType, scopeId);
+      const costOfGoodsSoldAccount = await this.getOrCreateAccount('Cost of Goods Sold', 'expense', scopeType, scopeId);
+      
+      // Calculate original sale amounts
+      const originalTotal = parseFloat(sale.total || sale.subtotal || 0);
+      const originalPaymentAmount = parseFloat(sale.payment_amount || 0);
+      const originalCreditAmount = parseFloat(sale.credit_amount || 0);
+      const originalPaymentMethod = sale.payment_method || 'CASH';
+      
+      // Calculate refund proportions based on original payment method
+      let refundToCash = 0;
+      let refundToCredit = 0;
+      
+      if (originalTotal > 0) {
+        if (originalPaymentMethod === 'FULLY_CREDIT' || originalPaymentAmount === 0) {
+          // Original sale was fully credit, refund reduces Accounts Receivable
+          refundToCredit = totalRefund;
+        } else if (originalCreditAmount === 0) {
+          // Original sale was fully paid, refund goes to Cash
+          refundToCash = totalRefund;
+        } else {
+          // Original sale was partial payment, refund proportionally
+          const paymentRatio = originalPaymentAmount / originalTotal;
+          const creditRatio = originalCreditAmount / originalTotal;
+          refundToCash = totalRefund * paymentRatio;
+          refundToCredit = totalRefund * creditRatio;
+        }
+      }
+      
+      // Calculate cost of goods returned
+      let totalCost = 0;
+      for (const item of items) {
+        if (item.costPrice && item.quantity) {
+          totalCost += parseFloat(item.costPrice) * parseFloat(item.quantity);
+        }
+      }
+      
+      // Check if user exists
+      const [users] = await connection.execute('SELECT id FROM users WHERE id = ?', [userId]);
+      const validUserId = users.length > 0 ? userId : null;
+      
+      const transactionDate = new Date();
+      
+      // 1. CREDIT: Cash Account (if refunding cash)
+      if (refundToCash > 0) {
+        await this.createLedgerEntry(connection, {
+          accountId: cashAccount.id,
+          type: 'CREDIT',
+          amount: refundToCash,
+          description: `Return ${returnNo} - Cash Refund`,
+          reference: 'RETURN',
+          referenceId: returnId,
+          date: transactionDate,
+          createdBy: validUserId
+        });
+      }
+      
+      // 2. CREDIT: Accounts Receivable (if refunding credit)
+      if (refundToCredit > 0) {
+        await this.createLedgerEntry(connection, {
+          accountId: accountsReceivableAccount.id,
+          type: 'CREDIT',
+          amount: refundToCredit,
+          description: `Return ${returnNo} - Credit Reduction`,
+          reference: 'RETURN',
+          referenceId: returnId,
+          date: transactionDate,
+          createdBy: validUserId
+        });
+      }
+      
+      // 3. DEBIT: Sales Revenue Account (reverse the sale)
+      await this.createLedgerEntry(connection, {
+        accountId: salesRevenueAccount.id,
+        type: 'DEBIT',
+        amount: totalRefund,
+        description: `Return ${returnNo} - Revenue Reversal`,
+        reference: 'RETURN',
+        referenceId: returnId,
+        date: transactionDate,
+        createdBy: validUserId
+      });
+      
+      // 4. CREDIT: Cost of Goods Sold (reverse COGS)
+      if (totalCost > 0) {
+        await this.createLedgerEntry(connection, {
+          accountId: costOfGoodsSoldAccount.id,
+          type: 'CREDIT',
+          amount: totalCost,
+          description: `Return ${returnNo} - COGS Reversal`,
+          reference: 'RETURN',
+          referenceId: returnId,
+          date: transactionDate,
+          createdBy: validUserId
+        });
+        
+        // 5. DEBIT: Inventory Account (restore inventory value)
+        await this.createLedgerEntry(connection, {
+          accountId: inventoryAccount.id,
+          type: 'DEBIT',
+          amount: totalCost,
+          description: `Return ${returnNo} - Inventory Restoration`,
+          reference: 'RETURN',
+          referenceId: returnId,
+          date: transactionDate,
+          createdBy: validUserId
+        });
+      }
+      
+      await connection.commit();
+      console.log('[LedgerService] Return transaction recorded successfully');
+      
+      return {
+        success: true,
+        message: 'Return transaction recorded in ledger',
+        entries: [
+          { account: 'Cash Account', type: 'CREDIT', amount: refundToCash },
+          { account: 'Accounts Receivable', type: 'CREDIT', amount: refundToCredit },
+          { account: 'Sales Revenue', type: 'DEBIT', amount: totalRefund },
+          { account: 'Cost of Goods Sold', type: 'CREDIT', amount: totalCost },
+          { account: 'Inventory', type: 'DEBIT', amount: totalCost }
+        ]
+      };
+      
+    } catch (error) {
+      await connection.rollback();
+      console.error('[LedgerService] Error recording return transaction:', error);
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+  
+  /**
    * Record a partial payment (when customer pays remaining credit)
    */
   static async recordPartialPayment(paymentData) {

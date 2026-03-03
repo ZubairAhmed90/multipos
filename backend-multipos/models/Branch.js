@@ -15,17 +15,37 @@ class Branch {
     this.status = data.status || 'active';
     this.createdBy = data.created_by;
     this.updatedBy = data.updated_by;
-    this.settings = data.settings ? JSON.parse(data.settings) : {};
+    
+    // Handle settings - either parse JSON or use empty object
+    this.settings = {};
+    if (data.settings) {
+      try {
+        this.settings = typeof data.settings === 'string' 
+          ? JSON.parse(data.settings) 
+          : data.settings;
+      } catch (error) {
+        this.settings = {};
+      }
+    }
     
     // Transfer settings - check both database columns and settings JSON
-    const settings = data.settings ? (typeof data.settings === 'string' ? JSON.parse(data.settings) : data.settings) : {};
+    const settings = this.settings;
     
     this.allowBranchTransfers = data.allow_branch_transfers || settings.allowBranchTransfers || false;
     this.allowBranchToWarehouseTransfers = data.allow_branch_to_warehouse_transfers || settings.allowBranchToWarehouseTransfers || false;
     this.allowBranchToBranchTransfers = data.allow_branch_to_branch_transfers || settings.allowBranchToBranchTransfers || false;
     this.requireApprovalForBranchTransfers = data.require_approval_for_branch_transfers !== false || settings.requireApprovalForBranchTransfers !== false;
     this.maxTransferAmount = data.max_transfer_amount || settings.maxTransferAmount || 10000.00;
-    // this.transferNotificationEmail = data.transfer_notification_email; // Commented out - will be used in future when email system is implemented
+    
+    // NEW: Company permissions
+    this.allow_company_create = data.allow_company_create !== undefined ? data.allow_company_create : 0;
+    this.allow_company_edit = data.allow_company_edit !== undefined ? data.allow_company_edit : 0;
+    this.allow_company_delete = data.allow_company_delete !== undefined ? data.allow_company_delete : 0;
+    
+    // Backward compatibility camelCase properties
+    this.allowCompanyCreate = this.allow_company_create === 1;
+    this.allowCompanyEdit = this.allow_company_edit === 1;
+    this.allowCompanyDelete = this.allow_company_delete === 1;
     
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
@@ -45,7 +65,11 @@ class Branch {
       linkedWarehouseId = null,
       status = 'active',
       createdBy = null,
-      settings = {} 
+      settings = {},
+      // Company permissions
+      allow_company_create = 0,
+      allow_company_edit = 0,
+      allow_company_delete = 0
     } = branchData;
     
     const [result] = await pool.execute(
@@ -53,12 +77,14 @@ class Branch {
         name, code, location, phone, email, manager_name, manager_phone, 
         manager_email, linked_warehouse_id, status, created_by, settings,
         allow_cashier_inventory_edit, allow_cashier_returns, allow_cashier_customers,
-        allow_cashier_pos, allow_cashier_ledger, open_account_system
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        allow_cashier_pos, allow_cashier_ledger, open_account_system,
+        allow_company_create, allow_company_edit, allow_company_delete
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name, code, location, phone, email, managerName, managerPhone, 
         managerEmail, linkedWarehouseId, status, createdBy, JSON.stringify(settings),
-        0, 0, 0, 0, 0, 0  // Default values for the extra columns
+        0, 0, 0, 0, 0, 0,  // Default values for cashier columns
+        allow_company_create, allow_company_edit, allow_company_delete  // Company permissions
       ]
     );
     
@@ -116,20 +142,75 @@ class Branch {
   // Instance method to save branch
   async save() {
     if (this.id) {
-      // Update existing branch
+      // Update existing branch with all columns including company permissions
       await pool.execute(
-        `UPDATE branches SET name = ?, code = ?, location = ?, phone = ?, email = ?, manager_name = ?, manager_phone = ?, manager_email = ?, linked_warehouse_id = ?, status = ?, updated_by = ?, settings = ? 
+        `UPDATE branches SET 
+          name = ?, 
+          code = ?, 
+          location = ?, 
+          phone = ?, 
+          email = ?, 
+          manager_name = ?, 
+          manager_phone = ?, 
+          manager_email = ?, 
+          linked_warehouse_id = ?, 
+          status = ?, 
+          updated_by = ?, 
+          settings = ?,
+          allow_company_create = ?,
+          allow_company_edit = ?,
+          allow_company_delete = ?,
+          updated_at = NOW()
          WHERE id = ?`,
-        [this.name, this.code, this.location, this.phone, this.email, this.managerName, this.managerPhone, this.managerEmail, this.linkedWarehouseId, this.status, this.updatedBy, JSON.stringify(this.settings), this.id]
+        [
+          this.name, 
+          this.code, 
+          this.location, 
+          this.phone, 
+          this.email, 
+          this.managerName, 
+          this.managerPhone, 
+          this.managerEmail, 
+          this.linkedWarehouseId, 
+          this.status, 
+          this.updatedBy, 
+          JSON.stringify(this.settings),
+          this.allow_company_create,
+          this.allow_company_edit,
+          this.allow_company_delete,
+          this.id
+        ]
       );
     } else {
       // Create new branch
-      const result = await pool.execute(
-        `INSERT INTO branches (name, code, location, phone, email, manager_name, manager_phone, manager_email, linked_warehouse_id, status, created_by, settings) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [this.name, this.code, this.location, this.phone, this.email, this.managerName, this.managerPhone, this.managerEmail, this.linkedWarehouseId, this.status, this.createdBy, JSON.stringify(this.settings)]
+      const [result] = await pool.execute(
+        `INSERT INTO branches (
+          name, code, location, phone, email, manager_name, manager_phone, 
+          manager_email, linked_warehouse_id, status, created_by, settings,
+          allow_cashier_inventory_edit, allow_cashier_returns, allow_cashier_customers,
+          allow_cashier_pos, allow_cashier_ledger, open_account_system,
+          allow_company_create, allow_company_edit, allow_company_delete
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          this.name, 
+          this.code, 
+          this.location, 
+          this.phone, 
+          this.email, 
+          this.managerName, 
+          this.managerPhone, 
+          this.managerEmail, 
+          this.linkedWarehouseId, 
+          this.status, 
+          this.createdBy, 
+          JSON.stringify(this.settings),
+          0, 0, 0, 0, 0, 0,  // Default values for cashier columns
+          this.allow_company_create || 0,
+          this.allow_company_edit || 0,
+          this.allow_company_delete || 0
+        ]
       );
-      this.id = result[0].insertId;
+      this.id = result.insertId;
     }
     return this;
   }
@@ -152,6 +233,22 @@ class Branch {
     if (conditions.location) {
       query += ' AND location LIKE ?';
       params.push(`%${conditions.location}%`);
+    }
+
+    // Filter by company permissions if needed
+    if (conditions.allow_company_create !== undefined) {
+      query += ' AND allow_company_create = ?';
+      params.push(conditions.allow_company_create);
+    }
+
+    if (conditions.allow_company_edit !== undefined) {
+      query += ' AND allow_company_edit = ?';
+      params.push(conditions.allow_company_edit);
+    }
+
+    if (conditions.allow_company_delete !== undefined) {
+      query += ' AND allow_company_delete = ?';
+      params.push(conditions.allow_company_delete);
     }
 
     // Add sorting
@@ -198,6 +295,22 @@ class Branch {
       params.push(`%${conditions.location}%`);
     }
 
+    // Filter by company permissions if needed
+    if (conditions.allow_company_create !== undefined) {
+      query += ' AND allow_company_create = ?';
+      params.push(conditions.allow_company_create);
+    }
+
+    if (conditions.allow_company_edit !== undefined) {
+      query += ' AND allow_company_edit = ?';
+      params.push(conditions.allow_company_edit);
+    }
+
+    if (conditions.allow_company_delete !== undefined) {
+      query += ' AND allow_company_delete = ?';
+      params.push(conditions.allow_company_delete);
+    }
+
     const [rows] = await pool.execute(query, params);
     return rows[0].count;
   }
@@ -217,14 +330,19 @@ class Branch {
       'createdBy': 'created_by',
       'updatedBy': 'updated_by',
       'createdAt': 'created_at',
-      'updatedAt': 'updated_at'
+      'updatedAt': 'updated_at',
+      'allowCompanyCreate': 'allow_company_create',
+      'allowCompanyEdit': 'allow_company_edit',
+      'allowCompanyDelete': 'allow_company_delete'
     };
 
     // Filter out fields that shouldn't be updated
     const allowedFields = [
       'name', 'code', 'location', 'phone', 'email', 'managerName', 
       'managerPhone', 'managerEmail', 'linkedWarehouseId', 'status', 
-      'settings', 'createdBy', 'updatedBy'
+      'settings', 'createdBy', 'updatedBy',
+      'allow_company_create', 'allow_company_edit', 'allow_company_delete',
+      'allowCompanyCreate', 'allowCompanyEdit', 'allowCompanyDelete'
     ];
 
     Object.keys(updateData).forEach(key => {
@@ -239,7 +357,6 @@ class Branch {
           setClauses.push(`${dbColumn} = ?`);
           params.push(updateData[key]);
         }
-      } else if (key !== 'id' && !allowedFields.includes(key)) {
       }
     });
 
@@ -335,6 +452,80 @@ class Branch {
     } catch (error) {
       return {};
     }
+  }
+
+  // Helper method to get company permissions
+  getCompanyPermissions() {
+    return {
+      canCreate: this.allow_company_create === 1,
+      canEdit: this.allow_company_edit === 1,
+      canDelete: this.allow_company_delete === 1
+    };
+  }
+
+  // Static method to update branch by ID (convenience method)
+  static async update(id, updateData) {
+    // Convert camelCase to snake_case for database fields
+    const dbUpdateData = {};
+    
+    // Basic fields
+    if (updateData.name !== undefined) dbUpdateData.name = updateData.name;
+    if (updateData.code !== undefined) dbUpdateData.code = updateData.code;
+    if (updateData.location !== undefined) dbUpdateData.location = updateData.location;
+    if (updateData.phone !== undefined) dbUpdateData.phone = updateData.phone;
+    if (updateData.email !== undefined) dbUpdateData.email = updateData.email;
+    if (updateData.managerName !== undefined) dbUpdateData.manager_name = updateData.managerName;
+    if (updateData.managerPhone !== undefined) dbUpdateData.manager_phone = updateData.managerPhone;
+    if (updateData.managerEmail !== undefined) dbUpdateData.manager_email = updateData.managerEmail;
+    if (updateData.linkedWarehouseId !== undefined) dbUpdateData.linked_warehouse_id = updateData.linkedWarehouseId;
+    if (updateData.status !== undefined) dbUpdateData.status = updateData.status;
+    
+    // Company permissions
+    const permissionFields = [
+      'allow_company_create', 'allow_company_edit', 'allow_company_delete'
+    ];
+    
+    permissionFields.forEach(field => {
+      if (updateData[field] !== undefined) {
+        dbUpdateData[field] = updateData[field];
+      }
+    });
+    
+    // Handle settings
+    if (updateData.settings !== undefined) {
+      dbUpdateData.settings = typeof updateData.settings === 'string' 
+        ? updateData.settings 
+        : JSON.stringify(updateData.settings);
+    }
+    
+    // Updated by
+    if (updateData.updatedBy !== undefined) dbUpdateData.updated_by = updateData.updatedBy;
+    
+    // Add updated_at timestamp
+    dbUpdateData.updated_at = new Date();
+    
+    const setClauses = [];
+    const params = [];
+    
+    Object.keys(dbUpdateData).forEach(key => {
+      setClauses.push(`${key} = ?`);
+      params.push(dbUpdateData[key]);
+    });
+    
+    if (setClauses.length === 0) {
+      throw new Error('No fields to update');
+    }
+    
+    const query = `UPDATE branches SET ${setClauses.join(', ')} WHERE id = ?`;
+    params.push(id);
+    
+    const [result] = await pool.execute(query, params);
+    
+    if (result.affectedRows === 0) {
+      throw new Error('Branch not found');
+    }
+    
+    return await Branch.findById(id);
   }
 }
 

@@ -135,19 +135,75 @@ const createRetailer = async (req, res) => {
       zipCode,
       businessType,
       taxId,
-      creditLimit = 0,
-      paymentTerms = 'CASH',
-      status = 'ACTIVE',
+      creditLimit,
+      paymentTerms,
+      status,
       notes
     } = req.body;
 
+    const normalize = (v) => (v === undefined || v === '' ? null : v);
+    const normalizeId = (v) => (v === undefined || v === '' ? null : v);
+    const safeNumber = (v, fallback = 0) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    };
+
+    const normalizedPaymentTerms = paymentTerms || 'CASH';
+    const normalizedStatus = status || 'ACTIVE';
+    const normalizedCreditLimit = creditLimit !== undefined && creditLimit !== '' ? safeNumber(creditLimit, 0) : 0;
+
     // Determine warehouse_id based on user role
     let warehouseId = null;
-    if (req.user.role === 'WAREHOUSE_KEEPER') {
-      warehouseId = req.user.warehouseId;
-    } else if (req.user.role === 'ADMIN') {
-      // Admin can specify warehouse_id in request body, default to null (global)
-      warehouseId = req.body.warehouseId || null;
+  if (req.user.role === 'WAREHOUSE_KEEPER') {
+    warehouseId = normalizeId(req.user.warehouseId);
+  } else if (req.user.role === 'ADMIN') {
+    // Admin can specify warehouse_id in request body, default to null (global)
+    warehouseId = normalizeId(req.body.warehouseId);
+  }
+
+    // Build payload with guaranteed non-undefined values
+    const payload = {
+      warehouseId: normalizeId(warehouseId),
+      name: name ?? null,
+      email: normalize(email),
+      phone: normalize(phone),
+      address: normalize(address),
+      city: normalize(city),
+      state: normalize(state),
+      zipCode: normalize(zipCode),
+      businessType: normalize(businessType),
+      taxId: normalize(taxId),
+      creditLimit: normalizedCreditLimit ?? 0,
+      paymentTerms: normalizedPaymentTerms ?? 'CASH',
+      status: normalizedStatus ?? 'ACTIVE',
+      notes: normalize(notes)
+    };
+
+    // Build params and guard against undefined
+    const params = [
+      payload.warehouseId,
+      payload.name,
+      payload.email,
+      payload.phone,
+      payload.address,
+      payload.city,
+      payload.state,
+      payload.zipCode,
+      payload.businessType,
+      payload.taxId,
+      payload.creditLimit,
+      payload.paymentTerms,
+      payload.status,
+      payload.notes
+    ].map(v => (v === undefined ? null : v));
+
+    const hasUndefined = params.some(v => v === undefined);
+    if (hasUndefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Retailer payload contained undefined',
+        payload
+      });
     }
 
     const [result] = await pool.execute(`
@@ -156,11 +212,7 @@ const createRetailer = async (req, res) => {
         business_type, tax_id, credit_limit, payment_terms, 
         status, notes
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      warehouseId, name, email, phone, address, city, state, zipCode,
-      businessType, taxId, creditLimit, paymentTerms,
-      status, notes
-    ]);
+    `, params);
 
     // Get the created retailer
     const [retailers] = await pool.execute(
@@ -203,6 +255,9 @@ const updateRetailer = async (req, res) => {
       status,
       notes
     } = req.body;
+    const normalize = (v) => (v === undefined || v === '' ? null : v);
+    const normalizedPaymentTerms = paymentTerms || 'CASH';
+    const normalizedStatus = status || 'ACTIVE';
 
     // Check if retailer exists
     const [existing] = await pool.execute(
@@ -227,51 +282,51 @@ const updateRetailer = async (req, res) => {
     }
     if (email !== undefined) {
       updateFields.push('email = ?');
-      updateValues.push(email);
+      updateValues.push(normalize(email));
     }
     if (phone !== undefined) {
       updateFields.push('phone = ?');
-      updateValues.push(phone);
+      updateValues.push(normalize(phone));
     }
     if (address !== undefined) {
       updateFields.push('address = ?');
-      updateValues.push(address);
+      updateValues.push(normalize(address));
     }
     if (city !== undefined) {
       updateFields.push('city = ?');
-      updateValues.push(city);
+      updateValues.push(normalize(city));
     }
     if (state !== undefined) {
       updateFields.push('state = ?');
-      updateValues.push(state);
+      updateValues.push(normalize(state));
     }
     if (zipCode !== undefined) {
       updateFields.push('zip_code = ?');
-      updateValues.push(zipCode);
+      updateValues.push(normalize(zipCode));
     }
     if (businessType !== undefined) {
       updateFields.push('business_type = ?');
-      updateValues.push(businessType);
+      updateValues.push(normalize(businessType));
     }
     if (taxId !== undefined) {
       updateFields.push('tax_id = ?');
-      updateValues.push(taxId);
+      updateValues.push(normalize(taxId));
     }
     if (creditLimit !== undefined) {
       updateFields.push('credit_limit = ?');
-      updateValues.push(creditLimit);
+      updateValues.push(creditLimit !== '' && creditLimit !== null ? Number(creditLimit) : 0);
     }
     if (paymentTerms !== undefined) {
       updateFields.push('payment_terms = ?');
-      updateValues.push(paymentTerms);
+      updateValues.push(normalizedPaymentTerms);
     }
     if (status !== undefined) {
       updateFields.push('status = ?');
-      updateValues.push(status);
+      updateValues.push(normalizedStatus);
     }
     if (notes !== undefined) {
       updateFields.push('notes = ?');
-      updateValues.push(notes);
+      updateValues.push(normalize(notes));
     }
 
     if (updateFields.length === 0) {

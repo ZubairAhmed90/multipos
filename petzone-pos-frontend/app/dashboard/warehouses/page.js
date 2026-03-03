@@ -1,0 +1,215 @@
+  'use client'
+
+  import React, { useEffect } from 'react'
+  import { useDispatch } from 'react-redux'
+  import * as yup from 'yup'
+  import DashboardLayout from '../../../components/layout/DashboardLayout'
+  import RouteGuard from '../../../components/auth/RouteGuard'
+  import EntityTable from '../../../components/crud/EntityTable'
+  import EntityFormDialog from '../../../components/crud/EntityFormDialog'
+  import ConfirmationDialog from '../../../components/crud/ConfirmationDialog'
+  import useEntityCRUD from '../../../hooks/useEntityCRUD'
+  import { fetchWarehouses, createWarehouse, updateWarehouse, deleteWarehouse } from '../../store/slices/warehousesSlice'
+
+  // Updated validation schema - removed transfer settings
+  const warehouseSchema = yup.object({
+    name: yup.string()
+      .trim()
+      .min(1, 'Warehouse name must be between 1 and 100 characters')
+      .max(100, 'Warehouse name must be between 1 and 100 characters')
+      .required('Warehouse name is required'),
+    code: yup.string()
+      .trim()
+      .min(1, 'Warehouse code must be between 1 and 10 characters')
+      .max(10, 'Warehouse code must be between 1 and 10 characters')
+      .matches(/^[A-Z0-9]+/, 'Warehouse code can only contain uppercase letters and numbers')
+      .required('Warehouse code is required'),
+    location: yup.string()
+      .trim()
+      .min(1, 'Location must be between 1 and 200 characters')
+      .max(200, 'Location must be between 1 and 200 characters')
+      .required('Location is required'),
+    capacity: yup.mixed()
+      .transform((value) => {
+        if (value === '' || value === null || value === undefined) return null
+        const num = Number(value)
+        return isNaN(num) ? null : num
+      })
+      .nullable()
+      .optional(),
+    stock: yup.mixed()
+      .transform((value) => {
+        if (value === '' || value === null || value === undefined) return null
+        const num = Number(value)
+        return isNaN(num) ? null : num
+      })
+      .nullable()
+      .optional(),
+    manager: yup.string()
+      .trim()
+      .max(100, 'Manager name must not exceed 100 characters')
+      .nullable()
+      .transform((value) => value === '' ? null : value),
+    status: yup.string()
+      .oneOf(['active', 'inactive', 'maintenance'], 'Status must be active, inactive, or maintenance')
+      .nullable()
+      .transform((value) => value === '' ? null : value),
+    linkedBranchId: yup.number()
+      .integer('Linked branch ID must be a valid integer')
+      .min(1, 'Linked branch ID must be a valid integer')
+      .nullable()
+      .transform((value) => value === '' ? null : value),
+      phone: yup.string()
+    .trim()
+    .max(20, 'Phone must not exceed 20 characters')
+    .nullable()
+    .transform((value) => value === '' ? null : value),
+  })
+
+  // Table columns configuration - unchanged
+  const columns = [
+    { field: 'id', headerName: 'ID', width: 70 },
+    { field: 'name', headerName: 'Warehouse Name', width: 200 },
+    { field: 'code', headerName: 'Code', width: 100 },
+    { field: 'location', headerName: 'Location', width: 150 },
+    { field: 'capacity', headerName: 'Capacity', width: 100, type: 'number' },
+    { field: 'stock', headerName: 'Stock', width: 100, type: 'number' },
+    { field: 'currentStock', headerName: 'Current Stock', width: 120, type: 'number' },
+    { field: 'manager', headerName: 'Manager', width: 150 },
+    { field: 'phone', headerName: 'Phone', width: 130 },
+    { 
+      field: 'status', 
+      headerName: 'Status', 
+      width: 120,
+      renderCell: (params) => {
+        const colors = {
+          active: 'green',
+          maintenance: 'orange',
+          inactive: 'red'
+        }
+        return (
+          <span style={{ 
+            color: colors[params.value] || 'black',
+            fontWeight: 'bold'
+          }}>
+            {params.value}
+          </span>
+        )
+      }
+    },
+    { field: 'createdAt', headerName: 'Created', width: 120 },
+  ]
+
+  // Updated form fields - removed transfer settings
+  const fields = [
+    { name: 'name', label: 'Warehouse Name', type: 'text', required: true },
+    { name: 'code', label: 'Warehouse Code', type: 'text', required: true },
+    { name: 'location', label: 'Location', type: 'text', required: true },
+    { name: 'capacity', label: 'Capacity', type: 'number', required: false },
+    { name: 'stock', label: 'Stock', type: 'number', required: false },
+    { name: 'manager', label: 'Manager Name', type: 'text', required: false },
+    { name: 'phone', label: 'Phone Number', type: 'text', required: false, description: 'Optional: Used for billing receipts' },
+    { 
+      name: 'status', 
+      label: 'Status', 
+      type: 'select', 
+      required: false,
+      options: [
+        { value: 'active', label: 'Active' },
+        { value: 'maintenance', label: 'Maintenance' },
+        { value: 'inactive', label: 'Inactive' },
+      ]
+    },
+    {
+      name: 'linkedBranchId',
+      label: 'Linked Branch ID',
+      type: 'number',
+      required: false,
+      description: 'Optional: Link this warehouse to a branch'
+    }
+  ]
+
+  function WarehousesPage() {
+    const dispatch = useDispatch()
+    const crud = useEntityCRUD('warehouses', 'warehouse')
+
+    // Load data on component mount
+    useEffect(() => {
+      dispatch(fetchWarehouses())
+    }, [dispatch])
+
+    // Handle CRUD operations
+    const handleCreate = (data) => {
+      dispatch(createWarehouse(data)).then(() => {
+        crud.handleFormClose()
+      })
+    }
+
+    const handleUpdate = (data) => {
+      dispatch(updateWarehouse({ id: crud.selectedEntity.id, data })).then(() => {
+        crud.handleFormClose()
+      })
+    }
+
+    const handleDelete = () => {
+      dispatch(deleteWarehouse(crud.selectedEntity.id)).then(() => {
+        crud.handleConfirmationClose()
+      })
+    }
+
+    const handleFormSubmit = (formData) => {
+      if (crud.isEdit) {
+        handleUpdate(formData)
+      } else {
+        handleCreate(formData)
+      }
+    }
+
+    const handleRefresh = () => {
+      dispatch(fetchWarehouses())
+    }
+
+    return (
+      <RouteGuard allowedRoles={['ADMIN', 'WAREHOUSE_KEEPER']}>
+        <DashboardLayout>
+          <EntityTable
+            data={crud.data}
+            loading={crud.loading}
+            columns={columns}
+            title="Warehouses Management"
+            entityName="Warehouse"
+            onAdd={crud.handleAdd}
+            onEdit={crud.handleEdit}
+            onDelete={crud.handleDeleteClick}
+            onRefresh={handleRefresh}
+            error={crud.error}
+          />
+
+          <EntityFormDialog
+            open={crud.formDialogOpen}
+            onClose={crud.handleFormClose}
+            title={crud.dialogTitle}
+            fields={fields}
+            validationSchema={warehouseSchema}
+            initialData={crud.selectedEntity}
+            isEdit={crud.isEdit}
+            onSubmit={handleFormSubmit}
+            loading={crud.loading}
+            error={crud.error}
+          />
+
+          <ConfirmationDialog
+            open={crud.confirmationDialogOpen}
+            onClose={crud.handleConfirmationClose}
+            title={crud.confirmationTitle}
+            message={crud.confirmationMessage}
+            onConfirm={handleDelete}
+            loading={crud.loading}
+            severity="error"
+          />
+        </DashboardLayout>
+      </RouteGuard>
+    )
+  }
+
+  export default WarehousesPage

@@ -1,0 +1,118 @@
+/* ===========================
+   GLOBAL RESET
+=========================== */
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #fff;
+}
+
+/* ===========================
+   PRINT SETTINGS
+=========================== */
+@media print {
+
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* ===========================
+     THERMAL PRINTER (80mm)
+  =========================== */
+  @page thermal {
+    size: 80mm auto;
+    margin: 0;
+  }
+
+  .receipt-container.thermal-layout {
+    page: thermal;
+    width: 80mm !important;
+    max-width: 80mm !important;
+    padding: 4px 6px !important;
+    margin: 0 auto !important;
+    font-family: monospace !important;
+    font-size: 11px !important;
+    line-height: 1.1 !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  .receipt-container.thermal-layout * {
+    font-family: monospace !important;
+    color: #000 !important;
+  }
+
+  .receipt-container.thermal-layout img {
+    width: 100px !important;
+    max-width: 100px !important;
+    display: block !important;
+    margin: 0 auto !important;
+    filter: grayscale(100%) !important;
+  }
+
+  /* ===========================
+     A4 PORTRAIT (COLOR INVOICE)
+  =========================== */
+  @page a4-portrait {
+    size: A4 portrait;
+    margin: 0;
+  }
+
+  .receipt-container.color-layout {
+    page: a4-portrait;
+    width: 210mm !important;
+    min-height: 297mm !important;
+    margin: 0 !important;
+    padding: 12mm 14mm !important;
+    font-family: Arial, sans-serif !important;
+    font-size: 12px !important;
+    line-height: 1.35 !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  .receipt-container.color-layout * {
+    font-family: Arial, sans-serif !important;
+    color: #000 !important;
+  }
+
+  .receipt-container.color-layout img {
+    max-width: 160px !important;
+    display: block !important;
+  }
+
+  /* ===========================
+     A4 LANDSCAPE (WAREHOUSE)
+  =========================== */
+  @page a4-landscape {
+    size: A4 landscape;
+    margin: 0;
+  }
+
+  .receipt-container.warehouse-layout {
+    page: a4-landscape;
+    width: 297mm !important;
+    min-height: 210mm !important;
+    margin: 0 !important;
+    padding: 12mm 14mm !important;
+    font-family: Arial, sans-serif !important;
+    font-size: 12px !important;
+    line-height: 1.35 !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  /* ===========================
+     REMOVE SCROLLBARS
+  =========================== */
+  ::-webkit-scrollbar {
+    display: none;
+  }
+}

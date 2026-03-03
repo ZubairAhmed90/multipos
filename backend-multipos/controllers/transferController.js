@@ -56,7 +56,8 @@ const createTransfer = async (req, res) => {
         });
       }
       
-      if (!branch.allowBranchTransfers) {
+      // FIXED: Use snake_case property names
+      if (!branch.allow_branch_transfers) {
         return res.status(403).json({
           success: false,
           message: 'Branch transfers are disabled for this branch'
@@ -64,7 +65,7 @@ const createTransfer = async (req, res) => {
       }
       
       // Check if branch-to-branch transfers are allowed
-      if (toBranchId && !branch.allowBranchToBranchTransfers) {
+      if (toBranchId && !branch.allow_branch_to_branch_transfers) {
         return res.status(403).json({
           success: false,
           message: 'Branch-to-branch transfers are disabled for this branch'
@@ -97,7 +98,8 @@ const createTransfer = async (req, res) => {
         });
       }
       
-      if (!warehouse.allowWarehouseTransfers) {
+      // FIXED: Use snake_case property names
+      if (!warehouse.allow_warehouse_transfers) {
         return res.status(403).json({
           success: false,
           message: 'Warehouse transfers are disabled for this warehouse'
@@ -105,7 +107,7 @@ const createTransfer = async (req, res) => {
       }
       
       // Check if warehouse-to-warehouse transfers are allowed
-      if (toWarehouseId && !warehouse.allowWarehouseToWarehouseTransfers) {
+      if (toWarehouseId && !warehouse.allow_warehouse_to_warehouse_transfers) {
         return res.status(403).json({
           success: false,
           message: 'Warehouse-to-warehouse transfers are disabled for this warehouse'
@@ -640,7 +642,7 @@ const checkTransferPermission = async (user, fromWarehouseId, toWarehouseId, toB
     if (warehouseRows.length === 0) return false;
     const warehouse = warehouseRows[0];
 
-    // Check warehouse transfer settings
+    // FIXED: Use snake_case property names
     if (!warehouse.allow_warehouse_transfers) return false;
 
     // Check specific transfer type permissions
@@ -893,17 +895,18 @@ const getLocationTransferSettings = async (req, res) => {
         });
       }
 
+      // FIXED: Use snake_case property names
       res.json({
         success: true,
         data: {
-          allowTransfers: warehouse.allowWarehouseTransfers,
-          allowToBranch: warehouse.allowWarehouseToBranchTransfers,
-          allowToWarehouse: warehouse.allowWarehouseToWarehouseTransfers,
-          requireApproval: warehouse.requireApprovalForWarehouseTransfers,
-          maxAmount: warehouse.maxTransferAmount,
-          // notificationEmail: warehouse.transferNotificationEmail // Commented out - will be used in future when email system is implemented
-          autoApproveSmall: warehouse.autoApproveSmallTransfers,
-          smallThreshold: warehouse.smallTransferThreshold
+          allowTransfers: warehouse.allow_warehouse_transfers,
+          allowToBranch: warehouse.allow_warehouse_to_branch_transfers,
+          allowToWarehouse: warehouse.allow_warehouse_to_warehouse_transfers,
+          requireApproval: warehouse.require_approval_for_warehouse_transfers,
+          maxAmount: warehouse.max_transfer_amount,
+          // notificationEmail: warehouse.transfer_notification_email // Commented out - will be used in future when email system is implemented
+          autoApproveSmall: warehouse.auto_approve_small_transfers,
+          smallThreshold: warehouse.small_transfer_threshold
         }
       });
     } else if (type === 'branch') {
@@ -915,15 +918,16 @@ const getLocationTransferSettings = async (req, res) => {
         });
       }
 
+      // FIXED: Use snake_case property names
       res.json({
         success: true,
         data: {
-          allowTransfers: branch.allowBranchTransfers,
-          allowToWarehouse: branch.allowBranchToWarehouseTransfers,
-          allowToBranch: branch.allowBranchToBranchTransfers,
-          requireApproval: branch.requireApprovalForBranchTransfers,
-          maxAmount: branch.maxTransferAmount
-          // notificationEmail: branch.transferNotificationEmail // Commented out - will be used in future when email system is implemented
+          allowTransfers: branch.allow_branch_transfers,
+          allowToWarehouse: branch.allow_branch_to_warehouse_transfers,
+          allowToBranch: branch.allow_branch_to_branch_transfers,
+          requireApproval: branch.require_approval_for_branch_transfers,
+          maxAmount: branch.max_transfer_amount
+          // notificationEmail: branch.transfer_notification_email // Commented out - will be used in future when email system is implemented
         }
       });
     } else {
@@ -1086,4 +1090,4 @@ module.exports = {
   getTransferLogs,
   getTransferMovements,
   getTransferStatistics
-};
+};    

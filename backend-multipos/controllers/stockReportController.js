@@ -31,14 +31,60 @@ const getStockReports = async (req, res) => {
     let whereConditions = [];
     let params = [];
     
-    // Role-based filtering
+    // Role-based filtering - use stock_reports scope (it.scope_type, it.scope_id) for returns
+    // For cashiers, we need to match by branch name since stock_reports stores scope_id as string (branch name)
     if (user?.role === 'WAREHOUSE_KEEPER' && user?.warehouseId) {
-      whereConditions.push('ii.scope_type = ? AND ii.scope_id = ?');
-      params.push('WAREHOUSE', user.warehouseId);
+      // Get warehouse name to match against stock_reports scope_id
+      const [warehouses] = await pool.execute('SELECT id, name FROM warehouses WHERE id = ?', [user.warehouseId]);
+      if (warehouses.length > 0) {
+        const warehouse = warehouses[0];
+        // Use COLLATE utf8mb4_bin for string comparisons to avoid collation issues
+        whereConditions.push(`(
+          (it.scope_type = 'WAREHOUSE' AND (
+            CAST(it.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin OR 
+            CAST(it.scope_id AS UNSIGNED) = ? OR
+            CAST(it.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+          )) OR 
+          (it.scope_type IS NULL AND ii.scope_type = 'WAREHOUSE' AND (
+            CAST(ii.scope_id AS UNSIGNED) = ? OR 
+            CAST(ii.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+          ))
+        )`);
+        params.push(
+          warehouse.name,           // Match warehouse name (string)
+          warehouse.id,            // Match warehouse ID (number)
+          String(warehouse.id),    // Match warehouse ID as string
+          warehouse.id,            // For inventory_items scope_id (numeric)
+          String(warehouse.id)     // For inventory_items scope_id (string)
+        );
+      }
     } else if (user?.role === 'CASHIER' && user?.branchId) {
-      // For cashiers, use branch ID directly (inventory_items stores numeric IDs)
-      whereConditions.push('ii.scope_type = ? AND ii.scope_id = ?');
-      params.push('BRANCH', user.branchId);
+      // Get branch name and ID to match against stock_reports scope_id
+      const [branches] = await pool.execute('SELECT id, name FROM branches WHERE id = ?', [user.branchId]);
+      if (branches.length > 0) {
+        const branch = branches[0];
+        // Filter by stock_reports scope - handle both branch name (string) and branch ID (number)
+        // Also handle NULL scope_type (legacy sales data) by checking inventory_items scope
+        // Use COLLATE utf8mb4_bin for string comparisons to avoid collation issues
+        whereConditions.push(`(
+          (it.scope_type = 'BRANCH' AND (
+            CAST(it.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin OR 
+            CAST(it.scope_id AS UNSIGNED) = ? OR
+            CAST(it.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+          )) OR 
+          (it.scope_type IS NULL AND ii.scope_type = 'BRANCH' AND (
+            CAST(ii.scope_id AS UNSIGNED) = ? OR 
+            CAST(ii.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+          ))
+        )`);
+        params.push(
+          branch.name,           // Match branch name (string)
+          branch.id,            // Match branch ID (number)
+          String(branch.id),    // Match branch ID as string
+          branch.id,            // For inventory_items scope_id (numeric)
+          String(branch.id)     // For inventory_items scope_id (string)
+        );
+      }
     }
     
     // Additional filters
@@ -48,13 +94,30 @@ const getStockReports = async (req, res) => {
     }
     
     if (scopeType && scopeType !== 'all') {
-      whereConditions.push('ii.scope_type = ?');
-      params.push(scopeType);
+      // Filter by stock_reports scope first, fallback to inventory_items scope
+      whereConditions.push('(it.scope_type = ? OR (it.scope_type IS NULL AND ii.scope_type = ?))');
+      params.push(scopeType, scopeType);
     }
     
     if (scopeId && scopeId !== 'all') {
-      whereConditions.push('ii.scope_id = ?');
-      params.push(scopeId);
+      // Filter by stock_reports scope_id first, fallback to inventory_items scope_id
+      // Use COLLATE utf8mb4_bin for string comparisons to avoid collation issues
+      whereConditions.push(`(
+        (it.scope_type IS NOT NULL AND (
+          CAST(it.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin OR 
+          CAST(it.scope_id AS UNSIGNED) = ? OR
+          CAST(it.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+        )) OR 
+        (it.scope_type IS NULL AND (
+          CAST(ii.scope_id AS UNSIGNED) = ? OR 
+          CAST(ii.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+        ))
+      )`);
+      const scopeIdNum = isNaN(scopeId) ? 0 : parseInt(scopeId);
+      params.push(
+        scopeId, scopeIdNum, String(scopeId),
+        scopeIdNum, String(scopeId)
+      );
     }
     
     if (transactionType && transactionType !== 'all') {
@@ -114,16 +177,28 @@ const getStockReports = async (req, res) => {
         c.email as supplierEmail,
         u.username as userName,
         u.role as userRole,
-        ii.scope_type as scopeType,
-        ii.scope_id as scopeName,
+        COALESCE(it.scope_type, ii.scope_type) as scopeType,
+        COALESCE(it.scope_id, ii.scope_id) as scopeName,
         b.name as branchName,
         w.name as warehouseName
       FROM stock_reports it
       LEFT JOIN inventory_items ii ON it.inventory_item_id = ii.id
       LEFT JOIN users u ON it.user_id = u.id
       LEFT JOIN companies c ON ii.supplier_id = c.id
-      LEFT JOIN branches b ON ii.scope_type = 'BRANCH' AND ii.scope_id = b.id
-      LEFT JOIN warehouses w ON ii.scope_type = 'WAREHOUSE' AND ii.scope_id = w.id
+      LEFT JOIN branches b ON (
+        COALESCE(it.scope_type, ii.scope_type) = 'BRANCH' AND (
+          CAST(COALESCE(it.scope_id, ii.scope_id) AS CHAR) COLLATE utf8mb4_bin = CAST(b.name AS CHAR) COLLATE utf8mb4_bin OR 
+          CAST(COALESCE(it.scope_id, ii.scope_id) AS UNSIGNED) = b.id OR
+          CAST(b.id AS CHAR) COLLATE utf8mb4_bin = CAST(COALESCE(it.scope_id, ii.scope_id) AS CHAR) COLLATE utf8mb4_bin
+        )
+      )
+      LEFT JOIN warehouses w ON (
+        COALESCE(it.scope_type, ii.scope_type) = 'WAREHOUSE' AND (
+          CAST(COALESCE(it.scope_id, ii.scope_id) AS CHAR) COLLATE utf8mb4_bin = CAST(w.name AS CHAR) COLLATE utf8mb4_bin OR 
+          CAST(COALESCE(it.scope_id, ii.scope_id) AS UNSIGNED) = w.id OR
+          CAST(w.id AS CHAR) COLLATE utf8mb4_bin = CAST(COALESCE(it.scope_id, ii.scope_id) AS CHAR) COLLATE utf8mb4_bin
+        )
+      )
       ${whereClause}
       ORDER BY it.created_at DESC
       LIMIT ? OFFSET ?
@@ -501,40 +576,88 @@ const getStockSummary = async (req, res) => {
       LEFT JOIN branches b ON ii.scope_type = 'BRANCH' AND ii.scope_id = b.id
       LEFT JOIN warehouses w ON ii.scope_type = 'WAREHOUSE' AND ii.scope_id = w.id
       LEFT JOIN (
-        SELECT inventory_item_id, SUM(quantity_change) as total_purchased
-        FROM stock_reports 
-        WHERE transaction_type = 'PURCHASE'
-        GROUP BY inventory_item_id
+        SELECT sr.inventory_item_id, SUM(sr.quantity_change) as total_purchased
+        FROM stock_reports sr
+        INNER JOIN inventory_items ii_p ON sr.inventory_item_id = ii_p.id
+        LEFT JOIN branches b_sr ON sr.scope_type = 'BRANCH' AND (sr.scope_id = b_sr.name OR sr.scope_id = b_sr.id)
+        LEFT JOIN warehouses w_sr ON sr.scope_type = 'WAREHOUSE' AND (sr.scope_id = w_sr.name OR sr.scope_id = w_sr.id)
+        WHERE sr.transaction_type = 'PURCHASE'
+          AND (sr.scope_type IS NULL OR (sr.scope_type = ii_p.scope_type AND (
+            sr.scope_id = ii_p.scope_id
+            OR (sr.scope_type = 'BRANCH' AND b_sr.id = ii_p.scope_id)
+            OR (sr.scope_type = 'WAREHOUSE' AND w_sr.id = ii_p.scope_id)
+          )))
+        GROUP BY sr.inventory_item_id
       ) purchases ON ii.id = purchases.inventory_item_id
       LEFT JOIN (
-        SELECT inventory_item_id, SUM(quantity_change) as total_sold
-        FROM stock_reports 
-        WHERE transaction_type = 'SALE'
-        GROUP BY inventory_item_id
+        SELECT sr.inventory_item_id, SUM(ABS(sr.quantity_change)) as total_sold
+        FROM stock_reports sr
+        INNER JOIN inventory_items ii_s ON sr.inventory_item_id = ii_s.id
+        LEFT JOIN branches b_sr ON sr.scope_type = 'BRANCH' AND (sr.scope_id = b_sr.name OR sr.scope_id = b_sr.id)
+        LEFT JOIN warehouses w_sr ON sr.scope_type = 'WAREHOUSE' AND (sr.scope_id = w_sr.name OR sr.scope_id = w_sr.id)
+        WHERE sr.transaction_type = 'SALE'
+          AND (sr.scope_type IS NULL OR (sr.scope_type = ii_s.scope_type AND (
+            sr.scope_id = ii_s.scope_id
+            OR (sr.scope_type = 'BRANCH' AND b_sr.id = ii_s.scope_id)
+            OR (sr.scope_type = 'WAREHOUSE' AND w_sr.id = ii_s.scope_id)
+          )))
+        GROUP BY sr.inventory_item_id
       ) sales ON ii.id = sales.inventory_item_id
       LEFT JOIN (
-        SELECT inventory_item_id, SUM(quantity_change) as total_returned
-        FROM stock_reports 
-        WHERE transaction_type = 'RETURN'
-        GROUP BY inventory_item_id
+        SELECT sr.inventory_item_id, SUM(sr.quantity_change) as total_returned
+        FROM stock_reports sr
+        INNER JOIN inventory_items ii_r ON sr.inventory_item_id = ii_r.id
+        LEFT JOIN branches b_sr ON sr.scope_type = 'BRANCH' AND (sr.scope_id = b_sr.name OR sr.scope_id = b_sr.id)
+        LEFT JOIN warehouses w_sr ON sr.scope_type = 'WAREHOUSE' AND (sr.scope_id = w_sr.name OR sr.scope_id = w_sr.id)
+        WHERE sr.transaction_type = 'RETURN'
+          AND (sr.scope_type IS NULL OR (sr.scope_type = ii_r.scope_type AND (
+            sr.scope_id = ii_r.scope_id
+            OR (sr.scope_type = 'BRANCH' AND b_sr.id = ii_r.scope_id)
+            OR (sr.scope_type = 'WAREHOUSE' AND w_sr.id = ii_r.scope_id)
+          )))
+        GROUP BY sr.inventory_item_id
       ) returns ON ii.id = returns.inventory_item_id
       LEFT JOIN (
-        SELECT inventory_item_id, SUM(quantity_change) as total_adjusted
-        FROM stock_reports 
-        WHERE transaction_type = 'ADJUSTMENT'
-        GROUP BY inventory_item_id
+        SELECT sr.inventory_item_id, SUM(sr.quantity_change) as total_adjusted
+        FROM stock_reports sr
+        INNER JOIN inventory_items ii_a ON sr.inventory_item_id = ii_a.id
+        LEFT JOIN branches b_sr ON sr.scope_type = 'BRANCH' AND (sr.scope_id = b_sr.name OR sr.scope_id = b_sr.id)
+        LEFT JOIN warehouses w_sr ON sr.scope_type = 'WAREHOUSE' AND (sr.scope_id = w_sr.name OR sr.scope_id = w_sr.id)
+        WHERE sr.transaction_type = 'ADJUSTMENT'
+          AND (sr.scope_type IS NULL OR (sr.scope_type = ii_a.scope_type AND (
+            sr.scope_id = ii_a.scope_id
+            OR (sr.scope_type = 'BRANCH' AND b_sr.id = ii_a.scope_id)
+            OR (sr.scope_type = 'WAREHOUSE' AND w_sr.id = ii_a.scope_id)
+          )))
+        GROUP BY sr.inventory_item_id
       ) adjustments ON ii.id = adjustments.inventory_item_id
       LEFT JOIN (
-        SELECT inventory_item_id, SUM(quantity_change) as total_transferred_in
-        FROM stock_reports 
-        WHERE transaction_type = 'TRANSFER_IN'
-        GROUP BY inventory_item_id
+        SELECT sr.inventory_item_id, SUM(sr.quantity_change) as total_transferred_in
+        FROM stock_reports sr
+        INNER JOIN inventory_items ii_ti ON sr.inventory_item_id = ii_ti.id
+        LEFT JOIN branches b_sr ON sr.scope_type = 'BRANCH' AND (sr.scope_id = b_sr.name OR sr.scope_id = b_sr.id)
+        LEFT JOIN warehouses w_sr ON sr.scope_type = 'WAREHOUSE' AND (sr.scope_id = w_sr.name OR sr.scope_id = w_sr.id)
+        WHERE sr.transaction_type = 'TRANSFER_IN'
+          AND (sr.scope_type IS NULL OR (sr.scope_type = ii_ti.scope_type AND (
+            sr.scope_id = ii_ti.scope_id
+            OR (sr.scope_type = 'BRANCH' AND b_sr.id = ii_ti.scope_id)
+            OR (sr.scope_type = 'WAREHOUSE' AND w_sr.id = ii_ti.scope_id)
+          )))
+        GROUP BY sr.inventory_item_id
       ) transfers_in ON ii.id = transfers_in.inventory_item_id
       LEFT JOIN (
-        SELECT inventory_item_id, SUM(quantity_change) as total_transferred_out
-        FROM stock_reports 
-        WHERE transaction_type = 'TRANSFER_OUT'
-        GROUP BY inventory_item_id
+        SELECT sr.inventory_item_id, SUM(sr.quantity_change) as total_transferred_out
+        FROM stock_reports sr
+        INNER JOIN inventory_items ii_to ON sr.inventory_item_id = ii_to.id
+        LEFT JOIN branches b_sr ON sr.scope_type = 'BRANCH' AND (sr.scope_id = b_sr.name OR sr.scope_id = b_sr.id)
+        LEFT JOIN warehouses w_sr ON sr.scope_type = 'WAREHOUSE' AND (sr.scope_id = w_sr.name OR sr.scope_id = w_sr.id)
+        WHERE sr.transaction_type = 'TRANSFER_OUT'
+          AND (sr.scope_type IS NULL OR (sr.scope_type = ii_to.scope_type AND (
+            sr.scope_id = ii_to.scope_id
+            OR (sr.scope_type = 'BRANCH' AND b_sr.id = ii_to.scope_id)
+            OR (sr.scope_type = 'WAREHOUSE' AND w_sr.id = ii_to.scope_id)
+          )))
+        GROUP BY sr.inventory_item_id
       ) transfers_out ON ii.id = transfers_out.inventory_item_id
       ${whereClause}
       ORDER BY ii.name ASC

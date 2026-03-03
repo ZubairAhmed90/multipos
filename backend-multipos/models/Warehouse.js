@@ -6,26 +6,69 @@ class Warehouse {
     this.name = data.name;
     this.code = data.code;
     this.location = data.location;
+    this.phone = data.phone || null;
     this.branchId = data.branch_id;
     this.capacity = data.capacity || null;
     this.currentStock = data.current_stock || null;
     this.stock = data.stock || null;
     this.manager = data.manager || 'Not Assigned';
     this.status = data.status || 'active';
-    this.settings = data.settings ? JSON.parse(data.settings) : {};
+    
+    // Parse settings from JSON field
+    this.settings = {};
+    if (data.settings) {
+      try {
+        this.settings = typeof data.settings === 'string' 
+          ? JSON.parse(data.settings) 
+          : data.settings;
+      } catch (error) {
+        this.settings = {};
+      }
+    }
+    
+    // Basic warehouse permissions
+    this.allow_warehouse_inventory_edit = data.allow_warehouse_inventory_edit || 0;
+    this.allow_warehouse_returns = data.allow_warehouse_returns || 0;
+    this.allow_warehouse_companies = data.allow_warehouse_companies || 0;
+    this.allow_warehouse_direct_sales = data.allow_warehouse_direct_sales || 0;
+    this.allow_warehouse_ledger_edit = data.allow_warehouse_ledger_edit || 0;
+    this.require_approval_for_transfers = data.require_approval_for_transfers !== undefined ? data.require_approval_for_transfers : 1;
+    this.auto_stock_alerts = data.auto_stock_alerts || 0;
+    
+    // Old company CRUD (for backward compatibility)
     this.allow_warehouse_company_crud = data.allow_warehouse_company_crud || 0;
     
-    // Transfer settings - check both database columns and settings JSON
-    const settings = data.settings ? (typeof data.settings === 'string' ? JSON.parse(data.settings) : data.settings) : {};
+    // NEW: Company permissions - separate columns
+    this.allow_company_create = data.allow_company_create !== undefined ? data.allow_company_create : 0;
+    this.allow_company_edit = data.allow_company_edit !== undefined ? data.allow_company_edit : 0;
+    this.allow_company_delete = data.allow_company_delete !== undefined ? data.allow_company_delete : 0;
     
-    this.allowWarehouseTransfers = data.allow_warehouse_transfers || settings.allowWarehouseTransfers || false;
-    this.allowWarehouseToBranchTransfers = data.allow_warehouse_to_branch_transfers || settings.allowWarehouseToBranchTransfers || false;
-    this.allowWarehouseToWarehouseTransfers = data.allow_warehouse_to_warehouse_transfers || settings.allowWarehouseToWarehouseTransfers || false;
-    this.requireApprovalForWarehouseTransfers = data.require_approval_for_warehouse_transfers !== false || settings.requireApprovalForWarehouseTransfers !== false;
-    this.maxTransferAmount = data.max_transfer_amount || settings.maxTransferAmount || 50000.00;
-    // this.transferNotificationEmail = data.transfer_notification_email; // Commented out - will be used in future when email system is implemented
-    this.autoApproveSmallTransfers = data.auto_approve_small_transfers || settings.autoApproveSmallTransfers || false;
-    this.smallTransferThreshold = data.small_transfer_threshold || settings.smallTransferThreshold || 1000.00;
+    // NEW: Retailer permissions - separate columns
+    this.allow_retailer_create = data.allow_retailer_create !== undefined ? data.allow_retailer_create : 0;
+    this.allow_retailer_edit = data.allow_retailer_edit !== undefined ? data.allow_retailer_edit : 0;
+    this.allow_retailer_delete = data.allow_retailer_delete !== undefined ? data.allow_retailer_delete : 0;
+    
+    // Transfer settings columns
+    this.allow_warehouse_transfers = data.allow_warehouse_transfers || 0;
+    this.allow_warehouse_to_branch_transfers = data.allow_warehouse_to_branch_transfers || 0;
+    this.allow_warehouse_to_warehouse_transfers = data.allow_warehouse_to_warehouse_transfers || 0;
+    this.require_approval_for_warehouse_transfers = data.require_approval_for_warehouse_transfers !== undefined ? data.require_approval_for_warehouse_transfers : 1;
+    
+    // IMPORTANT: Fix decimal values - ensure they're numbers, not strings
+    this.max_transfer_amount = data.max_transfer_amount ? parseFloat(data.max_transfer_amount) : 50000.00;
+    this.auto_approve_small_transfers = data.auto_approve_small_transfers || 0;
+    this.small_transfer_threshold = data.small_transfer_threshold ? parseFloat(data.small_transfer_threshold) : 1000.00;
+    
+    // Backward compatibility properties (camelCase versions)
+    const settings = this.settings;
+    
+    this.allowWarehouseTransfers = this.allow_warehouse_transfers === 1 || settings.allowWarehouseTransfers || false;
+    this.allowWarehouseToBranchTransfers = this.allow_warehouse_to_branch_transfers === 1 || settings.allowWarehouseToBranchTransfers || false;
+    this.allowWarehouseToWarehouseTransfers = this.allow_warehouse_to_warehouse_transfers === 1 || settings.allowWarehouseToWarehouseTransfers || false;
+    this.requireApprovalForWarehouseTransfers = this.require_approval_for_warehouse_transfers === 1 || settings.requireApprovalForWarehouseTransfers !== false;
+    this.maxTransferAmount = this.max_transfer_amount;
+    this.autoApproveSmallTransfers = this.auto_approve_small_transfers === 1 || settings.autoApproveSmallTransfers || false;
+    this.smallTransferThreshold = this.small_transfer_threshold;
     
     this.createdBy = data.created_by;
     this.updatedBy = data.updated_by;
@@ -43,15 +86,79 @@ class Warehouse {
       capacity = null,
       stock = null,
       manager = 'Not Assigned',
+      phone,
       status = 'active',
       created_by,
       settings = {} 
     } = warehouseData;
     
+    // Set default values for all columns
+    const defaultValues = {
+      allow_warehouse_inventory_edit: 0,
+      allow_warehouse_returns: 0,
+      allow_warehouse_companies: 0,
+      allow_warehouse_direct_sales: 0,
+      allow_warehouse_ledger_edit: 0,
+      require_approval_for_transfers: 1,
+      auto_stock_alerts: 0,
+      allow_warehouse_company_crud: 0,
+      
+      // Company permissions
+      allow_company_create: 0,
+      allow_company_edit: 0,
+      allow_company_delete: 0,
+      
+      // Retailer permissions
+      allow_retailer_create: 0,
+      allow_retailer_edit: 0,
+      allow_retailer_delete: 0,
+      
+      // Transfer settings
+      allow_warehouse_transfers: 0,
+      allow_warehouse_to_branch_transfers: 0,
+      allow_warehouse_to_warehouse_transfers: 0,
+      require_approval_for_warehouse_transfers: 1,
+      max_transfer_amount: 50000.00,
+      auto_approve_small_transfers: 0,
+      small_transfer_threshold: 1000.00
+    };
+    
     const [result] = await pool.execute(
-      `INSERT INTO warehouses (name, code, location, branch_id, capacity, stock, manager, status, created_by, settings) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name, code, location, branch_id, capacity, stock, manager, status, created_by, JSON.stringify(settings)]
+      `INSERT INTO warehouses (
+        name, code, location, branch_id, capacity, stock, manager, phone, status, created_by, settings,
+        allow_warehouse_inventory_edit, allow_warehouse_returns, allow_warehouse_companies,
+        allow_warehouse_direct_sales, allow_warehouse_ledger_edit, require_approval_for_transfers,
+        auto_stock_alerts, allow_warehouse_company_crud,
+        allow_company_create, allow_company_edit, allow_company_delete,
+        allow_retailer_create, allow_retailer_edit, allow_retailer_delete,
+        allow_warehouse_transfers, allow_warehouse_to_branch_transfers, allow_warehouse_to_warehouse_transfers,
+        require_approval_for_warehouse_transfers, max_transfer_amount, auto_approve_small_transfers,
+        small_transfer_threshold
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        name, code, location, branch_id, capacity, stock, manager, phone || null, status, created_by, JSON.stringify(settings),
+        defaultValues.allow_warehouse_inventory_edit,
+        defaultValues.allow_warehouse_returns,
+        defaultValues.allow_warehouse_companies,
+        defaultValues.allow_warehouse_direct_sales,
+        defaultValues.allow_warehouse_ledger_edit,
+        defaultValues.require_approval_for_transfers,
+        defaultValues.auto_stock_alerts,
+        defaultValues.allow_warehouse_company_crud,
+        defaultValues.allow_company_create,
+        defaultValues.allow_company_edit,
+        defaultValues.allow_company_delete,
+        defaultValues.allow_retailer_create,
+        defaultValues.allow_retailer_edit,
+        defaultValues.allow_retailer_delete,
+        defaultValues.allow_warehouse_transfers,
+        defaultValues.allow_warehouse_to_branch_transfers,
+        defaultValues.allow_warehouse_to_warehouse_transfers,
+        defaultValues.require_approval_for_warehouse_transfers,
+        defaultValues.max_transfer_amount,
+        defaultValues.auto_approve_small_transfers,
+        defaultValues.small_transfer_threshold
+      ]
     );
     
     return await Warehouse.findById(result.insertId);
@@ -94,7 +201,6 @@ class Warehouse {
       params.push(conditions.id);
     }
 
-
     if (conditionsArray.length === 0) return null;
 
     query += conditionsArray.join(' AND ');
@@ -109,20 +215,108 @@ class Warehouse {
   // Instance method to save warehouse
   async save() {
     if (this.id) {
-      // Update existing warehouse
+      // Update existing warehouse with all columns
       await pool.execute(
-        `UPDATE warehouses SET name = ?, code = ?, location = ?, settings = ? 
+        `UPDATE warehouses SET 
+          name = ?, 
+          code = ?, 
+          location = ?, 
+          settings = ?,
+          allow_warehouse_inventory_edit = ?,
+          allow_warehouse_returns = ?,
+          allow_warehouse_companies = ?,
+          allow_warehouse_direct_sales = ?,
+          allow_warehouse_ledger_edit = ?,
+          require_approval_for_transfers = ?,
+          auto_stock_alerts = ?,
+          allow_warehouse_company_crud = ?,
+          allow_company_create = ?,
+          allow_company_edit = ?,
+          allow_company_delete = ?,
+          allow_retailer_create = ?,
+          allow_retailer_edit = ?,
+          allow_retailer_delete = ?,
+          allow_warehouse_transfers = ?,
+          allow_warehouse_to_branch_transfers = ?,
+          allow_warehouse_to_warehouse_transfers = ?,
+          require_approval_for_warehouse_transfers = ?,
+          max_transfer_amount = ?,
+          auto_approve_small_transfers = ?,
+          small_transfer_threshold = ?,
+          updated_at = NOW()
          WHERE id = ?`,
-        [this.name, this.code, this.location, JSON.stringify(this.settings), this.id]
+        [
+          this.name, 
+          this.code, 
+          this.location, 
+          JSON.stringify(this.settings),
+          this.allow_warehouse_inventory_edit,
+          this.allow_warehouse_returns,
+          this.allow_warehouse_companies,
+          this.allow_warehouse_direct_sales,
+          this.allow_warehouse_ledger_edit,
+          this.require_approval_for_transfers,
+          this.auto_stock_alerts,
+          this.allow_warehouse_company_crud,
+          this.allow_company_create,
+          this.allow_company_edit,
+          this.allow_company_delete,
+          this.allow_retailer_create,
+          this.allow_retailer_edit,
+          this.allow_retailer_delete,
+          this.allow_warehouse_transfers,
+          this.allow_warehouse_to_branch_transfers,
+          this.allow_warehouse_to_warehouse_transfers,
+          this.require_approval_for_warehouse_transfers,
+          this.max_transfer_amount,
+          this.auto_approve_small_transfers,
+          this.small_transfer_threshold,
+          this.id
+        ]
       );
     } else {
-      // Create new warehouse
-      const result = await pool.execute(
-        `INSERT INTO warehouses (name, code, location, settings) 
-         VALUES (?, ?, ?, ?)`,
-        [this.name, this.code, this.location, JSON.stringify(this.settings)]
+      // Create new warehouse (similar to create method)
+      const [result] = await pool.execute(
+        `INSERT INTO warehouses (
+          name, code, location, settings,
+          allow_warehouse_inventory_edit, allow_warehouse_returns, allow_warehouse_companies,
+          allow_warehouse_direct_sales, allow_warehouse_ledger_edit, require_approval_for_transfers,
+          auto_stock_alerts, allow_warehouse_company_crud,
+          allow_company_create, allow_company_edit, allow_company_delete,
+          allow_retailer_create, allow_retailer_edit, allow_retailer_delete,
+          allow_warehouse_transfers, allow_warehouse_to_branch_transfers, allow_warehouse_to_warehouse_transfers,
+          require_approval_for_warehouse_transfers, max_transfer_amount, auto_approve_small_transfers,
+          small_transfer_threshold
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          this.name, 
+          this.code, 
+          this.location, 
+          JSON.stringify(this.settings),
+          this.allow_warehouse_inventory_edit || 0,
+          this.allow_warehouse_returns || 0,
+          this.allow_warehouse_companies || 0,
+          this.allow_warehouse_direct_sales || 0,
+          this.allow_warehouse_ledger_edit || 0,
+          this.require_approval_for_transfers !== undefined ? this.require_approval_for_transfers : 1,
+          this.auto_stock_alerts || 0,
+          this.allow_warehouse_company_crud || 0,
+          this.allow_company_create || 0,
+          this.allow_company_edit || 0,
+          this.allow_company_delete || 0,
+          this.allow_retailer_create || 0,
+          this.allow_retailer_edit || 0,
+          this.allow_retailer_delete || 0,
+          this.allow_warehouse_transfers || 0,
+          this.allow_warehouse_to_branch_transfers || 0,
+          this.allow_warehouse_to_warehouse_transfers || 0,
+          this.require_approval_for_warehouse_transfers !== undefined ? this.require_approval_for_warehouse_transfers : 1,
+          this.max_transfer_amount || 50000.00,
+          this.auto_approve_small_transfers || 0,
+          this.small_transfer_threshold || 1000.00
+        ]
       );
-      this.id = result[0].insertId;
+      this.id = result.insertId;
     }
     return this;
   }
@@ -147,10 +341,9 @@ class Warehouse {
       params.push(`%${conditions.location}%`);
     }
 
-
     // Add sorting
     if (options.sort) {
-      const sortField = options.sort.replace(/^-/, ''); // Remove minus sign
+      const sortField = options.sort.replace(/^-/, '');
       const sortOrder = options.sort.startsWith('-') ? 'DESC' : 'ASC';
       query += ` ORDER BY ${sortField} ${sortOrder}`;
     } else {
@@ -192,7 +385,6 @@ class Warehouse {
       params.push(`%${conditions.location}%`);
     }
 
-
     const [rows] = await pool.execute(query, params);
     return rows[0].count;
   }
@@ -208,9 +400,32 @@ class Warehouse {
     if (updateData.branchId !== undefined) dbUpdateData.branch_id = updateData.branchId;
     if (updateData.capacity !== undefined) dbUpdateData.capacity = updateData.capacity;
     if (updateData.stock !== undefined) dbUpdateData.stock = updateData.stock;
+    if (updateData.phone !== undefined) dbUpdateData.phone = updateData.phone;
     if (updateData.manager !== undefined) dbUpdateData.manager = updateData.manager;
     if (updateData.status !== undefined) dbUpdateData.status = updateData.status;
-    if (updateData.settings !== undefined) dbUpdateData.settings = typeof updateData.settings === 'string' ? updateData.settings : JSON.stringify(updateData.settings);
+    
+    // Handle all permission columns
+    const permissionFields = [
+      'allow_warehouse_inventory_edit', 'allow_warehouse_returns', 'allow_warehouse_companies',
+      'allow_warehouse_direct_sales', 'allow_warehouse_ledger_edit', 'require_approval_for_transfers',
+      'auto_stock_alerts', 'allow_warehouse_company_crud',
+      'allow_company_create', 'allow_company_edit', 'allow_company_delete',
+      'allow_retailer_create', 'allow_retailer_edit', 'allow_retailer_delete',
+      'allow_warehouse_transfers', 'allow_warehouse_to_branch_transfers', 'allow_warehouse_to_warehouse_transfers',
+      'require_approval_for_warehouse_transfers', 'max_transfer_amount', 'auto_approve_small_transfers',
+      'small_transfer_threshold'
+    ];
+    
+    permissionFields.forEach(field => {
+      if (updateData[field] !== undefined) {
+        dbUpdateData[field] = updateData[field];
+      }
+    });
+    
+    if (updateData.settings !== undefined) {
+      dbUpdateData.settings = typeof updateData.settings === 'string' ? updateData.settings : JSON.stringify(updateData.settings);
+    }
+    
     if (updateData.updatedBy !== undefined) dbUpdateData.updated_by = updateData.updatedBy;
     
     // Add updated_at timestamp
@@ -327,6 +542,24 @@ class Warehouse {
     
     if (rows.length === 0) return null;
     return new Warehouse(rows[0]);
+  }
+
+  // Helper method to get company permissions
+  getCompanyPermissions() {
+    return {
+      canCreate: this.allow_company_create === 1,
+      canEdit: this.allow_company_edit === 1,
+      canDelete: this.allow_company_delete === 1
+    };
+  }
+
+  // Helper method to get retailer permissions
+  getRetailerPermissions() {
+    return {
+      canCreate: this.allow_retailer_create === 1,
+      canEdit: this.allow_retailer_edit === 1,
+      canDelete: this.allow_retailer_delete === 1
+    };
   }
 }
 

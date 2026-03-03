@@ -3,8 +3,10 @@ const { pool } = require('../config/database');
 /**
  * Create a stock report entry in inventory_transactions table
  * This function logs all inventory changes for audit and reporting purposes
+ * @param {object} transactionData - The transaction data
+ * @param {object} connection - Optional database connection (for transactions)
  */
-const createStockReportEntry = async (transactionData) => {
+const createStockReportEntry = async (transactionData, connection = null) => {
   try {
     const {
       inventoryItemId,
@@ -35,8 +37,10 @@ const createStockReportEntry = async (transactionData) => {
       return;
     }
 
+    const dbConnection = connection || pool;
+
     // Get inventory item details
-    const [items] = await pool.execute(
+    const [items] = await dbConnection.execute(
       'SELECT * FROM inventory_items WHERE id = ?',
       [inventoryItemId]
     );
@@ -48,10 +52,15 @@ const createStockReportEntry = async (transactionData) => {
 
     const item = items[0];
 
-    console.log(`[StockTracking] Creating transaction record for item ${inventoryItemId}, type: ${transactionType}, change: ${quantityChange}`);
+    // Use provided scope if available (for returns), otherwise use item's scope
+    const finalScopeType = transactionData.scopeType || item.scope_type;
+    const finalScopeId = transactionData.scopeId !== null && transactionData.scopeId !== undefined ? transactionData.scopeId : item.scope_id;
+    const finalScopeName = transactionData.scopeId !== null && transactionData.scopeId !== undefined ? String(transactionData.scopeId) : String(item.scope_id);
+
+    console.log(`[StockTracking] Creating transaction record for item ${inventoryItemId}, type: ${transactionType}, change: ${quantityChange}, scopeType: ${finalScopeType}, scopeId: ${finalScopeId}`);
     
     // Insert transaction record
-    await pool.execute(`
+    await dbConnection.execute(`
       INSERT INTO stock_reports (
         inventory_item_id, 
         item_name, 
@@ -80,9 +89,9 @@ const createStockReportEntry = async (transactionData) => {
       item.name, 
       item.sku, 
       item.category,
-      item.scope_type, 
-      item.scope_id, 
-      item.scope_id, // scope_name is same as scope_id in current implementation
+      finalScopeType, 
+      finalScopeId, 
+      finalScopeName, // scope_name is same as scope_id in current implementation
       transactionType,
       quantityChange, 
       previousQuantity, 
@@ -103,21 +112,31 @@ const createStockReportEntry = async (transactionData) => {
   } catch (error) {
     console.error('[StockTracking] Error creating stock report entry:', error);
     console.error('[StockTracking] Transaction data:', transactionData);
-    // Don't throw error to avoid breaking the main operation
+    console.error('[StockTracking] Error stack:', error.stack);
+    throw error; // Re-throw to ensure transaction rollback
   }
 };
 
 /**
  * Create transaction record for sale
+ * @param {number} inventoryItemId - The inventory item ID
+ * @param {number} quantity - The quantity sold (positive value)
+ * @param {number} unitPrice - The unit price
+ * @param {number} userId - The user ID who made the sale
+ * @param {string} userName - The user name
+ * @param {string} userRole - The user role
+ * @param {number} saleId - The sale ID
+ * @param {object} connection - Optional database connection (for transactions)
  */
-const createSaleTransaction = async (inventoryItemId, quantity, unitPrice, userId, userName, userRole, saleId) => {
+const createSaleTransaction = async (inventoryItemId, quantity, unitPrice, userId, userName, userRole, saleId, connection = null) => {
   try {
     console.log(`[StockTracking] Creating sale transaction for item ${inventoryItemId}, quantity: ${quantity}`);
     
     const quantityChange = -Math.abs(quantity); // Sales reduce stock
+    const dbConnection = connection || pool;
     
     // Get current stock to calculate previous quantity
-    const [items] = await pool.execute(
+    const [items] = await dbConnection.execute(
       'SELECT current_stock FROM inventory_items WHERE id = ?',
       [inventoryItemId]
     );
@@ -157,7 +176,7 @@ const createSaleTransaction = async (inventoryItemId, quantity, unitPrice, userI
       userName,
       userRole,
       saleId
-    });
+    }, connection);
     
     console.log(`[StockTracking] Successfully created sale transaction for item ${inventoryItemId}`);
   } catch (error) {
@@ -168,15 +187,38 @@ const createSaleTransaction = async (inventoryItemId, quantity, unitPrice, userI
 
 /**
  * Create transaction record for return
+ * @param {number} inventoryItemId - The inventory item ID
+ * @param {number} quantity - The quantity returned (positive value)
+ * @param {number} unitPrice - The unit price
+ * @param {number} userId - The user ID who processed the return
+ * @param {string} userName - The user name
+ * @param {string} userRole - The user role
+ * @param {number} returnId - The return ID
+ * @param {object} connection - Optional database connection (for transactions)
+ * @param {string} scopeType - The scope type (BRANCH or WAREHOUSE) from the original sale
+ * @param {string|number} scopeId - The scope ID from the original sale
  */
-const createReturnTransaction = async (inventoryItemId, quantity, unitPrice, userId, userName, userRole, returnId) => {
+const createReturnTransaction = async (
+  inventoryItemId,
+  quantity,
+  unitPrice,
+  userId,
+  userName,
+  userRole,
+  returnId,
+  connection = null,
+  scopeType = null,
+  scopeId = null,
+  affectStock = true // when false, we log the return without changing stock levels
+) => {
   try {
-    console.log(`[StockTracking] Creating return transaction for item ${inventoryItemId}, quantity: ${quantity}`);
+    console.log(`[StockTracking] Creating return transaction for item ${inventoryItemId}, quantity: ${quantity}, scopeType: ${scopeType}, scopeId: ${scopeId}`);
     
-    const quantityChange = Math.abs(quantity); // Returns increase stock
+    const quantityChange = Math.abs(quantity); // Returns increase stock when affectStock is true
+    const dbConnection = connection || pool;
     
     // Get current stock to calculate previous quantity
-    const [items] = await pool.execute(
+    const [items] = await dbConnection.execute(
       'SELECT current_stock FROM inventory_items WHERE id = ?',
       [inventoryItemId]
     );
@@ -187,8 +229,14 @@ const createReturnTransaction = async (inventoryItemId, quantity, unitPrice, use
     }
     
     const currentStock = items[0].current_stock;
-    const previousQuantity = currentStock - Math.abs(quantity);
-    const newQuantity = currentStock;
+    let previousQuantity = currentStock - Math.abs(quantity);
+    let newQuantity = currentStock;
+
+    // If we are not affecting stock (log-only), keep previous/new the same
+    if (!affectStock) {
+      previousQuantity = currentStock;
+      newQuantity = currentStock;
+    }
     const totalValue = Math.abs(quantity) * unitPrice;
 
     console.log(`[StockTracking] Return transaction data:`, {
@@ -201,7 +249,9 @@ const createReturnTransaction = async (inventoryItemId, quantity, unitPrice, use
       userId,
       userName,
       userRole,
-      returnId
+      returnId,
+      scopeType,
+      scopeId
     });
 
     await createStockReportEntry({
@@ -215,8 +265,10 @@ const createReturnTransaction = async (inventoryItemId, quantity, unitPrice, use
       userId,
       userName,
       userRole,
-      returnId
-    });
+      returnId,
+      scopeType,
+      scopeId
+    }, connection);
     
     console.log(`[StockTracking] Successfully created return transaction for item ${inventoryItemId}`);
   } catch (error) {
@@ -227,8 +279,16 @@ const createReturnTransaction = async (inventoryItemId, quantity, unitPrice, use
 
 /**
  * Create transaction record for stock adjustment
+ * @param {number} inventoryItemId - The inventory item ID
+ * @param {number} previousQuantity - The previous stock quantity
+ * @param {number} newQuantity - The new stock quantity
+ * @param {number} userId - The user ID who made the adjustment
+ * @param {string} userName - The user name
+ * @param {string} userRole - The user role
+ * @param {string} reason - The reason for adjustment
+ * @param {object} connection - Optional database connection (for transactions)
  */
-const createAdjustmentTransaction = async (inventoryItemId, previousQuantity, newQuantity, userId, userName, userRole, reason) => {
+const createAdjustmentTransaction = async (inventoryItemId, previousQuantity, newQuantity, userId, userName, userRole, reason, connection = null) => {
   const quantityChange = newQuantity - previousQuantity;
   const unitPrice = 0; // Adjustments don't have unit price
   const totalValue = 0;
@@ -245,7 +305,7 @@ const createAdjustmentTransaction = async (inventoryItemId, previousQuantity, ne
     userName,
     userRole,
     adjustmentReason: reason
-  });
+  }, connection);
 };
 
 module.exports = { 

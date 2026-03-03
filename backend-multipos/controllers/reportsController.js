@@ -145,10 +145,42 @@ const getSalesReports = async (req, res) => {
                    WHERE 1=1`;
       const params = [];
       
-      // Filter by warehouse for warehouse keepers - show all warehouse sales
+      // Filter by warehouse for warehouse keepers - show only their warehouse sales
       if (user?.role === 'WAREHOUSE_KEEPER') {
-        query += ' AND s.scope_type = ?';
-        params.push('WAREHOUSE');
+        let userWarehouseName = user.warehouseName;
+        let userWarehouseId = user.warehouseId;
+        
+        if (!userWarehouseName && userWarehouseId) {
+          const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [userWarehouseId]);
+          if (warehouses.length > 0) {
+            userWarehouseName = warehouses[0].name;
+          }
+        }
+        
+        if (userWarehouseName) {
+          // Filter by warehouse name and ID (handle both string and number comparisons)
+          query += ` AND (
+            s.scope_type = 'WAREHOUSE' AND (
+              CAST(s.scope_id AS CHAR) COLLATE utf8mb4_bin = CAST(? AS CHAR) COLLATE utf8mb4_bin
+              OR s.scope_id = ?
+              OR s.scope_id = ?
+            )
+          )`;
+          params.push(userWarehouseName, String(userWarehouseId || ''), userWarehouseId);
+        } else if (userWarehouseId) {
+          // Fallback: only warehouse ID available
+          query += ` AND (
+            s.scope_type = 'WAREHOUSE' AND (
+              s.scope_id = ?
+              OR s.scope_id = ?
+            )
+          )`;
+          params.push(String(userWarehouseId), userWarehouseId);
+        } else {
+          // No warehouse info available, only filter by type
+          query += ' AND s.scope_type = ?';
+          params.push('WAREHOUSE');
+        }
       }
       
       // Filter by branch for cashiers

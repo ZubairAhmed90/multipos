@@ -94,15 +94,18 @@ async function restockReturnItem(req, res) {
       return res.status(400).json({ success: false, message: 'qty must be a positive number' });
     }
 
-    // Load return line
+    // Load return line with original sale scope information
+    // We need the original sale's scope to restock in the correct branch/warehouse
     const items = await executeQuery(
       `SELECT sri.id, sri.return_id, sri.inventory_item_id,
               sri.quantity AS total_qty,
               sri.remaining_quantity,
-              sr.return_no, sr.status,
-              ii.scope_type, ii.scope_id
+              sr.return_no, sr.status, sr.original_sale_id,
+              s.scope_type, s.scope_id,
+              ii.scope_type as item_scope_type, ii.scope_id as item_scope_id
        FROM sales_return_items sri
        LEFT JOIN sales_returns sr ON sr.id = sri.return_id
+       LEFT JOIN sales s ON sr.original_sale_id = s.id
        LEFT JOIN inventory_items ii ON ii.id = sri.inventory_item_id
        WHERE sri.id = ? AND sri.return_id = ?`,
       [itemId, returnId]
@@ -129,11 +132,138 @@ async function restockReturnItem(req, res) {
         [restockQty, itemId, returnId]
       );
 
+      // Get current stock before update
+      const currentStockRows = await executeQuery(
+        'SELECT current_stock, scope_type, scope_id, name, sku FROM inventory_items WHERE id = ?',
+        [line.inventory_item_id]
+      );
+      const previousStock = currentStockRows.length > 0 ? parseFloat(currentStockRows[0].current_stock) : 0;
+      const inventoryItem = currentStockRows[0] || {};
+      const newStock = previousStock + restockQty;
+      
+      console.log('[ReturnsController] Restock - Before stock update:', {
+        inventoryItemId: line.inventory_item_id,
+        itemName: inventoryItem.name,
+        itemSku: inventoryItem.sku,
+        itemScope: { type: inventoryItem.scope_type, id: inventoryItem.scope_id },
+        previousStock,
+        restockQty,
+        newStock,
+        restockScope: { type: line.scope_type, id: line.scope_id }
+      });
+      
       // Increase inventory stock
-      await executeQuery(
+      const updateResult = await executeQuery(
         `UPDATE inventory_items SET current_stock = current_stock + ? WHERE id = ?`,
         [restockQty, line.inventory_item_id]
       );
+      
+      console.log('[ReturnsController] Restock - Stock update result:', {
+        affectedRows: updateResult.affectedRows || 0,
+        inventoryItemId: line.inventory_item_id,
+        restockQty,
+        previousStock,
+        expectedNewStock: newStock
+      });
+
+      // Create transaction record in stock_reports for restock
+      try {
+        // Get inventory item details for the transaction record
+        const inventoryItemRows = await executeQuery(
+          'SELECT name, sku, category, selling_price, cost_price FROM inventory_items WHERE id = ?',
+          [line.inventory_item_id]
+        );
+        
+        if (inventoryItemRows.length > 0) {
+          const inventoryItem = inventoryItemRows[0];
+          const unitPrice = parseFloat(inventoryItem.selling_price) || 0;
+          
+          // Get return item details for unit price
+          const returnItemRows = await executeQuery(
+            'SELECT unit_price FROM sales_return_items WHERE id = ?',
+            [itemId]
+          );
+          const returnUnitPrice = returnItemRows.length > 0 ? parseFloat(returnItemRows[0].unit_price) || unitPrice : unitPrice;
+          const returnTotalValue = restockQty * returnUnitPrice;
+          
+          // Get user details
+          const userRows = await executeQuery(
+            'SELECT id, username, role FROM users WHERE id = ?',
+            [req.user?.id || null]
+          );
+          const user = userRows.length > 0 ? userRows[0] : { id: null, username: 'System', role: 'ADMIN' };
+          
+          // Use scope from original sale (where the item was sold), not from inventory_items
+          // This ensures restock increases stock in the correct branch/warehouse
+          // and shows in the correct scope's inventory management
+          const restockScopeType = line.scope_type || line.item_scope_type || 'BRANCH';
+          const restockScopeId = line.scope_id || line.item_scope_id || null;
+          
+          console.log('[ReturnsController] Restock scope from original sale:', {
+            originalSaleScopeType: line.scope_type,
+            originalSaleScopeId: line.scope_id,
+            inventoryItemScopeType: line.item_scope_type,
+            inventoryItemScopeId: line.item_scope_id,
+            usingScopeType: restockScopeType,
+            usingScopeId: restockScopeId,
+            inventoryItemId: line.inventory_item_id
+          });
+          
+          // Insert into stock_reports with original sale's scope
+          await executeQuery(
+            `INSERT INTO stock_reports (
+              inventory_item_id, 
+              item_name, 
+              item_sku, 
+              item_category,
+              scope_type, 
+              scope_id, 
+              scope_name,
+              transaction_type,
+              quantity_change, 
+              previous_quantity, 
+              new_quantity,
+              unit_price, 
+              total_value, 
+              user_id, 
+              user_name, 
+              user_role,
+              return_id,
+              created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+            [
+              line.inventory_item_id,
+              inventoryItem.name,
+              inventoryItem.sku,
+              inventoryItem.category,
+              restockScopeType,
+              restockScopeId,
+              restockScopeId, // scope_name same as scope_id
+              'RESTOCK',
+              restockQty,
+              previousStock,
+              newStock,
+              returnUnitPrice,
+              returnTotalValue,
+              user.id,
+              user.username,
+              user.role,
+              returnId
+            ]
+          );
+          
+          console.log('[ReturnsController] Created restock transaction in stock_reports:', {
+            inventory_item_id: line.inventory_item_id,
+            quantity: restockQty,
+            previousStock,
+            newStock,
+            unitPrice: returnUnitPrice
+          });
+        }
+      } catch (stockReportError) {
+        console.error('[ReturnsController] Error creating stock report entry for restock:', stockReportError);
+        // Don't fail the restock if stock report entry fails
+      }
 
       // Optional: insert stock movement (if table exists)
       try {
@@ -160,6 +290,27 @@ async function restockReturnItem(req, res) {
       await executeQuery('COMMIT');
 
       const remainingAfter = remainingBefore - restockQty;
+      
+      // Get updated stock after commit to verify the increase
+      const updatedStockRows = await executeQuery(
+        'SELECT current_stock, scope_type, scope_id, name, sku FROM inventory_items WHERE id = ?',
+        [line.inventory_item_id]
+      );
+      const updatedStock = updatedStockRows.length > 0 ? parseFloat(updatedStockRows[0].current_stock) : 0;
+      const verifiedItem = updatedStockRows[0] || {};
+      
+      console.log('[ReturnsController] Restock - After commit verification:', {
+        inventoryItemId: line.inventory_item_id,
+        itemName: verifiedItem.name,
+        itemSku: verifiedItem.sku,
+        itemScope: { type: verifiedItem.scope_type, id: verifiedItem.scope_id },
+        previousStock,
+        restockedQty: restockQty,
+        expectedNewStock: newStock,
+        actualNewStock: updatedStock,
+        stockMatches: updatedStock === newStock,
+        stockUpdateSuccess: updatedStock > previousStock
+      });
 
       return res.json({
         success: true,
@@ -170,7 +321,13 @@ async function restockReturnItem(req, res) {
           restocked: restockQty,
           totalReturned: Number(line.total_qty),
           remainingAfter,
-          completed: remainingQty === 0
+          completed: remainingQty === 0,
+          stockUpdate: {
+            previousStock: previousStock,
+            restockedQty: restockQty,
+            newStock: updatedStock,
+            verified: updatedStock === newStock // Verify the stock was updated correctly
+          }
         }
       });
     } catch (txErr) {

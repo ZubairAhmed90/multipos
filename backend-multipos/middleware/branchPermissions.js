@@ -1,15 +1,24 @@
 const Branch = require('../models/Branch');
 const Warehouse = require('../models/Warehouse');
 
+// Helper: check if user is admin (simulating or not) - admin always bypasses permission checks
+const isAdmin = (req) => req.user.role === 'ADMIN';
+
+// Helper: get effective warehouse ID (works for both WAREHOUSE_KEEPER and simulating ADMIN)
+const getWarehouseId = (req) => req.user.warehouseId;
+
+// Helper: get effective branch ID (works for both CASHIER and simulating ADMIN)
+const getBranchId = (req) => req.user.branchId;
+
 // Middleware to check if cashiers can add inventory
 const checkCashierInventoryPermission = async (req, res, next) => {
   try {
-    if (req.user.role === 'ADMIN') {
+    if (isAdmin(req)) {
       return next();
     }
 
     if (req.user.role === 'CASHIER') {
-      const branch = await Branch.findById(req.user.branchId);
+      const branch = await Branch.findById(getBranchId(req));
       
       if (!branch) {
         return res.status(404).json({
@@ -18,13 +27,8 @@ const checkCashierInventoryPermission = async (req, res, next) => {
         });
       }
       
-      // Parse settings if it's a string
-      let settings = branch.settings;
-      if (typeof settings === 'string') {
-        settings = JSON.parse(settings);
-      }
-      
-      if (!settings.allowCashierInventoryEdit) {
+      // Use the direct column instead of settings
+      if (!branch.allow_cashier_inventory_edit) {
         return res.status(403).json({
           success: false,
           message: 'Cashiers are not allowed to add/edit inventory in this branch'
@@ -38,15 +42,15 @@ const checkCashierInventoryPermission = async (req, res, next) => {
   }
 };
 
-// Middleware to check if warehouse keepers can add suppliers/companies
-const checkWarehouseKeeperCompanyPermission = async (req, res, next) => {
+// UPDATED: Check if warehouse keepers can CREATE companies
+const checkWarehouseKeeperCompanyCreatePermission = async (req, res, next) => {
   try {
-    if (req.user.role === 'ADMIN') {
+    if (isAdmin(req)) {
       return next();
     }
 
     if (req.user.role === 'WAREHOUSE_KEEPER') {
-      const warehouse = await Warehouse.findById(req.user.warehouseId);
+      const warehouse = await Warehouse.findById(getWarehouseId(req));
       
       if (!warehouse) {
         return res.status(404).json({
@@ -55,16 +59,11 @@ const checkWarehouseKeeperCompanyPermission = async (req, res, next) => {
         });
       }
 
-      // Parse settings if it's a string
-      let settings = warehouse.settings;
-      if (typeof settings === 'string') {
-        settings = JSON.parse(settings);
-      }
-      
-      if (!warehouse.allow_warehouse_company_crud && !settings?.allowWarehouseCompanyCRUD) {
+      // Use the new granular company create permission
+      if (!warehouse.allow_company_create) {
         return res.status(403).json({
           success: false,
-          message: 'Warehouse keepers are not allowed to add suppliers/companies in this warehouse'
+          message: 'You do not have permission to create companies in this warehouse'
         });
       }
     }
@@ -75,15 +74,15 @@ const checkWarehouseKeeperCompanyPermission = async (req, res, next) => {
   }
 };
 
-// Middleware to check if warehouse keepers can add retailers
-const checkWarehouseKeeperRetailerPermission = async (req, res, next) => {
+// NEW: Check if warehouse keepers can EDIT companies
+const checkWarehouseKeeperCompanyEditPermission = async (req, res, next) => {
   try {
-    if (req.user.role === 'ADMIN') {
+    if (isAdmin(req)) {
       return next();
     }
 
     if (req.user.role === 'WAREHOUSE_KEEPER') {
-      const warehouse = await Warehouse.findById(req.user.warehouseId);
+      const warehouse = await Warehouse.findById(getWarehouseId(req));
       
       if (!warehouse) {
         return res.status(404).json({
@@ -92,16 +91,11 @@ const checkWarehouseKeeperRetailerPermission = async (req, res, next) => {
         });
       }
 
-      // Parse settings if it's a string
-      let settings = warehouse.settings;
-      if (typeof settings === 'string') {
-        settings = JSON.parse(settings);
-      }
-      
-      if (!settings?.allowWarehouseRetailerCRUD) {
+      // Use the new granular company edit permission
+      if (!warehouse.allow_company_edit) {
         return res.status(403).json({
           success: false,
-          message: 'Warehouse keepers are not allowed to add retailers in this warehouse'
+          message: 'You do not have permission to edit companies in this warehouse'
         });
       }
     }
@@ -112,11 +106,349 @@ const checkWarehouseKeeperRetailerPermission = async (req, res, next) => {
   }
 };
 
-// Middleware to check if warehouse keepers can add inventory
+// NEW: Check if warehouse keepers can DELETE companies
+const checkWarehouseKeeperCompanyDeletePermission = async (req, res, next) => {
+  try {
+    if (isAdmin(req)) {
+      return next();
+    }
+
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      const warehouse = await Warehouse.findById(getWarehouseId(req));
+      
+      if (!warehouse) {
+        return res.status(404).json({
+          success: false,
+          message: 'Warehouse not found'
+        });
+      }
+
+      // Use the new granular company delete permission
+      if (!warehouse.allow_company_delete) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to delete companies in this warehouse'
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// NEW: Combined company permission middleware (for routes that need all/specific permissions)
+const checkWarehouseKeeperCompanyPermission = (requiredPermission = 'create') => {
+  return async (req, res, next) => {
+    try {
+      if (isAdmin(req)) {
+        return next();
+      }
+
+      if (req.user.role === 'WAREHOUSE_KEEPER') {
+        const warehouse = await Warehouse.findById(getWarehouseId(req));
+        
+        if (!warehouse) {
+          return res.status(404).json({
+            success: false,
+            message: 'Warehouse not found'
+          });
+        }
+
+        const permissionMap = {
+          'create': warehouse.allow_company_create,
+          'edit': warehouse.allow_company_edit,
+          'delete': warehouse.allow_company_delete
+        };
+
+        if (!permissionMap[requiredPermission]) {
+          return res.status(403).json({
+            success: false,
+            message: `You do not have permission to ${requiredPermission} companies in this warehouse`
+          });
+        }
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+};
+
+// UPDATED: Check if warehouse keepers can create retailers
+const checkWarehouseKeeperRetailerCreatePermission = async (req, res, next) => {
+  try {
+    if (isAdmin(req)) {
+      return next();
+    }
+
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      const warehouse = await Warehouse.findById(getWarehouseId(req));
+      
+      if (!warehouse) {
+        return res.status(404).json({
+          success: false,
+          message: 'Warehouse not found'
+        });
+      }
+
+      // Use the new granular retailer create permission
+      if (!warehouse.allow_retailer_create) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to create retailers in this warehouse'
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// UPDATED: Check if warehouse keepers can edit retailers
+const checkWarehouseKeeperRetailerEditPermission = async (req, res, next) => {
+  try {
+    if (isAdmin(req)) {
+      return next();
+    }
+
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      const warehouse = await Warehouse.findById(getWarehouseId(req));
+      
+      if (!warehouse) {
+        return res.status(404).json({
+          success: false,
+          message: 'Warehouse not found'
+        });
+      }
+
+      // Use the new granular retailer edit permission
+      if (!warehouse.allow_retailer_edit) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to edit retailers in this warehouse'
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// UPDATED: Check if warehouse keepers can delete retailers
+const checkWarehouseKeeperRetailerDeletePermission = async (req, res, next) => {
+  try {
+    if (isAdmin(req)) {
+      return next();
+    }
+
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      const warehouse = await Warehouse.findById(getWarehouseId(req));
+      
+      if (!warehouse) {
+        return res.status(404).json({
+          success: false,
+          message: 'Warehouse not found'
+        });
+      }
+
+      // Use the new granular retailer delete permission
+      if (!warehouse.allow_retailer_delete) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to delete retailers in this warehouse'
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// NEW: Combined retailer permission middleware
+const checkWarehouseKeeperRetailerPermission = (requiredPermission = 'create') => {
+  return async (req, res, next) => {
+    try {
+      if (isAdmin(req)) {
+        return next();
+      }
+
+      if (req.user.role === 'WAREHOUSE_KEEPER') {
+        const warehouse = await Warehouse.findById(getWarehouseId(req));
+        
+        if (!warehouse) {
+          return res.status(404).json({
+            success: false,
+            message: 'Warehouse not found'
+          });
+        }
+
+        const permissionMap = {
+          'create': warehouse.allow_retailer_create,
+          'edit': warehouse.allow_retailer_edit,
+          'delete': warehouse.allow_retailer_delete
+        };
+
+        if (!permissionMap[requiredPermission]) {
+          return res.status(403).json({
+            success: false,
+            message: `You do not have permission to ${requiredPermission} retailers in this warehouse`
+          });
+        }
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+};
+
+// FIXED: Check if branch users (CASHIER) can create companies
+const checkBranchCompanyCreatePermission = async (req, res, next) => {
+  try {
+    if (isAdmin(req)) {
+      return next();
+    }
+
+    if (req.user.role === 'CASHIER') {
+      const branch = await Branch.findById(getBranchId(req));
+      
+      if (!branch) {
+        return res.status(404).json({
+          success: false,
+          message: 'Branch not found'
+        });
+      }
+
+      // Use the new branch company create permission
+      if (!branch.allow_company_create) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to create companies in this branch'
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// FIXED: Check if branch users (CASHIER) can edit companies
+const checkBranchCompanyEditPermission = async (req, res, next) => {
+  try {
+    if (isAdmin(req)) {
+      return next();
+    }
+
+    if (req.user.role === 'CASHIER') {
+      const branch = await Branch.findById(getBranchId(req));
+      
+      if (!branch) {
+        return res.status(404).json({
+          success: false,
+          message: 'Branch not found'
+        });
+      }
+
+      if (!branch.allow_company_edit) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to edit companies in this branch'
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// FIXED: Check if branch users (CASHIER) can delete companies
+const checkBranchCompanyDeletePermission = async (req, res, next) => {
+  try {
+    if (isAdmin(req)) {
+      return next();
+    }
+
+    if (req.user.role === 'CASHIER') {
+      const branch = await Branch.findById(getBranchId(req));
+      
+      if (!branch) {
+        return res.status(404).json({
+          success: false,
+          message: 'Branch not found'
+        });
+      }
+
+      if (!branch.allow_company_delete) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to delete companies in this branch'
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// FIXED: Combined branch company permission middleware
+const checkBranchCompanyPermission = (requiredPermission = 'create') => {
+  return async (req, res, next) => {
+    try {
+      if (isAdmin(req)) {
+        return next();
+      }
+
+      if (req.user.role === 'CASHIER') {
+        const branch = await Branch.findById(getBranchId(req));
+        
+        if (!branch) {
+          return res.status(404).json({
+            success: false,
+            message: 'Branch not found'
+          });
+        }
+
+        const permissionMap = {
+          'create': branch.allow_company_create,
+          'edit': branch.allow_company_edit,
+          'delete': branch.allow_company_delete
+        };
+
+        if (!permissionMap[requiredPermission]) {
+          return res.status(403).json({
+            success: false,
+            message: `You do not have permission to ${requiredPermission} companies in this branch`
+          });
+        }
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+};
+
+// UPDATED: Check if warehouse keepers can add inventory
 const checkWarehouseKeeperInventoryPermission = async (req, res, next) => {
   try {
-    
-    if (req.user.role === 'ADMIN') {
+    if (isAdmin(req)) {
       return next();
     }
 
@@ -126,21 +458,53 @@ const checkWarehouseKeeperInventoryPermission = async (req, res, next) => {
     }
 
     if (req.user.role === 'WAREHOUSE_KEEPER') {
-      const { scopeType, scopeId } = req.body;
-      
-      
-      // Warehouse keepers can only add inventory to their own warehouse
+      let { scopeType, scopeId } = req.body;
+
+      // If scope is missing on update, derive it from the existing inventory item
+      if ((!scopeType || !scopeId) && req.params?.id) {
+        try {
+          const InventoryItem = require('../models/InventoryItem');
+          const item = await InventoryItem.findById(req.params.id);
+          if (item) {
+            scopeType = item.scopeType;
+            scopeId = item.scopeId;
+            // attach for downstream handlers
+            req.body.scopeType = scopeType;
+            req.body.scopeId = scopeId;
+          }
+        } catch (err) {
+          // If lookup fails, fall through to validation below
+          console.warn('[checkWarehouseKeeperInventoryPermission] Failed to load item for scope check', err?.message);
+        }
+      }
+
+      // Warehouse keepers can only manage inventory in their own warehouse
       if (scopeType === 'WAREHOUSE') {
-        if (parseInt(scopeId) !== parseInt(req.user.warehouseId)) {
+        if (parseInt(scopeId) !== parseInt(getWarehouseId(req))) {
           return res.status(403).json({
             success: false,
-            message: 'Warehouse keepers can only add inventory to their own warehouse'
+            message: 'Warehouse keepers can only add/edit inventory in their own warehouse'
           });
         }
+        
+        // Check if warehouse keeper has inventory edit permission
+        const warehouse = await Warehouse.findById(getWarehouseId(req));
+        if (warehouse && !warehouse.allow_warehouse_inventory_edit) {
+          return res.status(403).json({
+            success: false,
+            message: 'You do not have permission to edit inventory in this warehouse'
+          });
+        }
+        
       } else if (scopeType === 'BRANCH') {
         return res.status(403).json({
           success: false,
-          message: 'Warehouse keepers cannot add inventory to branches'
+          message: 'Warehouse keepers cannot add/edit inventory in branches'
+        });
+      } else if (!scopeType || !scopeId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Scope type and scope ID are required'
         });
       }
     }
@@ -151,30 +515,25 @@ const checkWarehouseKeeperInventoryPermission = async (req, res, next) => {
   }
 };
 
-// Middleware to check return permissions
+// UPDATED: Check return permissions
 const checkReturnPermission = async (req, res, next) => {
   try {
-    if (req.user.role === 'ADMIN') {
+    if (isAdmin(req)) {
       return next();
     }
 
-    const branch = await Branch.findById(req.user.branchId);
-    
-    if (!branch) {
-      return res.status(404).json({
-        success: false,
-        message: 'Branch not found'
-      });
-    }
-
     if (req.user.role === 'CASHIER') {
-      // Parse settings if it's a string
-      let settings = branch.settings;
-      if (typeof settings === 'string') {
-        settings = JSON.parse(settings);
+      const branch = await Branch.findById(getBranchId(req));
+      
+      if (!branch) {
+        return res.status(404).json({
+          success: false,
+          message: 'Branch not found'
+        });
       }
       
-      if (!settings.allowCashierReturns) {
+      // Use direct column instead of settings
+      if (!branch.allow_cashier_returns) {
         return res.status(403).json({
           success: false,
           message: 'Cashiers are not allowed to process returns in this branch'
@@ -183,7 +542,7 @@ const checkReturnPermission = async (req, res, next) => {
     }
 
     if (req.user.role === 'WAREHOUSE_KEEPER') {
-      const warehouse = await Warehouse.findById(req.user.warehouseId);
+      const warehouse = await Warehouse.findById(getWarehouseId(req));
       
       if (!warehouse) {
         return res.status(404).json({
@@ -192,13 +551,8 @@ const checkReturnPermission = async (req, res, next) => {
         });
       }
 
-      // Parse settings if it's a string
-      let settings = warehouse.settings;
-      if (typeof settings === 'string') {
-        settings = JSON.parse(settings);
-      }
-      
-      if (!settings.allowWarehouseReturns) {
+      // Use direct column instead of settings
+      if (!warehouse.allow_warehouse_returns) {
         return res.status(403).json({
           success: false,
           message: 'Warehouse keepers are not allowed to process returns in this warehouse'
@@ -212,14 +566,14 @@ const checkReturnPermission = async (req, res, next) => {
   }
 };
 
-// Middleware to check cross-branch visibility
+// UPDATED: Check cross-branch visibility
 const checkCrossBranchVisibility = async (req, res, next) => {
   try {
-    if (req.user.role === 'ADMIN') {
+    if (isAdmin(req)) {
       return next();
     }
 
-    const branch = await Branch.findById(req.user.branchId);
+    const branch = await Branch.findById(getBranchId(req));
     
     if (!branch) {
       return res.status(404).json({
@@ -228,13 +582,8 @@ const checkCrossBranchVisibility = async (req, res, next) => {
       });
     }
 
-    // Parse settings if it's a string
-    let settings = branch.settings;
-    if (typeof settings === 'string') {
-      settings = JSON.parse(settings);
-    }
-    
-    if (!settings.openAccountSystem) {
+    // Use direct column instead of settings
+    if (!branch.open_account_system) {
       return res.status(403).json({
         success: false,
         message: 'Cross-branch visibility is disabled for this branch'
@@ -248,11 +597,31 @@ const checkCrossBranchVisibility = async (req, res, next) => {
 };
 
 module.exports = {
+  // Cashier permissions
   checkCashierInventoryPermission,
-  checkWarehouseKeeperCompanyPermission,
-  checkWarehouseKeeperRetailerPermission,
+  
+  // Warehouse keeper inventory permissions
   checkWarehouseKeeperInventoryPermission,
+  
+  // Warehouse keeper company permissions (granular)
+  checkWarehouseKeeperCompanyCreatePermission,
+  checkWarehouseKeeperCompanyEditPermission,
+  checkWarehouseKeeperCompanyDeletePermission,
+  checkWarehouseKeeperCompanyPermission, // Combined version
+  
+  // Warehouse keeper retailer permissions (granular)
+  checkWarehouseKeeperRetailerCreatePermission,
+  checkWarehouseKeeperRetailerEditPermission,
+  checkWarehouseKeeperRetailerDeletePermission,
+  checkWarehouseKeeperRetailerPermission, // Combined version
+  
+  // Branch company permissions (for CASHIER)
+  checkBranchCompanyCreatePermission,
+  checkBranchCompanyEditPermission,
+  checkBranchCompanyDeletePermission,
+  checkBranchCompanyPermission, // Combined version
+  
+  // Other permissions
   checkReturnPermission,
   checkCrossBranchVisibility
 };
-

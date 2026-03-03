@@ -1,40 +1,9 @@
 const { pool } = require('../config/database');
 
-const isAllCustomersRequest = (customerId) => {
-  if (!customerId || typeof customerId !== 'string') {
-    return false;
-  }
-
-  const normalized = customerId.trim().toLowerCase();
-  return normalized === '__all__' || normalized === 'all';
-};
-
-const extractCustomerIdentity = (transaction = {}) => {
-  let name = transaction.customer_name || null;
-  let phone = transaction.customer_phone || null;
-
-  if ((!name || !phone) && transaction.customer_info) {
-    try {
-      const info = typeof transaction.customer_info === 'string'
-        ? JSON.parse(transaction.customer_info)
-        : transaction.customer_info;
-
-      if (!name && info && typeof info === 'object') {
-        name = info.name || null;
-      }
-
-      if (!phone && info && typeof info === 'object') {
-        phone = info.phone || null;
-      }
-    } catch (error) {
-      // Ignore parse errors; fall back to existing fields
-    }
-  }
-
-  return {
-    name: name || 'Unknown Customer',
-    phone: phone || null
-  };
+const buildCustomerKey = (name, phone) => {
+  const safeName = name ?? '';
+  const safePhone = phone ?? '';
+  return `${safeName}|${safePhone}`;
 };
 
 // @desc    Get comprehensive customer ledger
@@ -53,15 +22,21 @@ const getCustomerLedger = async (req, res) => {
       detailed = false
     } = req.query;
 
-    const isAllCustomers = isAllCustomersRequest(customerId);
-
     console.log('🔍 CUSTOMER LEDGER DEBUG - Query params:', req.query);
     console.log('🔍 CUSTOMER LEDGER DEBUG - detailed parameter:', detailed, 'type:', typeof detailed);
+    console.log('🔍 CUSTOMER LEDGER DEBUG - customerId:', customerId);
+
+    // ✅ FIX: Handle "all" customers case - when customerId is "all" or special value
+    const isAllCustomers = customerId === 'all' || 
+                          customerId === 'All Customers' || 
+                          customerId === 'all-customers' || 
+                          customerId === 'all_customers' ||
+                          customerId === '__all__';
+    console.log('🔍 CUSTOMER LEDGER DEBUG - isAllCustomers:', isAllCustomers);
 
     // Build WHERE conditions for role-based access
     let whereConditions = [];
     let params = [];
-    let scopeFilter = null;
 
     // Role-based filtering - handle both branch_id and branchId for backward compatibility
     const userBranchId = req.user.branch_id || req.user.branchId;
@@ -72,28 +47,28 @@ const getCustomerLedger = async (req, res) => {
       // First get the branch name from the branch_id
       const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [userBranchId]);
       if (branches.length > 0) {
-        scopeFilter = { type: 'BRANCH', value: branches[0].name };
-        whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
-        params.push(scopeFilter.type, scopeFilter.value);
-        console.log('🔍 CASHIER filtering by branch:', scopeFilter.value);
+      whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
+        params.push('BRANCH', branches[0].name);
+        console.log('🔍 CASHIER filtering by branch:', branches[0].name);
       }
     } else if (req.user.role === 'WAREHOUSE_KEEPER' && userWarehouseId) {
       // For warehouse keepers, we need to match by warehouse name since sales store scope_id as string
       // First get the warehouse name from the warehouse_id
       const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [userWarehouseId]);
       if (warehouses.length > 0) {
-        scopeFilter = { type: 'WAREHOUSE', value: warehouses[0].name };
-        whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
-        params.push(scopeFilter.type, scopeFilter.value);
-        console.log('🔍 WAREHOUSE_KEEPER filtering by warehouse:', scopeFilter.value);
+      whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
+        params.push('WAREHOUSE', warehouses[0].name);
+        console.log('🔍 WAREHOUSE_KEEPER filtering by warehouse:', warehouses[0].name);
       }
     }
     // Admin can see all transactions (no scope restrictions)
 
-    // Customer filtering
+    // Customer filtering - skip if viewing all customers
+    // Use case-insensitive matching and handle both name and phone
     if (!isAllCustomers) {
-      whereConditions.push('(s.customer_name = ? OR s.customer_phone = ? OR JSON_EXTRACT(s.customer_info, "$.name") = ? OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)');
+      whereConditions.push('(LOWER(TRIM(s.customer_name)) = LOWER(TRIM(?)) OR s.customer_phone = ? OR LOWER(TRIM(JSON_EXTRACT(s.customer_info, "$.name"))) = LOWER(TRIM(?)) OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)');
       params.push(customerId, customerId, customerId, customerId);
+      console.log('🔍 Customer filter added for:', customerId);
     }
 
     // Date filtering
@@ -107,9 +82,29 @@ const getCustomerLedger = async (req, res) => {
     }
 
     // Transaction type filtering
+    // Map frontend values to database payment_status values
     if (transactionType && transactionType !== 'all') {
+      let paymentStatusFilter = transactionType;
+      
+      // Map frontend display values to database values
+      const statusMapping = {
+        'Paid': 'COMPLETED',
+        'Credit': 'PENDING',
+        'Partial': 'PARTIAL',
+        'Pending': 'PENDING',
+        'Completed': 'COMPLETED'
+      };
+      
+      // Use mapped value if available, otherwise use the original value
+      paymentStatusFilter = statusMapping[transactionType] || transactionType;
+      
       whereConditions.push('s.payment_status = ?');
-      params.push(transactionType);
+      params.push(paymentStatusFilter);
+      
+      console.log('🔍 Transaction type filter:', {
+        frontendValue: transactionType,
+        mappedValue: paymentStatusFilter
+      });
     }
 
     // Payment method filtering
@@ -120,34 +115,111 @@ const getCustomerLedger = async (req, res) => {
 
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
-    // Build WHERE conditions for returns (simpler - only customer and date filtering)
+    // Build WHERE conditions for returns (with scope filtering)
+    // Returns are now stored as sale records, so use s_return alias
     let returnsWhereConditions = [];
     let returnsParams = [];
 
-    if (scopeFilter) {
-      returnsWhereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
-      returnsParams.push(scopeFilter.type, scopeFilter.value);
+    // Apply scope filtering for returns (same as sales)
+    if (req.user.role === 'CASHIER' && userBranchId) {
+      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [userBranchId]);
+      if (branches.length > 0) {
+        returnsWhereConditions.push('(s_return.scope_type = ? AND s_return.scope_id = ?)');
+        returnsParams.push('BRANCH', branches[0].name);
+        console.log('🔍 CASHIER filtering returns by branch:', branches[0].name);
+      }
+    } else if (req.user.role === 'WAREHOUSE_KEEPER' && userWarehouseId) {
+      const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [userWarehouseId]);
+      if (warehouses.length > 0) {
+        returnsWhereConditions.push('(s_return.scope_type = ? AND s_return.scope_id = ?)');
+        returnsParams.push('WAREHOUSE', warehouses[0].name);
+        console.log('🔍 WAREHOUSE_KEEPER filtering returns by warehouse:', warehouses[0].name);
+      }
     }
 
-    // Customer filtering for returns
+    // Customer filtering for returns (skip if viewing all customers)
     if (!isAllCustomers) {
-      returnsWhereConditions.push('(s.customer_name = ? OR s.customer_phone = ? OR JSON_EXTRACT(s.customer_info, "$.name") = ? OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)');
+      returnsWhereConditions.push('(s_return.customer_name = ? OR s_return.customer_phone = ? OR JSON_EXTRACT(s_return.customer_info, "$.name") = ? OR JSON_EXTRACT(s_return.customer_info, "$.phone") = ?)');
       returnsParams.push(customerId, customerId, customerId, customerId);
     }
 
-    // Date filtering for returns (use sr.created_at)
+    // Date filtering for returns (use s_return.created_at)
     if (startDate) {
-      returnsWhereConditions.push('sr.created_at >= ?');
+      returnsWhereConditions.push('s_return.created_at >= ?');
       returnsParams.push(startDate);
     }
     if (endDate) {
-      returnsWhereConditions.push('sr.created_at <= ?');
+      returnsWhereConditions.push('s_return.created_at <= ?');
       returnsParams.push(endDate);
     }
 
-    const returnsWhereClause = returnsWhereConditions.length > 0 ? `WHERE ${returnsWhereConditions.join(' AND ')}` : '';
+    const returnsWhereClause = returnsWhereConditions.length > 0 ? `AND ${returnsWhereConditions.join(' AND ')}` : '';
+
+    console.log('🔍 Customer ID:', customerId);
+    console.log('🔍 WHERE clause:', whereClause);
+    console.log('🔍 Params:', params);
+    
+    // Debug: Check if returns exist for this customer (with case-insensitive matching)
+    if (!isAllCustomers) {
+      const [debugReturns] = await pool.execute(`
+        SELECT 
+          s.id,
+          s.invoice_no,
+          s.payment_method,
+          s.payment_type,
+          s.customer_name,
+          s.customer_phone,
+          s.created_at,
+          sr.id as return_id,
+          sr.return_no,
+          s.old_balance,
+          s.running_balance
+        FROM sales s
+        LEFT JOIN sales_returns sr ON s.invoice_no = sr.return_no
+        WHERE s.payment_method = 'REFUND' 
+          AND s.payment_type = 'REFUND'
+          AND (LOWER(TRIM(s.customer_name)) = LOWER(TRIM(?)) OR s.customer_phone = ? OR LOWER(TRIM(JSON_EXTRACT(s.customer_info, "$.name"))) = LOWER(TRIM(?)) OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)
+        ORDER BY s.created_at DESC
+        LIMIT 10
+      `, [customerId, customerId, customerId, customerId]);
+      console.log('🔍 DEBUG - Returns found for customer:', debugReturns.length);
+      if (debugReturns.length > 0) {
+        console.log('🔍 DEBUG - Sample returns:', debugReturns.map(r => ({
+          id: r.id,
+          invoice_no: r.invoice_no,
+          return_no: r.return_no,
+          customer_name: r.customer_name,
+          customer_phone: r.customer_phone,
+          created_at: r.created_at,
+          old_balance: r.old_balance,
+          running_balance: r.running_balance
+        })));
+      } else {
+        // Also check all returns to see if any exist
+        const [allReturns] = await pool.execute(`
+          SELECT 
+            s.id,
+            s.invoice_no,
+            s.customer_name,
+            s.customer_phone,
+            sr.return_no
+          FROM sales s
+          LEFT JOIN sales_returns sr ON s.invoice_no = sr.return_no
+          WHERE s.payment_method = 'REFUND' AND s.payment_type = 'REFUND'
+          ORDER BY s.created_at DESC
+          LIMIT 5
+        `);
+        console.log('🔍 DEBUG - All returns in system (sample):', allReturns.map(r => ({
+          invoice_no: r.invoice_no,
+          return_no: r.return_no,
+          customer_name: r.customer_name,
+          customer_phone: r.customer_phone
+        })));
+      }
+    }
 
     // Main query to get all customer transactions (sales + returns)
+    // Returns are now stored as sale records with payment_method = 'REFUND'
     const [transactions] = await pool.execute(`
       SELECT 
         s.id as transaction_id,
@@ -160,6 +232,8 @@ const getCustomerLedger = async (req, res) => {
         s.payment_status,
         s.payment_amount,
         s.credit_amount,
+        s.old_balance, 
+        s.running_balance,
         s.subtotal,
         s.total,
         s.customer_name,
@@ -172,6 +246,7 @@ const getCustomerLedger = async (req, res) => {
         w.name as warehouse_name,
         CASE 
           WHEN s.payment_type = 'OUTSTANDING_SETTLEMENT' THEN 'SETTLEMENT'
+          WHEN s.payment_method = 'REFUND' AND s.payment_type = 'REFUND' THEN 'RETURN'
           ELSE 'SALE'
         END as transaction_type,
         -- Use actual payment_amount and credit_amount from database
@@ -179,66 +254,53 @@ const getCustomerLedger = async (req, res) => {
         s.credit_amount as credit_amount,
         -- Amount is the current bill subtotal only
         s.subtotal as amount,
-        NULL as return_id,
-        NULL as return_reason,
-        NULL as return_refund_amount
+        sr.id as return_id,
+        sr.reason as return_reason,
+        CASE 
+          WHEN s.payment_method = 'REFUND' THEN ABS(s.total)
+          ELSE NULL
+        END as return_refund_amount
       FROM sales s
+      LEFT JOIN sales_returns sr ON s.invoice_no = sr.return_no
       LEFT JOIN users u ON s.user_id = u.id
       LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
       LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
       ${whereClause}
       
-      UNION ALL
-      
-      SELECT 
-        sr.id as transaction_id,
-        CONCAT('RET-', sr.id) as invoice_no,
-        s.scope_type,
-        s.scope_id,
-        sr.created_at as transaction_date,
-        'REFUND' as payment_method,
-        'REFUND' as payment_type,
-        'COMPLETED' as payment_status,
-        -sr.total_refund as payment_amount,
-        0 as credit_amount,
-        -sr.total_refund as subtotal,
-        -sr.total_refund as total,
-        s.customer_name,
-        s.customer_phone,
-        s.customer_info,
-        sr.notes,
-        sr.status,
-        u.username as cashier_name,
-        b.name as branch_name,
-        w.name as warehouse_name,
-        'RETURN' as transaction_type,
-        -sr.total_refund as paid_amount,
-        0 as credit_amount,
-        -sr.total_refund as amount,
-        sr.id as return_id,
-        sr.reason as return_reason,
-        sr.total_refund as return_refund_amount
-      FROM sales_returns sr
-      LEFT JOIN sales s ON sr.original_sale_id = s.id
-      LEFT JOIN users u ON sr.processed_by = u.id
-      LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
-      LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
-      ${returnsWhereClause}
-      
       ORDER BY transaction_date DESC
       LIMIT ? OFFSET ?
-    `, [...params, ...returnsParams, parseInt(limit), parseInt(offset)]);
+    `, [...params, parseInt(limit), parseInt(offset)]);
+
+    console.log('🔍 Total transactions found:', transactions.length);
+    const returnTransactions = transactions.filter(t => t.transaction_type === 'RETURN' || (t.payment_method === 'REFUND' && t.payment_type === 'REFUND'));
+    console.log('🔍 Return transactions found:', returnTransactions.length);
+    console.log('🔍 All transaction types:', transactions.map(t => ({
+      invoice: t.invoice_no,
+      type: t.transaction_type,
+      payment_method: t.payment_method,
+      payment_type: t.payment_type,
+      customer_name: t.customer_name,
+      customer_phone: t.customer_phone,
+      return_id: t.return_id
+    })));
+    if (returnTransactions.length > 0) {
+      console.log('🔍 Return transactions details:', returnTransactions.map(t => ({
+        invoice: t.invoice_no,
+        return_id: t.return_id,
+        amount: t.amount,
+        old_balance: t.old_balance,
+        running_balance: t.running_balance,
+        customer_name: t.customer_name
+      })));
+    }
 
     // Get total count for pagination (sales + returns)
+    // Returns are now included in the main sales query, so just count sales
     const [countResult] = await pool.execute(`
-      SELECT COUNT(*) as total FROM (
-        SELECT s.id FROM sales s ${whereClause}
-        UNION ALL
-        SELECT sr.id FROM sales_returns sr
-        LEFT JOIN sales s ON sr.original_sale_id = s.id
-        ${returnsWhereClause}
-      ) as combined_transactions
-    `, [...params, ...returnsParams]);
+      SELECT COUNT(*) as total FROM sales s
+      LEFT JOIN sales_returns sr ON s.invoice_no = sr.return_no
+      ${whereClause}
+    `, params);
 
     // Sort transactions in ascending order by date to process them chronologically
     const sortedTransactions = [...transactions].sort((a, b) => {
@@ -256,96 +318,244 @@ const getCustomerLedger = async (req, res) => {
       payment_method: t.payment_method
     })));
     
-    const includeItems = detailed === 'true';
+    const normalizedAsc = normalizeLedgerTransactions(sortedTransactions).map(transaction => ({
+      ...transaction,
+      transaction_type_display: getTransactionTypeDisplay(transaction),
+      payment_status_display: getPaymentStatusDisplay(transaction.payment_status)
+    }));
 
-    let detailedTransactions = [];
-    let summaryStats;
-    let totalCredit = 0;
-    let groupedLedgers = null;
+    // Sort back to descending order for display (newest first)
+    const finalTransactions = [...normalizedAsc].sort((a, b) => {
+      const dateA = new Date(a.transaction_date || a.created_at);
+      const dateB = new Date(b.transaction_date || b.created_at);
+      return dateB - dateA; // Descending order (newest first)
+    });
 
-    if (isAllCustomers) {
-      const groupedResult = await buildGroupedLedgerStructure(sortedTransactions, { includeItems });
-      groupedLedgers = groupedResult.groupedLedgers;
-      summaryStats = groupedResult.aggregatedSummary;
-      totalCredit = summaryStats.totalCredit || 0;
-      detailedTransactions = groupedResult.flattenedTransactions;
-    } else {
-      const normalizedAsc = normalizeLedgerTransactions(sortedTransactions).map(transaction => ({
-        ...transaction,
-        transaction_type_display: getTransactionTypeDisplay(transaction),
-        payment_status_display: getPaymentStatusDisplay(transaction.payment_status)
-      }));
+    // If detailed is requested, fetch items for each transaction
+    let detailedTransactions = finalTransactions;
+    console.log('🔍 CHECKING DETAILED CONDITION - detailed:', detailed, 'detailed === "true":', detailed === 'true');
+    if (detailed === 'true') {
+      console.log('✅ DETAILED LEDGER REQUESTED for customer:', customerId)
+      detailedTransactions = await Promise.all(
+        finalTransactions.map(async (transaction) => {
+          try {
+            console.log(`Fetching items for transaction ${transaction.transaction_id}, type: ${transaction.transaction_type}`)
+            
+            let items = [];
+            
+            // Check if this is a return transaction
+            if (transaction.transaction_type === 'RETURN' || transaction.return_id) {
+              // Fetch return items from sales_return_items
+              const [returnItems] = await pool.execute(`
+                SELECT 
+                  sri.*,
+                  ii.name as item_name,
+                  ii.sku,
+                  ii.selling_price as catalog_price,
+                  ii.cost_price,
+                  ii.category
+                FROM sales_return_items sri
+                LEFT JOIN inventory_items ii ON sri.inventory_item_id = ii.id
+                WHERE sri.return_id = ?
+                ORDER BY sri.id
+              `, [transaction.return_id || transaction.transaction_id]);
+              
+              // Transform return items to match sale_items format
+              items = returnItems.map(item => ({
+                id: item.id,
+                sale_id: item.return_id, // Map return_id to sale_id for compatibility
+                inventory_item_id: item.inventory_item_id,
+                item_name: item.item_name || item.name || 'Unknown Item',
+                name: item.item_name || item.name || 'Unknown Item',
+                sku: item.sku || 'N/A',
+                quantity: parseFloat(item.quantity) || 0,
+                unit_price: parseFloat(item.unit_price) || 0,
+                original_price: parseFloat(item.unit_price) || 0,
+                discount: 0,
+                total: parseFloat(item.refund_amount) || 0,
+                refund_amount: parseFloat(item.refund_amount) || 0,
+                catalog_price: parseFloat(item.catalog_price) || 0,
+                cost_price: parseFloat(item.cost_price) || 0,
+                category: item.category || null
+              }));
+              
+              console.log(`Return transaction ${transaction.transaction_id} has ${items.length} return items`);
+            } else {
+              // Fetch sale items from sale_items
+              const [saleItems] = await pool.execute(`
+                SELECT 
+                  si.*,
+                  ii.name as item_name,
+                  ii.sku,
+                  ii.selling_price as catalog_price,
+                  ii.cost_price,
+                  ii.category
+                FROM sale_items si
+                LEFT JOIN inventory_items ii ON si.inventory_item_id = ii.id
+                WHERE si.sale_id = ?
+                ORDER BY si.id
+              `, [transaction.transaction_id]);
+              
+              items = saleItems;
+              console.log(`Sale transaction ${transaction.transaction_id} has ${items.length} items`);
+            }
 
-      let transactionsDesc = [...normalizedAsc].sort((a, b) => {
-        const dateA = new Date(a.transaction_date || a.created_at);
-        const dateB = new Date(b.transaction_date || b.created_at);
-        return dateB - dateA;
-      });
-
-      detailedTransactions = includeItems ? await attachItemsToTransactions(transactionsDesc) : transactionsDesc;
-
-      summaryStats = computeLedgerSummary(normalizedAsc);
-      totalCredit = normalizedAsc.reduce((sum, transaction) => {
-        if (transaction.transaction_type === 'SALE') {
-          return sum + parseFloat(transaction.credit_amount || 0);
-        }
-        return sum;
-      }, 0);
-
-      const identity = normalizedAsc.length > 0
-        ? extractCustomerIdentity(normalizedAsc[0])
-        : { name: customerId, phone: null };
-
-      groupedLedgers = [{
-        customer: {
-          ...identity,
-          key: `${identity.name}|||${identity.phone || ''}`
-        },
-        summary: {
-          ...summaryStats,
-          totalCredit
-        },
-        transactions: detailedTransactions
-      }];
+            return {
+              ...transaction,
+              items: items || []
+            };
+          } catch (error) {
+            console.error(`Error fetching items for transaction ${transaction.transaction_id}:`, error);
+            return {
+              ...transaction,
+              items: []
+            };
+          }
+        })
+      );
     }
 
-    const customerSummary = isAllCustomers
-      ? {
-          name: 'All Customers',
-          phone: null,
-          total_transactions: summaryStats.totalTransactions,
-          current_balance: summaryStats.outstandingBalance,
-          total_amount: summaryStats.totalAmount,
-          total_paid: summaryStats.totalPaid,
-          total_credit: totalCredit,
-          unique_customers: groupedLedgers ? groupedLedgers.length : 0
-        }
-      : await getCustomerSummary(customerId, req.user);
+    // Get customer summary
+    const customerSummary = await getCustomerSummary(customerId, req.user);
 
     console.log('🔍 FINAL RESPONSE - Number of transactions:', detailedTransactions.length);
     console.log('🔍 FINAL RESPONSE - First transaction has items?', detailedTransactions[0]?.items ? 'YES' : 'NO');
     console.log('🔍 FINAL RESPONSE - First transaction items count:', detailedTransactions[0]?.items?.length || 0);
 
+    // CORRECTED Summary Calculation
+    const summaryStats = computeLedgerSummary(normalizedAsc);
+
+    const totalCredit = normalizedAsc.reduce((sum, t) => {
+      if (t.transaction_type === 'SALE') {
+        return sum + parseFloat(t.credit_amount || 0);
+      }
+      return sum;
+    }, 0);
+
+    // ✅ FIX: Group transactions by customer when viewing all customers
+    let responseData = {
+      customer: customerSummary,
+      transactions: detailedTransactions,
+      pagination: {
+        total: countResult[0].total,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        hasMore: (parseInt(offset) + transactions.length) < countResult[0].total
+      },
+      summary: {
+        totalTransactions: summaryStats.totalTransactions,
+        totalAmount: summaryStats.totalAmount, // Sum of Amount column only (sales - returns)
+        totalPaid: summaryStats.totalPaid, // Sum of positive payments
+        totalRefunded: summaryStats.totalRefunded,
+        netPaid: summaryStats.netPaid,
+        totalCredit: totalCredit, // Sum of Credit amounts
+        outstandingBalance: summaryStats.outstandingBalance // Final running balance from last transaction
+      }
+    };
+
+    // If viewing all customers, group transactions by customer
+    if (isAllCustomers) {
+      console.log('🔍 Grouping transactions by customer for all customers view');
+      
+      // Group transactions by customer
+      const customerGroups = new Map();
+      
+      detailedTransactions.forEach(transaction => {
+        const customerKey = buildCustomerKey(
+          transaction.customer_name || 'Unknown Customer',
+          transaction.customer_phone || ''
+        );
+        
+        if (!customerGroups.has(customerKey)) {
+          customerGroups.set(customerKey, {
+            customer: {
+              name: transaction.customer_name || 'Unknown Customer',
+              phone: transaction.customer_phone || '',
+              key: customerKey
+            },
+            transactions: []
+          });
+        }
+        
+        customerGroups.get(customerKey).transactions.push(transaction);
+      });
+      
+      // Calculate summary for each customer group
+      const groupedLedgers = Array.from(customerGroups.values()).map(group => {
+        const groupTransactions = group.transactions;
+        const groupSummary = computeLedgerSummary(groupTransactions);
+        
+        const groupTotalCredit = groupTransactions.reduce((sum, t) => {
+          if (t.transaction_type === 'SALE') {
+            return sum + parseFloat(t.credit_amount || 0);
+          }
+          return sum;
+        }, 0);
+        
+        return {
+          customer: group.customer,
+          transactions: groupTransactions,
+          summary: {
+            totalTransactions: groupSummary.totalTransactions,
+            totalAmount: groupSummary.totalAmount,
+            totalPaid: groupSummary.totalPaid,
+            totalRefunded: groupSummary.totalRefunded,
+            netPaid: groupSummary.netPaid,
+            totalCredit: groupTotalCredit,
+            outstandingBalance: groupSummary.outstandingBalance
+          }
+        };
+      });
+      
+      // Sort by customer name
+      groupedLedgers.sort((a, b) => {
+        const nameA = (a.customer?.name || '').toLowerCase();
+        const nameB = (b.customer?.name || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+      
+      responseData.groupedLedgers = groupedLedgers;
+      responseData.customer = {
+        ...customerSummary,
+        unique_customers: groupedLedgers.length
+      };
+      
+      console.log('🔍 Grouped ledger data:', {
+        totalGroups: groupedLedgers.length,
+        sampleGroup: groupedLedgers[0] ? {
+          customer: groupedLedgers[0].customer,
+          transactionCount: groupedLedgers[0].transactions.length,
+          summary: groupedLedgers[0].summary
+        } : null
+      });
+    }
+
+    // Add debug info to response (only in development or if explicitly requested)
+    const includeDebug = req.query.debug === 'true' || process.env.NODE_ENV === 'development';
+    const responseWithDebug = {
+      ...responseData,
+      ...(includeDebug ? {
+        debug: {
+          customerId,
+          totalTransactions: transactions.length,
+          returnTransactionsCount: returnTransactions.length,
+          returnTransactions: returnTransactions.map(t => ({
+            invoice: t.invoice_no,
+            return_id: t.return_id,
+            customer_name: t.customer_name,
+            customer_phone: t.customer_phone,
+            old_balance: t.old_balance,
+            running_balance: t.running_balance
+          })),
+          whereClause,
+          paramsCount: params.length
+        }
+      } : {})
+    };
+
     res.json({
       success: true,
-      data: {
-        customer: customerSummary,
-        transactions: detailedTransactions,
-        groupedLedgers,
-        pagination: {
-          total: countResult[0].total,
-          limit: parseInt(limit),
-          offset: parseInt(offset),
-          hasMore: (parseInt(offset) + transactions.length) < countResult[0].total
-        },
-        summary: {
-          totalTransactions: summaryStats.totalTransactions,
-          totalAmount: summaryStats.totalAmount,
-          totalPaid: summaryStats.totalPaid,
-          totalCredit: totalCredit,
-          outstandingBalance: summaryStats.outstandingBalance
-        }
-      }
+      data: responseWithDebug
     });
   } catch (error) {
     console.error('❌ Error in getCustomerLedger:', error);
@@ -418,12 +628,14 @@ const getAllCustomersWithSummaries = async (req, res) => {
         s.customer_name,
         s.customer_phone,
         COUNT(*) as total_transactions,
-        -- Sum of actual payment amounts (excluding FULLY_CREDIT and negative payments)
+        -- Sum of actual payment amounts (excluding FULLY_CREDIT, but including negative for returns)
+        -- Note: This is recalculated later using computeLedgerSummary, so this is just for initial grouping
         SUM(CASE 
           WHEN s.payment_method = 'FULLY_CREDIT' THEN 0 
+          WHEN s.payment_method = 'REFUND' THEN 0  -- Returns will be handled in computeLedgerSummary
           ELSE GREATEST(s.payment_amount, 0) 
         END) as total_paid,
-        -- Sum of subtotal amounts (actual bill amounts)
+        -- Sum of subtotal amounts (actual bill amounts, includes negative for returns)
         SUM(s.subtotal) as total_amount,
         -- Use the latest running_balance for current balance (SIMPLIFIED)
         (
@@ -460,29 +672,206 @@ const getAllCustomersWithSummaries = async (req, res) => {
     
     const [countResult] = await pool.execute(countQuery, baseParams);
 
-    // Process customers
-    const customersWithBalance = customers.map(customer => {
-      const totalPaid = parseFloat(customer.total_paid || 0);
-      const totalAmount = parseFloat(customer.total_amount || 0);
-      const currentBalance = parseFloat(customer.current_balance || 0);
-
-      console.log(`🔍 Customer ${customer.customer_name}:`, {
-        totalPaid,
-        totalAmount,
-        currentBalance
+    if (customers.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          customers: [],
+          pagination: {
+            total: countResult[0].total,
+            limit: parseInt(limit),
+            offset: parseInt(offset),
+            hasMore: false
+          }
+        }
       });
+    }
+
+    const customerKeys = customers.map(customer =>
+      buildCustomerKey(customer.customer_name, customer.customer_phone)
+    );
+
+    const keyPlaceholders = customerKeys.map(() => '?').join(', ');
+
+    let transactionsByCustomer = new Map();
+
+    if (customerKeys.length > 0) {
+      const baseConditionString = baseWhereConditions.join(' AND ');
+      const scopedSalesCondition = baseWhereConditions.length > 0
+        ? `${baseConditionString} AND CONCAT(IFNULL(s.customer_name,''),'|',IFNULL(s.customer_phone,'')) IN (${keyPlaceholders})`
+        : `CONCAT(IFNULL(s.customer_name,''),'|',IFNULL(s.customer_phone,'')) IN (${keyPlaceholders})`;
+
+      // For returns, we query from sales s_return, so use s_return alias
+      const returnsScopeCondition = baseWhereConditions.length > 0
+        ? `${baseConditionString.replace(/s\./g, 's_return.')} AND CONCAT(IFNULL(s_return.customer_name,''),'|',IFNULL(s_return.customer_phone,'')) IN (${keyPlaceholders})`
+        : `CONCAT(IFNULL(s_return.customer_name,''),'|',IFNULL(s_return.customer_phone,'')) IN (${keyPlaceholders})`;
+
+      // ✅ FIXED: Returns are already stored in sales table, so we don't need UNION ALL
+      // Just query sales table and exclude returns from the first part, or include them once
+      // Since returns are in sales table with payment_method='REFUND', we can query them directly
+      const transactionsQuery = `
+        SELECT
+          CASE 
+            WHEN s.payment_method = 'REFUND' AND s.payment_type = 'REFUND' THEN 'RETURN'
+            ELSE 'SALE'
+          END as source,
+          s.id as transaction_id,
+          s.invoice_no,
+          s.subtotal as amount,
+          s.total as total,
+          s.payment_amount,
+          s.credit_amount,
+          s.payment_method,
+          s.payment_type,
+          s.payment_status,
+          s.running_balance,
+          s.created_at as transaction_date,
+          s.customer_name,
+          s.customer_phone,
+          CONCAT(IFNULL(s.customer_name,''),'|',IFNULL(s.customer_phone,'')) as customer_key
+        FROM sales s
+        WHERE ${scopedSalesCondition}
+        
+        ORDER BY transaction_date ASC, transaction_id ASC
+      `;
+
+      // ✅ FIXED: Simplified params since we removed the UNION ALL (no longer need duplicate params)
+      const transactionsParams = [
+        ...baseParams,
+        ...customerKeys
+      ];
+
+      const [transactionRows] = await pool.execute(transactionsQuery, transactionsParams);
+
+      // ✅ FIXED: Remove duplicate transactions (returns can appear multiple times due to JOIN)
+      // Use a Set to track unique transaction IDs per customer
+      const seenTransactions = new Map(); // Map<customer_key, Set<transaction_id>>
+      
+      transactionsByCustomer = transactionRows.reduce((map, row) => {
+        const key = row.customer_key;
+        if (!map.has(key)) {
+          map.set(key, []);
+          seenTransactions.set(key, new Set());
+        }
+
+        // Check if we've already seen this transaction for this customer
+        const transactionId = `${row.transaction_id}_${row.invoice_no}`;
+        const seenSet = seenTransactions.get(key);
+        
+        if (seenSet.has(transactionId)) {
+          // Skip duplicate transaction
+          console.log(`⚠️ Skipping duplicate transaction: ${transactionId} for customer ${key}`);
+          return map;
+        }
+        
+        seenSet.add(transactionId);
+
+        const isReturn = row.source === 'RETURN' || row.payment_method === 'REFUND' || row.payment_type === 'REFUND';
+        
+        map.get(key).push({
+          ...row,
+          transaction_type: isReturn ? 'RETURN' : 'SALE',
+          subtotal: row.amount,
+          total: row.total ?? row.amount,
+          amount: row.amount,
+          paid_amount: row.payment_amount,
+          payment_amount: row.payment_amount, // Ensure both fields are present
+          payment_method: isReturn ? 'REFUND' : (row.payment_method || 'CASH'),
+          payment_type: isReturn ? 'REFUND' : (row.payment_type || 'FULL_PAYMENT')
+        });
+        return map;
+      }, new Map());
+    }
+
+    // Process customers with normalized ledger data (includes returns and settlements)
+    const customersWithBalance = customers.map(customer => {
+      const key = buildCustomerKey(customer.customer_name, customer.customer_phone);
+      const customerTransactions = transactionsByCustomer.get(key) || [];
+
+      const normalizedTransactions = normalizeLedgerTransactions(customerTransactions);
+      const summaryStats = computeLedgerSummary(normalizedTransactions);
+
+      const totalCredit = normalizedTransactions.reduce((sum, transaction) => {
+        if (transaction.transaction_type === 'SALE') {
+          const creditValue = parseFloat(transaction.credit_amount || 0);
+          return sum + (Number.isFinite(creditValue) ? creditValue : 0);
+        }
+        return sum;
+      }, 0);
+
+      const lastTransactionDate = normalizedTransactions.length > 0
+        ? normalizedTransactions[normalizedTransactions.length - 1].transaction_date || normalizedTransactions[normalizedTransactions.length - 1].created_at
+        : customer.last_transaction_date;
+
+      const firstTransactionDate = normalizedTransactions.length > 0
+        ? normalizedTransactions[0].transaction_date || normalizedTransactions[0].created_at
+        : customer.first_transaction_date;
+
+      // Debug logging for summary calculation
+      if (customer.customer_name === 'rab nawaz' || customer.customer_name === 'Latif') {
+        const returnTransactions = normalizedTransactions.filter(t => t.transaction_type === 'RETURN');
+        const saleTransactions = normalizedTransactions.filter(t => t.transaction_type === 'SALE');
+        const numeric = (value) => {
+          const num = parseFloat(value);
+          return Number.isFinite(num) ? num : 0;
+        };
+        
+        console.log(`🔍 Summary for ${customer.customer_name}:`, {
+          transactionCount: normalizedTransactions.length,
+          returnCount: returnTransactions.length,
+          saleCount: saleTransactions.length,
+          summaryStats,
+          allTransactions: normalizedTransactions.map(t => ({
+            invoice: t.invoice_no,
+            type: t.transaction_type,
+            amount: t.amount,
+            subtotal: t.subtotal,
+            paid: t.paid_amount || t.payment_amount,
+            payment_method: t.payment_method,
+            payment_type: t.payment_type,
+            running_balance: t.running_balance || t.balance
+          })),
+          calculatedTotalAmount: normalizedTransactions.reduce((sum, t) => sum + numeric(t.amount), 0),
+          calculatedTotalPaid: normalizedTransactions.reduce((sum, t) => {
+            const payment = numeric(t.corrected_paid ?? t.paid_amount ?? t.payment_amount);
+            const isReturn = t.transaction_type === 'RETURN' || t.payment_method === 'REFUND' || t.payment_type === 'REFUND';
+            if (isReturn) return sum;
+            if (payment > 0) return sum + payment;
+            return sum;
+          }, 0)
+        });
+      }
+
+      // Add debug info for specific customers (can be removed later)
+      const debugInfo = (customer.customer_name === 'rab nawaz' || customer.customer_name === 'Latif') ? {
+        _debug: {
+          transactionCount: normalizedTransactions.length,
+          returnCount: normalizedTransactions.filter(t => t.transaction_type === 'RETURN').length,
+          saleCount: normalizedTransactions.filter(t => t.transaction_type === 'SALE').length,
+          transactionAmounts: normalizedTransactions.map(t => ({
+            invoice: t.invoice_no,
+            type: t.transaction_type,
+            amount: t.amount,
+            subtotal: t.subtotal
+          }))
+        }
+      } : {};
 
       return {
         customer_id: customer.customer_name,
         customer_name: customer.customer_name,
         customer_phone: customer.customer_phone,
-        total_transactions: customer.total_transactions,
-        total_amount: totalAmount,
-        total_paid: totalPaid,
-        current_balance: currentBalance,
-        last_transaction_date: customer.last_transaction_date,
-        first_transaction_date: customer.first_transaction_date,
-        has_outstanding_balance: Math.abs(currentBalance) > 0.01
+        total_transactions: summaryStats.totalTransactions || customer.total_transactions,
+        total_amount: summaryStats.totalAmount,
+        total_paid: summaryStats.totalPaid,
+        net_paid: summaryStats.netPaid,
+        total_refunded: summaryStats.totalRefunded,
+        total_credit: totalCredit,
+        current_balance: summaryStats.outstandingBalance,
+        last_transaction_date: lastTransactionDate,
+        first_transaction_date: firstTransactionDate,
+        has_outstanding_balance: Math.abs(summaryStats.outstandingBalance) > 0.01,
+        ...debugInfo
       };
     });
 
@@ -521,97 +910,92 @@ const getAllCustomersWithSummaries = async (req, res) => {
 // @desc    Export customer ledger to PDF
 // @route   GET /api/customer-ledger/:customerId/export
 // @access  Private (Admin, Cashier, Warehouse Keeper)
+// @desc    Export customer ledger to PDF
+// @route   GET /api/customer-ledger/:customerId/export
+// @access  Private (Admin, Cashier, Warehouse Keeper)
 const exportCustomerLedger = async (req, res) => {
   try {
     const { customerId } = req.params;
     const { startDate, endDate, format = 'pdf', detailed = 'false' } = req.query;
 
-    const includeItems = detailed === 'true';
-    const isAllCustomers = isAllCustomersRequest(customerId);
-
-    // Load ledger data without pagination
+    // Get customer ledger data (same as getCustomerLedger but without pagination)
     const ledgerData = await getCustomerLedgerData(customerId, req.user, { startDate, endDate, limit: 1000 });
-    const ledgerDataAsc = [...ledgerData].sort((a, b) => {
-      const dateA = new Date(a.transaction_date || a.created_at || 0);
-      const dateB = new Date(b.transaction_date || b.created_at || 0);
-      return dateA - dateB;
-    });
-
-    if (isAllCustomers) {
-      const groupedResult = await buildGroupedLedgerStructure(ledgerDataAsc, { includeItems });
-
-      if (format === 'pdf') {
-        const htmlContent = generateAllCustomersLedgerPDF(groupedResult.groupedLedgers, { includeItems });
-        res.setHeader('Content-Type', 'text/html');
-        res.setHeader('Content-Disposition', `inline; filename="all-customers-ledger-${new Date().toISOString().split('T')[0]}.html"`);
-        return res.send(htmlContent);
-      }
-
-      return res.json({
-        success: true,
-        data: {
-          groupedLedgers: groupedResult.groupedLedgers,
-          transactions: groupedResult.flattenedTransactions,
-          summary: groupedResult.aggregatedSummary
-        }
-      });
-    }
-
-    const processedLedgerAsc = normalizeLedgerTransactions(ledgerDataAsc).map((transaction) => ({
+    const processedLedgerAsc = normalizeLedgerTransactions(ledgerData).map((transaction) => ({
       ...transaction,
       transaction_type_display: transaction.transaction_type_display || getTransactionTypeDisplay(transaction),
       payment_status_display: transaction.payment_status_display || getPaymentStatusDisplay(transaction.payment_status)
     }));
-
     const processedLedgerDesc = [...processedLedgerAsc].sort((a, b) => {
-      const dateA = new Date(a.transaction_date || a.created_at || 0);
-      const dateB = new Date(b.transaction_date || b.created_at || 0);
+      const dateA = new Date(a.transaction_date || a.created_at);
+      const dateB = new Date(b.transaction_date || b.created_at);
       return dateB - dateA;
     });
 
-    if (includeItems) {
+    // If detailed export is requested, fetch items for each transaction
+    if (detailed === 'true') {
+      console.log('Detailed export requested for customer:', customerId);
+      
+      // Use the FIXED function for detailed data
       const detailedLedgerData = await getDetailedCustomerLedgerData(customerId, req.user, { startDate, endDate, limit: 1000 });
-      const processedDetailedAsc = normalizeLedgerTransactions(detailedLedgerData).map((transaction) => ({
+      
+      console.log('Detailed ledger data:', detailedLedgerData.length, 'transactions');
+      
+      // ✅ IMPORTANT: Normalize the detailed transactions (this will calculate balances correctly)
+      const normalizedTransactions = normalizeLedgerTransactions(detailedLedgerData);
+      
+      // Add display fields
+      const processedWithDisplay = normalizedTransactions.map((transaction) => ({
         ...transaction,
-        transaction_type_display: transaction.transaction_type_display || getTransactionTypeDisplay(transaction),
-        payment_status_display: transaction.payment_status_display || getPaymentStatusDisplay(transaction.payment_status)
+        transaction_type_display: getTransactionTypeDisplay(transaction),
+        payment_status_display: getPaymentStatusDisplay(transaction.payment_status)
       }));
-
-      if (format === 'pdf') {
-        const htmlContent = generateDetailedCustomerLedgerPDF(processedDetailedAsc);
-        res.setHeader('Content-Type', 'text/html');
-        res.setHeader('Content-Disposition', `inline; filename="detailed-customer-ledger-${customerId}-${new Date().toISOString().split('T')[0]}.html"`);
-        return res.send(htmlContent);
-      }
-
-      const processedDetailedDesc = [...processedDetailedAsc].sort((a, b) => {
-        const dateA = new Date(a.transaction_date || a.created_at || 0);
-        const dateB = new Date(b.transaction_date || b.created_at || 0);
+      
+      // Sort back to descending order for display
+      const processedDetailedDesc = [...processedWithDisplay].sort((a, b) => {
+        const dateA = new Date(a.transaction_date || a.created_at);
+        const dateB = new Date(b.transaction_date || b.created_at);
         return dateB - dateA;
       });
 
-      return res.json({
-        success: true,
-        data: {
-          customer: await getCustomerSummary(customerId, req.user),
-          transactions: processedDetailedDesc,
-          summary: computeLedgerSummary(processedDetailedAsc)
-        }
-      });
+      if (format === 'pdf') {
+        // Generate HTML content for detailed PDF
+        const htmlContent = generateDetailedCustomerLedgerPDF(processedWithDisplay);
+        
+        res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Content-Disposition', `inline; filename="detailed-customer-ledger-${customerId}-${new Date().toISOString().split('T')[0]}.html"`);
+        res.send(htmlContent);
+      } else {
+        // Return detailed JSON data for other formats
+        res.json({
+          success: true,
+          data: {
+            customer: await getCustomerSummary(customerId, req.user),
+            transactions: processedDetailedDesc,
+            pagination: {
+              total: processedDetailedDesc.length,
+              limit: 1000,
+              offset: 0
+            }
+          }
+        });
+      }
+    } else {
+      // Original export functionality for non-detailed exports
+      if (format === 'pdf') {
+        // Generate HTML content for PDF (frontend will handle PDF generation)
+        const htmlContent = generateCustomerLedgerPDF(processedLedgerAsc);
+        
+        res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Content-Disposition', `inline; filename="customer-ledger-${customerId}-${new Date().toISOString().split('T')[0]}.html"`);
+        res.send(htmlContent);
+      } else {
+        // Return JSON data for other formats
+        res.json({
+          success: true,
+          data: processedLedgerDesc
+        });
+      }
     }
-
-    if (format === 'pdf') {
-      const htmlContent = generateCustomerLedgerPDF(processedLedgerAsc);
-      res.setHeader('Content-Type', 'text/html');
-      res.setHeader('Content-Disposition', `inline; filename="customer-ledger-${customerId}-${new Date().toISOString().split('T')[0]}.html"`);
-      return res.send(htmlContent);
-    }
-
-    return res.json({
-      success: true,
-      data: processedLedgerDesc,
-      summary: computeLedgerSummary(processedLedgerAsc)
-    });
   } catch (error) {
     console.error('❌ Error in exportCustomerLedger:', error);
     res.status(500).json({
@@ -635,20 +1019,67 @@ const getCustomerSummary = async (customerId, user) => {
       return customers[0];
     }
 
-    // If not found, get summary from sales data
+    // If not found, get summary from sales data (with scope filtering)
+    let summaryWhereConditions = ['(s.customer_name = ? OR s.customer_phone = ? OR JSON_EXTRACT(s.customer_info, "$.name") = ? OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)'];
+    let summaryParams = [customerId, customerId, customerId, customerId];
+
+    // Apply scope filtering if user is not admin
+    const userBranchId = user.branch_id || user.branchId;
+    const userWarehouseId = user.warehouse_id || user.warehouseId;
+    
+    if (user.role === 'CASHIER' && userBranchId) {
+      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [userBranchId]);
+      if (branches.length > 0) {
+        summaryWhereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
+        summaryParams.push('BRANCH', branches[0].name);
+      }
+    } else if (user.role === 'WAREHOUSE_KEEPER' && userWarehouseId) {
+      const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [userWarehouseId]);
+      if (warehouses.length > 0) {
+        summaryWhereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
+        summaryParams.push('WAREHOUSE', warehouses[0].name);
+      }
+    }
+
+    const summaryWhereClause = `WHERE ${summaryWhereConditions.join(' AND ')}`;
+
     const [sales] = await pool.execute(`
       SELECT 
         COALESCE(s.customer_name, JSON_EXTRACT(s.customer_info, "$.name")) as name,
         COALESCE(s.customer_phone, JSON_EXTRACT(s.customer_info, "$.phone")) as phone,
         COUNT(*) as total_transactions,
         SUM(s.total) as total_sales,
-        SUM(s.credit_amount) as current_balance, -- Use sum of credit_amount for balance
+        SUM(s.credit_amount) as current_balance, -- Fallback: sum of credit_amount
         MAX(s.created_at) as last_transaction
       FROM sales s
-      WHERE (s.customer_name = ? OR s.customer_phone = ? OR JSON_EXTRACT(s.customer_info, "$.name") = ? OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)
+      ${summaryWhereClause}
       GROUP BY name, phone
       LIMIT 1
-    `, [customerId, customerId, customerId, customerId]);
+    `, summaryParams);
+
+    // Attempt to find the latest running_balance from sales for this customer - this provides
+    // a more accurate 'outstanding' / current balance than simple aggregates.
+    try {
+      const [latestRows] = await pool.execute(`
+        SELECT running_balance FROM sales ${summaryWhereClause} ORDER BY created_at DESC LIMIT 1
+      `, summaryParams);
+
+      const latestRunningBalance = latestRows && latestRows.length > 0 ? latestRows[0].running_balance : null;
+
+      if (latestRunningBalance !== null && latestRunningBalance !== undefined) {
+        // If we have an aggregated sales summary row, override its current_balance with the latest running balance
+        if (sales && sales[0]) {
+          sales[0].current_balance = latestRunningBalance;
+        }
+
+        // Return with running balance if no aggregate row was found
+        if (!sales || sales.length === 0) {
+          return { name: customerId, phone: '', total_transactions: 0, current_balance: latestRunningBalance };
+        }
+      }
+    } catch (rbError) {
+      console.warn('Could not resolve latest running_balance for customer summary:', rbError && rbError.message);
+    }
 
     return sales[0] || { name: customerId, phone: '', total_transactions: 0, current_balance: 0 };
   } catch (error) {
@@ -664,8 +1095,6 @@ const getCustomerLedgerData = async (customerId, user, options = {}) => {
   // Build WHERE conditions (same logic as getCustomerLedger)
   let whereConditions = [];
   let params = [];
-  let scopeFilter = null;
-  const isAllCustomers = isAllCustomersRequest(customerId);
 
   // Handle both branch_id and branchId for backward compatibility
   const userBranchId = user.branch_id || user.branchId;
@@ -675,24 +1104,20 @@ const getCustomerLedgerData = async (customerId, user, options = {}) => {
     // For cashiers, we need to match by branch name since sales store scope_id as string
     const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [userBranchId]);
     if (branches.length > 0) {
-      scopeFilter = { type: 'BRANCH', value: branches[0].name };
-      whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
-      params.push(scopeFilter.type, scopeFilter.value);
+    whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
+      params.push('BRANCH', branches[0].name);
     }
   } else if (user.role === 'WAREHOUSE_KEEPER' && userWarehouseId) {
     // For warehouse keepers, we need to match by warehouse name since sales store scope_id as string
     const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [userWarehouseId]);
     if (warehouses.length > 0) {
-      scopeFilter = { type: 'WAREHOUSE', value: warehouses[0].name };
-      whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
-      params.push(scopeFilter.type, scopeFilter.value);
+    whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
+      params.push('WAREHOUSE', warehouses[0].name);
     }
   }
 
-  if (!isAllCustomers) {
-    whereConditions.push('(s.customer_name = ? OR s.customer_phone = ? OR JSON_EXTRACT(s.customer_info, "$.name") = ? OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)');
-    params.push(customerId, customerId, customerId, customerId);
-  }
+  whereConditions.push('(s.customer_name = ? OR s.customer_phone = ? OR JSON_EXTRACT(s.customer_info, "$.name") = ? OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)');
+  params.push(customerId, customerId, customerId, customerId);
 
   if (startDate) {
     whereConditions.push('s.created_at >= ?');
@@ -750,41 +1175,36 @@ const getCustomerLedgerData = async (customerId, user, options = {}) => {
 };
 
 // Helper function to get detailed customer ledger data with items
+// Helper function to get detailed customer ledger data with items (FIXED VERSION)
+// Helper function to get detailed customer ledger data with items (FIXED VERSION)
+// Helper function to get detailed customer ledger data with items (FIXED VERSION)
 const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => {
   const { startDate, endDate, limit = 1000 } = options;
   
   // Build WHERE conditions (same logic as getCustomerLedger)
   let whereConditions = [];
   let params = [];
-  let scopeFilter = null;
-  const isAllCustomers = isAllCustomersRequest(customerId);
 
   // Handle both branch_id and branchId for backward compatibility
   const userBranchId = user.branch_id || user.branchId;
   const userWarehouseId = user.warehouse_id || user.warehouseId;
   
   if (user.role === 'CASHIER' && userBranchId) {
-    // For cashiers, we need to match by branch name since sales store scope_id as string
     const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [userBranchId]);
     if (branches.length > 0) {
-      scopeFilter = { type: 'BRANCH', value: branches[0].name };
       whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
-      params.push(scopeFilter.type, scopeFilter.value);
+      params.push('BRANCH', branches[0].name);
     }
   } else if (user.role === 'WAREHOUSE_KEEPER' && userWarehouseId) {
-    // For warehouse keepers, we need to match by warehouse name since sales store scope_id as string
     const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [userWarehouseId]);
     if (warehouses.length > 0) {
-      scopeFilter = { type: 'WAREHOUSE', value: warehouses[0].name };
       whereConditions.push('(s.scope_type = ? AND s.scope_id = ?)');
-      params.push(scopeFilter.type, scopeFilter.value);
+      params.push('WAREHOUSE', warehouses[0].name);
     }
   }
 
-  if (!isAllCustomers) {
-    whereConditions.push('(s.customer_name = ? OR s.customer_phone = ? OR JSON_EXTRACT(s.customer_info, "$.name") = ? OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)');
-    params.push(customerId, customerId, customerId, customerId);
-  }
+  whereConditions.push('(s.customer_name = ? OR s.customer_phone = ? OR JSON_EXTRACT(s.customer_info, "$.name") = ? OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)');
+  params.push(customerId, customerId, customerId, customerId);
 
   if (startDate) {
     whereConditions.push('s.created_at >= ?');
@@ -797,7 +1217,7 @@ const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => 
 
   const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
-  // Get transactions with basic info
+  // ✅ FIXED: USE EXACT SAME QUERY AS getCustomerLedger (including the LEFT JOIN sales_returns)
   const [transactions] = await pool.execute(`
     SELECT 
       s.id as transaction_id,
@@ -806,10 +1226,11 @@ const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => 
       s.scope_id,
       s.created_at as transaction_date,
       s.payment_method,
-      s.payment_status,
       s.payment_type,
+      s.payment_status,
       s.payment_amount,
       s.credit_amount,
+      s.old_balance, 
       s.running_balance,
       s.subtotal,
       s.total,
@@ -823,42 +1244,122 @@ const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => 
       w.name as warehouse_name,
       CASE 
         WHEN s.payment_type = 'OUTSTANDING_SETTLEMENT' THEN 'SETTLEMENT'
+        WHEN s.payment_method = 'REFUND' AND s.payment_type = 'REFUND' THEN 'RETURN'
         ELSE 'SALE'
-      END as transaction_type
+      END as transaction_type,
+      -- Use actual payment_amount and credit_amount from database
+      s.payment_amount as paid_amount,
+      s.credit_amount as credit_amount,
+      -- Amount is the current bill subtotal only
+      s.subtotal as amount,
+      sr.id as return_id,
+      sr.reason as return_reason,
+      CASE 
+        WHEN s.payment_method = 'REFUND' THEN ABS(s.total)
+        ELSE NULL
+      END as return_refund_amount
     FROM sales s
+    LEFT JOIN sales_returns sr ON s.invoice_no = sr.return_no  -- ✅ CRITICAL: This was missing!
     LEFT JOIN users u ON s.user_id = u.id
     LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
     LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
     ${whereClause}
-    ORDER BY s.created_at DESC
+    ORDER BY s.created_at ASC  -- ✅ IMPORTANT: Oldest transactions first (ascending order)
     LIMIT ?
   `, [...params, limit]);
+
+  console.log(`🔍 Detailed ledger: Found ${transactions.length} transactions for ${customerId}`);
+  console.log('🔍 Sample transaction from detailed query:', transactions[0] ? {
+    invoice: transactions[0].invoice_no,
+    type: transactions[0].transaction_type,
+    old_balance: transactions[0].old_balance,
+    amount: transactions[0].amount,
+    running_balance: transactions[0].running_balance,
+    return_id: transactions[0].return_id
+  } : null);
+
+  // Sort transactions by date in ascending order before processing items
+  // This ensures we process in chronological order even if query ordering somehow fails
+  transactions.sort((a, b) => new Date(a.transaction_date) - new Date(b.transaction_date));
 
   // For each transaction, get the detailed items
   const detailedTransactions = await Promise.all(
     transactions.map(async (transaction) => {
       try {
-        console.log(`Fetching items for transaction ${transaction.transaction_id}`)
-        // Get items for this transaction
-        const [items] = await pool.execute(`
-          SELECT 
-            si.*,
-            ii.name as item_name,
-            ii.sku,
-            ii.selling_price as catalog_price,
-            ii.cost_price,
-            ii.category
-          FROM sale_items si
-          LEFT JOIN inventory_items ii ON si.inventory_item_id = ii.id
-          WHERE si.sale_id = ?
-          ORDER BY si.id
-        `, [transaction.transaction_id]);
-
-        console.log(`Transaction ${transaction.transaction_id} has ${items.length} items`)
-        if (items.length > 0) {
-          console.log('Sample item:', items[0])
+        console.log(`Fetching items for transaction ${transaction.transaction_id}, type: ${transaction.transaction_type}, return_id: ${transaction.return_id}`);
+        
+        let items = [];
+        
+        // Check if this is a return transaction - use the CORRECT condition
+        if (transaction.transaction_type === 'RETURN' || transaction.return_id) {
+          // For returns, fetch from sales_return_items
+          console.log(`Fetching return items for transaction ${transaction.transaction_id}, return_id: ${transaction.return_id}`);
+          
+          const [returnItems] = await pool.execute(`
+            SELECT 
+              sri.*,
+              ii.name as item_name,
+              ii.sku,
+              ii.selling_price as catalog_price,
+              ii.cost_price,
+              ii.category
+            FROM sales_return_items sri
+            LEFT JOIN inventory_items ii ON sri.inventory_item_id = ii.id
+            WHERE sri.return_id = ? OR sri.sale_id = ?
+            ORDER BY sri.created_at ASC, sri.id ASC  -- ✅ Order items chronologically
+          `, [transaction.return_id || transaction.transaction_id, transaction.transaction_id]);
+          
+          // Transform return items to match sale_items format
+          items = returnItems.map(item => ({
+            id: item.id,
+            sale_id: transaction.transaction_id,
+            inventory_item_id: item.inventory_item_id,
+            item_name: item.item_name || item.name || 'Unknown Item',
+            name: item.item_name || item.name || 'Unknown Item',
+            sku: item.sku || 'N/A',
+            quantity: parseFloat(item.quantity) || 0,
+            unit_price: parseFloat(item.unit_price) || 0,
+            original_price: parseFloat(item.unit_price) || 0,
+            discount: 0,
+            total: parseFloat(item.refund_amount) || 0,
+            refund_amount: parseFloat(item.refund_amount) || 0,
+            catalog_price: parseFloat(item.catalog_price) || 0,
+            cost_price: parseFloat(item.cost_price) || 0,
+            category: item.category || null,
+            created_at: item.created_at || transaction.transaction_date  // Preserve item creation time
+          }));
+          
+          console.log(`Return transaction ${transaction.transaction_id} has ${items.length} return items`);
+        } else {
+          // Fetch sale items from sale_items
+          console.log(`Fetching sale items for transaction ${transaction.transaction_id}`);
+          
+          const [saleItems] = await pool.execute(`
+            SELECT 
+              si.*,
+              ii.name as item_name,
+              ii.sku,
+              ii.selling_price as catalog_price,
+              ii.cost_price,
+              ii.category
+            FROM sale_items si
+            LEFT JOIN inventory_items ii ON si.inventory_item_id = ii.id
+            WHERE si.sale_id = ?
+            ORDER BY si.created_at ASC, si.id ASC  -- ✅ Order items chronologically
+          `, [transaction.transaction_id]);
+          
+          items = saleItems.map(item => ({
+            ...item,
+            created_at: item.created_at || transaction.transaction_date  // Preserve item creation time
+          }));
+          console.log(`Sale transaction ${transaction.transaction_id} has ${items.length} items`);
         }
 
+        // Sort items within each transaction by creation date (oldest first)
+        items.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        
+        // Return transaction with items - DO NOT RECALCULATE BALANCES HERE
+        // The normalizeLedgerTransactions function will handle balance calculations
         return {
           ...transaction,
           items: items || []
@@ -873,84 +1374,146 @@ const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => 
     })
   );
 
-  // Sort transactions by date in ascending order for balance calculation
-  const sortedTransactions = detailedTransactions.sort((a, b) => {
-    const dateA = new Date(a.transaction_date || a.created_at);
-    const dateB = new Date(b.transaction_date || b.created_at);
-    return dateA - dateB;
-  });
+  // ✅ Ensure final array is sorted by transaction date (ascending - oldest first)
+  detailedTransactions.sort((a, b) => 
+    new Date(a.transaction_date) - new Date(b.transaction_date)
+  );
 
-  // CORRECTED: Calculate running balance with proper accounting logic
-  let runningBalance = 0;
-  const transactionsWithBalance = sortedTransactions.map((transaction, index) => {
-    const paid = parseFloat(transaction.payment_amount || 0);
-    const credit = parseFloat(transaction.credit_amount || 0);
-    const amount = parseFloat(transaction.subtotal || transaction.total || 0);
-    
-    // Store the old balance before processing this transaction
-    const oldBalance = runningBalance;
-    
-    // Calculate current bill amount (what they're buying now)
-    const currentBillAmount = amount;
-    
-    // Calculate total amount due (current bill + old balance)
-    const totalAmountDue = currentBillAmount + oldBalance;
-    
-    // Calculate actual payment for this transaction
-    let actualPayment = paid;
-    if (transaction.payment_method === 'FULLY_CREDIT') {
-      actualPayment = 0; // No cash payment for fully credit
-    }
-    
-    // CORRECTED: Calculate new balance based on transaction type
-    // All transactions are sales, so calculate new balance = old balance + current bill - actual payment
-    runningBalance = totalAmountDue - actualPayment;
-    
-    console.log(`🔍 CORRECTED Balance Calculation ${index + 1}:`, {
-      invoice: transaction.invoice_no,
-      type: transaction.transaction_type,
-      oldBalance,
-      currentBillAmount,
-      actualPayment,
-      payment_method: transaction.payment_method,
-      newRunningBalance: runningBalance
-    });
-    
-    return {
-      ...transaction,
-      old_balance: oldBalance,
-      amount: currentBillAmount,
-      total_amount: totalAmountDue,
-      paid_amount: actualPayment,
-      running_balance: runningBalance,
-      transaction_type: 'SALE',
-      transaction_type_display: getTransactionTypeDisplay(transaction),
-      payment_status_display: getPaymentStatusDisplay(transaction.payment_status)
-    };
-  });
-
-  return transactionsWithBalance;
-};
-
-// Normalize ledger transactions by applying consistent running balance logic (including settlements)
+  // ✅ CRITICAL: DO NOT RECALCULATE BALANCES HERE!
+  // Just return the transactions with items, let normalizeLedgerTransactions handle the balances
+  // This ensures consistency with getCustomerLedger
+  console.log('🔍 Detailed ledger processing complete - returning transactions in ascending order');
+  
+  // Optional: Log the date range for verification
+  if (detailedTransactions.length > 0) {
+    console.log(`📅 Date range: ${detailedTransactions[0].transaction_date} (oldest) to ${detailedTransactions[detailedTransactions.length - 1].transaction_date} (newest)`);
+  }
+  
+  return detailedTransactions;
+};/**
+ * Normalize ledger transactions following REAL ACCOUNTING LEDGER principles.
+ * 
+ * CRITICAL RULES:
+ * 1. OLD ROWS MUST NEVER BE MODIFIED - if running_balance exists in DB, keep all original values
+ * 2. ONLY NEW ROWS SHOULD BE CALCULATED - old_balance = previous_row.running_balance
+ * 3. DO NOT RECALCULATE THE ENTIRE LEDGER - only compute for new rows
+ * 4. Ledger must always behave sequentially without altering history
+ */
 const normalizeLedgerTransactions = (transactions = []) => {
-  if (!Array.isArray(transactions)) {
+  if (!Array.isArray(transactions) || transactions.length === 0) {
     return [];
   }
 
+  // Sort transactions chronologically (oldest first) - required for sequential processing
   const sortedTransactions = [...transactions].sort((a, b) => {
     const dateA = new Date(a.transaction_date || a.created_at || a.date || 0);
     const dateB = new Date(b.transaction_date || b.created_at || b.date || 0);
+    // If dates are equal, sort by ID to maintain consistent order
+    if (dateA.getTime() === dateB.getTime()) {
+      const idA = a.transaction_id || a.id || 0;
+      const idB = b.transaction_id || b.id || 0;
+      return idA - idB;
+    }
     return dateA - dateB;
   });
 
-  let runningBalance = 0;
+  const normalized = [];
+  let previousBalance = null;
 
-  return sortedTransactions.map((transaction) => {
+  for (let i = 0; i < sortedTransactions.length; i++) {
+    const transaction = sortedTransactions[i];
+    
+    // Check if this is an existing row (has running_balance in DB)
+    const storedRunningBalance = parseFloat(
+      transaction.running_balance ??
+      transaction.runningBalance ??
+      transaction.balance ??
+      null
+    );
+    
+    const isExistingRow = Number.isFinite(storedRunningBalance);
+
+    if (isExistingRow) {
+      // ✅ RULE 1: OLD ROW - DO NOT MODIFY
+      // Keep all original values from database
+      const existingOldBalance = parseFloat(
+        transaction.old_balance ??
+        transaction.oldBalance ??
+        0
+      );
+      
+      // Preserve original transaction data
+      const {
+        old_balance: _,
+        total_amount: __,
+        corrected_paid: ___,
+        balance: ____,
+        ...transactionBase
+      } = transaction;
+
+      // Determine transaction type for display
     const paymentMethod = transaction.payment_method;
     const paymentType = transaction.payment_type || transaction.paymentType || null;
     const rawTransactionType = (transaction.transaction_type || transaction.transactionType || '').toUpperCase();
 
+      let normalizedType = rawTransactionType;
+      if (!normalizedType) {
+        if (paymentMethod === 'REFUND') {
+          normalizedType = 'RETURN';
+        } else if (paymentType === 'OUTSTANDING_SETTLEMENT') {
+          normalizedType = 'SETTLEMENT';
+        } else {
+          normalizedType = 'SALE';
+        }
+      }
+
+      // Extract original values
+      const originalAmount = parseFloat(
+        transaction.amount ??
+        transaction.subtotal ??
+        transaction.total ??
+        0
+      ) || 0;
+
+      const originalPayment = parseFloat(
+        transaction.corrected_paid ??
+        transaction.paid_amount ??
+        transaction.payment_amount ??
+        0
+      ) || 0;
+
+      // Keep original old_balance or use 0 if not stored
+      const preservedOldBalance = Number.isFinite(existingOldBalance) ? existingOldBalance : 0;
+      
+      // Calculate total_amount for display (old_balance + amount)
+      const totalAmount = preservedOldBalance + originalAmount;
+
+      normalized.push({
+        ...transactionBase,
+        payment_type: paymentType,
+        transaction_type: normalizedType,
+        old_balance: preservedOldBalance, // Keep original old_balance from DB
+        amount: originalAmount, // Keep original amount
+        total_amount: totalAmount, // Calculate for display only
+        corrected_paid: originalPayment, // Keep original payment
+        paid_amount: originalPayment, // Alias for compatibility
+        running_balance: storedRunningBalance, // ✅ Keep original running_balance from DB
+        balance: storedRunningBalance // Alias for compatibility
+      });
+
+      // Update previousBalance to this row's running_balance for next iteration
+      previousBalance = storedRunningBalance;
+      continue;
+    }
+
+    // ✅ RULE 2: NEW ROW - CALCULATE
+    // This row doesn't have running_balance in DB, so calculate it
+    
+    const paymentMethod = transaction.payment_method;
+    const paymentType = transaction.payment_type || transaction.paymentType || null;
+    const rawTransactionType = (transaction.transaction_type || transaction.transactionType || '').toUpperCase();
+
+    // Extract payment amount
     const paid = parseFloat(
       transaction.corrected_paid ??
       transaction.paid_amount ??
@@ -958,8 +1521,7 @@ const normalizeLedgerTransactions = (transactions = []) => {
       0
     ) || 0;
 
-    const hasExplicitCredit = transaction.credit_amount !== undefined && transaction.credit_amount !== null && !Number.isNaN(parseFloat(transaction.credit_amount));
-    const credit = hasExplicitCredit ? parseFloat(transaction.credit_amount) : 0;
+    // Extract amount (bill amount for this transaction)
     const amount = parseFloat(
       transaction.amount ??
       transaction.subtotal ??
@@ -967,61 +1529,79 @@ const normalizeLedgerTransactions = (transactions = []) => {
       0
     ) || 0;
 
-    const oldBalance = runningBalance;
-    let currentBillAmount = amount;
-    let totalAmountDue = oldBalance + currentBillAmount;
-    let actualPayment = paid;
-
-    if (paymentMethod === 'FULLY_CREDIT' && paymentType !== 'OUTSTANDING_SETTLEMENT') {
-      actualPayment = 0;
+    // Determine transaction type
+    let normalizedType = rawTransactionType;
+    if (!normalizedType) {
+      if (paymentMethod === 'REFUND') {
+        normalizedType = 'RETURN';
+      } else if (paymentType === 'OUTSTANDING_SETTLEMENT') {
+        normalizedType = 'SETTLEMENT';
+      } else {
+        normalizedType = 'SALE';
+      }
     }
 
-    let normalizedType = rawTransactionType || (paymentMethod === 'REFUND' ? 'RETURN' : 'SALE');
+    // Calculate old_balance from previous row's running_balance
+    const oldBalance = previousBalance ?? 0;
+
+    // Calculate values based on transaction type
+    let currentBillAmount = amount;
+    let actualPayment = paid;
+    let newBalance;
 
     if (paymentType === 'OUTSTANDING_SETTLEMENT' || normalizedType === 'SETTLEMENT') {
-      const settlementRunningBalance = parseFloat(
-        transaction.running_balance ??
-        transaction.runningBalance ??
-        transaction.post_balance ??
-        transaction.new_balance
-      );
-
+      // Settlement: amount = 0, payment reduces balance
       currentBillAmount = 0;
-      totalAmountDue = oldBalance;
-      actualPayment = paid;
-      if (Number.isFinite(settlementRunningBalance)) {
-        runningBalance = settlementRunningBalance;
-      } else if (hasExplicitCredit) {
-        runningBalance = credit;
-      } else {
-        runningBalance = oldBalance - actualPayment;
-      }
-
-      normalizedType = 'SETTLEMENT';
+      if (paymentMethod === 'FULLY_CREDIT') {
+        actualPayment = 0;
+        }
+      newBalance = oldBalance - actualPayment;
     } else if (normalizedType === 'RETURN' || paymentMethod === 'REFUND') {
-      runningBalance = oldBalance - Math.abs(amount);
-      normalizedType = 'RETURN';
+      // Return: amount is negative, reduces balance
+      currentBillAmount = amount; // Already negative
+      actualPayment = 0; // Returns typically have no payment
+      newBalance = oldBalance + currentBillAmount; // old_balance + (negative return)
     } else {
-      const totalDue = oldBalance + currentBillAmount;
-      runningBalance = totalDue - actualPayment;
-      normalizedType = 'SALE';
+      // Sale: amount increases balance, payment reduces it
+      currentBillAmount = amount;
+      if (paymentMethod === 'FULLY_CREDIT' && paymentType !== 'OUTSTANDING_SETTLEMENT') {
+        actualPayment = 0;
+      }
+      // ✅ RULE 4: new_balance = old_balance + amount - payment
+      newBalance = oldBalance + currentBillAmount - actualPayment;
     }
 
-    const balance = runningBalance;
+    // Calculate total_amount for display
+    const totalAmountDue = oldBalance + currentBillAmount;
 
-    return {
-      ...transaction,
+    // Remove any existing calculated fields to avoid conflicts
+    const {
+      old_balance: _,
+      total_amount: __,
+      corrected_paid: ___,
+      balance: ____,
+      ...transactionBase
+    } = transaction;
+
+    // Create normalized transaction for new row
+    normalized.push({
+      ...transactionBase,
       payment_type: paymentType,
       transaction_type: normalizedType,
-      old_balance: oldBalance,
-      amount: currentBillAmount,
-      total_amount: totalAmountDue,
-      corrected_paid: actualPayment,
-      paid_amount: actualPayment,
-      running_balance: balance,
-      balance
-    };
-  });
+      old_balance: oldBalance, // Previous row's running_balance
+      amount: currentBillAmount, // Bill amount for this transaction
+      total_amount: totalAmountDue, // old_balance + amount
+      corrected_paid: actualPayment, // Payment amount
+      paid_amount: actualPayment, // Alias for compatibility
+      running_balance: newBalance, // ✅ Calculated new balance
+      balance: newBalance // Alias for compatibility
+    });
+    
+    // Update previousBalance for next iteration
+    previousBalance = newBalance;
+  }
+
+  return normalized;
 };
 
 const computeLedgerSummary = (transactions = []) => {
@@ -1031,8 +1611,44 @@ const computeLedgerSummary = (transactions = []) => {
   };
 
   const totalTransactions = transactions.length;
-  const totalAmount = transactions.reduce((sum, transaction) => sum + numeric(transaction.amount), 0);
-  const totalPaid = transactions.reduce((sum, transaction) => sum + numeric(transaction.corrected_paid ?? transaction.paid_amount ?? transaction.payment_amount), 0);
+  
+  // ✅ FIXED: Calculate totalAmount correctly - sum of all amounts (sales are positive, returns are negative)
+  // Use the normalized 'amount' field which is already correctly set for returns (negative) and sales (positive)
+  const totalAmount = transactions.reduce((sum, transaction) => {
+    // The 'amount' field from normalized transactions is already correct:
+    // - For sales: positive (subtotal)
+    // - For returns: negative (subtotal, which is negative in DB)
+    const amount = numeric(transaction.amount);
+    return sum + amount;
+  }, 0);
+
+  let totalPaid = 0;
+  let totalRefunded = 0;
+
+  transactions.forEach((transaction) => {
+    // For returns, payment_amount is negative (represents refund)
+    // For sales, payment_amount is positive (represents payment received)
+    const payment = numeric(transaction.corrected_paid ?? transaction.paid_amount ?? transaction.payment_amount);
+    const isReturn = transaction.transaction_type === 'RETURN' || 
+                     transaction.payment_method === 'REFUND' || 
+                     transaction.payment_type === 'REFUND';
+
+    if (isReturn) {
+      // Returns have negative payment_amount, add to refunded
+      totalRefunded += Math.abs(payment);
+    } else if (payment > 0) {
+      // Regular payments (positive)
+      totalPaid += payment;
+    } else if (payment < 0) {
+      // Negative payments (shouldn't happen for sales, but handle it)
+      totalRefunded += Math.abs(payment);
+    }
+  });
+
+  // Net paid = total paid - total refunded
+  const netPaid = totalPaid - totalRefunded;
+  
+  // Outstanding balance = latest running_balance from the last transaction
   const outstandingBalance = totalTransactions > 0
     ? numeric(transactions[transactions.length - 1].balance ?? transactions[transactions.length - 1].running_balance)
     : 0;
@@ -1064,138 +1680,12 @@ const computeLedgerSummary = (transactions = []) => {
     totalTransactions,
     totalAmount,
     totalPaid,
+    totalRefunded,
+    netPaid,
     outstandingBalance,
     completedTransactions,
     pendingTransactions,
     partialTransactions
-  };
-};
-
-const getTransactionItems = async (transactionId) => {
-  try {
-    const [items] = await pool.execute(
-      `SELECT 
-        si.*, 
-        ii.name as item_name,
-        ii.sku,
-        ii.selling_price as catalog_price,
-        ii.cost_price,
-        ii.category
-      FROM sale_items si
-      LEFT JOIN inventory_items ii ON si.inventory_item_id = ii.id
-      WHERE si.sale_id = ?
-      ORDER BY si.id`,
-      [transactionId]
-    );
-    return items || [];
-  } catch (error) {
-    console.error(`Error fetching items for transaction ${transactionId}:`, error);
-    return [];
-  }
-};
-
-const attachItemsToTransactions = async (transactions = []) => {
-  return Promise.all(transactions.map(async (transaction) => {
-    const items = await getTransactionItems(transaction.transaction_id);
-    return {
-      ...transaction,
-      items
-    };
-  }));
-};
-
-const buildGroupedLedgerStructure = async (transactionsAsc = [], { includeItems = false } = {}) => {
-  const groupedMap = new Map();
-
-  transactionsAsc.forEach((transaction) => {
-    const identity = extractCustomerIdentity(transaction);
-    const key = `${identity.name}|||${identity.phone || ''}`;
-
-    if (!groupedMap.has(key)) {
-      groupedMap.set(key, {
-        identity: {
-          ...identity,
-          key
-        },
-        transactions: []
-      });
-    }
-
-    groupedMap.get(key).transactions.push(transaction);
-  });
-
-  const groupedLedgers = [];
-  const flattenedTransactions = [];
-
-  const aggregatedSummary = {
-    totalTransactions: 0,
-    totalAmount: 0,
-    totalPaid: 0,
-    outstandingBalance: 0,
-    completedTransactions: 0,
-    pendingTransactions: 0,
-    partialTransactions: 0,
-    totalCredit: 0
-  };
-
-  for (const group of groupedMap.values()) {
-    const normalizedGroupAsc = normalizeLedgerTransactions(group.transactions).map((transaction) => ({
-      ...transaction,
-      customer_name: transaction.customer_name || group.identity.name,
-      customer_phone: transaction.customer_phone || group.identity.phone,
-      transaction_type_display: getTransactionTypeDisplay(transaction),
-      payment_status_display: getPaymentStatusDisplay(transaction.payment_status)
-    }));
-
-    const groupSummary = computeLedgerSummary(normalizedGroupAsc);
-    const groupCredit = normalizedGroupAsc.reduce((sum, transaction) => {
-      if (transaction.transaction_type === 'SALE') {
-        return sum + parseFloat(transaction.credit_amount || 0);
-      }
-      return sum;
-    }, 0);
-
-    let groupTransactionsDesc = [...normalizedGroupAsc].sort((a, b) => {
-      const dateA = new Date(a.transaction_date || a.created_at || 0);
-      const dateB = new Date(b.transaction_date || b.created_at || 0);
-      return dateB - dateA;
-    });
-
-    if (includeItems) {
-      groupTransactionsDesc = await attachItemsToTransactions(groupTransactionsDesc);
-    }
-
-    groupedLedgers.push({
-      customer: group.identity,
-      summary: {
-        ...groupSummary,
-        totalCredit: groupCredit
-      },
-      transactions: groupTransactionsDesc
-    });
-
-    aggregatedSummary.totalTransactions += groupSummary.totalTransactions;
-    aggregatedSummary.totalAmount += groupSummary.totalAmount;
-    aggregatedSummary.totalPaid += groupSummary.totalPaid;
-    aggregatedSummary.outstandingBalance += groupSummary.outstandingBalance;
-    aggregatedSummary.completedTransactions += groupSummary.completedTransactions;
-    aggregatedSummary.pendingTransactions += groupSummary.pendingTransactions;
-    aggregatedSummary.partialTransactions += groupSummary.partialTransactions;
-    aggregatedSummary.totalCredit += groupCredit;
-
-    flattenedTransactions.push(...groupTransactionsDesc);
-  }
-
-  groupedLedgers.sort((a, b) => {
-    const dateA = new Date(a.transactions[0]?.transaction_date || a.transactions[0]?.created_at || 0);
-    const dateB = new Date(b.transactions[0]?.transaction_date || b.transactions[0]?.created_at || 0);
-    return dateB - dateA;
-  });
-
-  return {
-    groupedLedgers,
-    aggregatedSummary,
-    flattenedTransactions
   };
 };
 
@@ -1594,195 +2084,6 @@ const generateDetailedCustomerLedgerPDF = (detailedLedgerData = []) => {
     </html>
   `;
   
-  return html;
-};
-
-const generateAllCustomersLedgerPDF = (groupedLedgers = [], options = {}) => {
-  const { includeItems = false } = options;
-
-  const formatAmount = (value) => {
-    const num = parseFloat(value || 0);
-    return Number.isFinite(num) ? num.toFixed(2) : '0.00';
-  };
-
-  const sectionsHtml = groupedLedgers.map((group, index) => {
-    const customer = group.customer || {};
-    const summary = group.summary || {};
-    const transactions = group.transactions || [];
-
-    const transactionRows = transactions.map((transaction) => {
-      const amount = formatAmount(transaction.amount || transaction.subtotal || transaction.total);
-      const oldBalance = formatAmount(transaction.old_balance || transaction.previous_balance);
-      const totalAmount = formatAmount(transaction.total_amount || transaction.total);
-      const payment = formatAmount(transaction.corrected_paid || transaction.paid_amount || transaction.payment_amount);
-      const balance = formatAmount(transaction.balance || transaction.running_balance);
-      const statusDisplay = transaction.payment_status_display || getPaymentStatusDisplay(transaction.payment_status);
-
-      const itemsHtml = includeItems && transaction.items && transaction.items.length > 0
-        ? `
-            <tr class="items-row">
-              <td colspan="9">
-                <table class="items-table">
-                  <thead>
-                    <tr>
-                      <th>Item Name</th>
-                      <th>SKU</th>
-                      <th class="amount">Quantity</th>
-                      <th class="amount">Unit Price</th>
-                      <th class="amount">Discount</th>
-                      <th class="amount">Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${transaction.items.map((item) => `
-                      <tr>
-                        <td>${item.item_name || item.name || 'N/A'}</td>
-                        <td>${item.sku || 'N/A'}</td>
-                        <td class="amount">${formatAmount(item.quantity)}</td>
-                        <td class="amount">${formatAmount(item.unit_price || item.unitPrice)}</td>
-                        <td class="amount">${formatAmount(item.discount)}</td>
-                        <td class="amount">${formatAmount(item.item_total || item.total)}</td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                </table>
-              </td>
-            </tr>
-          `
-        : '';
-
-      return `
-        <tr>
-          <td>${new Date(transaction.transaction_date || transaction.created_at || transaction.date || Date.now()).toLocaleDateString()}</td>
-          <td>${transaction.invoice_no || 'N/A'}</td>
-          <td class="amount">${amount}</td>
-          <td class="amount">${oldBalance}</td>
-          <td class="amount">${totalAmount}</td>
-          <td class="amount">${payment}</td>
-          <td>${transaction.payment_method || 'N/A'}</td>
-          <td>${statusDisplay || 'N/A'}</td>
-          <td class="amount">${balance}</td>
-        </tr>
-        ${itemsHtml}
-      `;
-    }).join('');
-
-    return `
-      <div class="customer-section${index > 0 ? ' page-break' : ''}">
-        <div class="customer-header">
-          <h2>${customer.name || 'Unknown Customer'}</h2>
-          ${customer.phone ? `<p>Phone: ${customer.phone}</p>` : ''}
-        </div>
-        <div class="summary">
-          <div class="summary-item"><span>Total Transactions:</span><span>${summary.totalTransactions || 0}</span></div>
-          <div class="summary-item"><span>Total Amount:</span><span>${formatAmount(summary.totalAmount)}</span></div>
-          <div class="summary-item"><span>Total Paid:</span><span>${formatAmount(summary.totalPaid)}</span></div>
-          <div class="summary-item"><span>Total Credit:</span><span>${formatAmount(summary.totalCredit)}</span></div>
-          <div class="summary-item"><span>Outstanding:</span><span>${formatAmount(summary.outstandingBalance)}</span></div>
-        </div>
-        <table class="ledger-table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Invoice #</th>
-              <th>Amount</th>
-              <th>Old Balance</th>
-              <th>Total Amount</th>
-              <th>Payment</th>
-              <th>Payment Method</th>
-              <th>Status</th>
-              <th>Balance</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${transactionRows || '<tr><td colspan="9">No transactions available.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    `;
-  }).join('');
-
-  const html = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>All Customers Ledger Report</title>
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            font-size: 12px;
-          }
-          .header {
-            text-align: center;
-            margin-bottom: 30px;
-            border-bottom: 2px solid #333;
-            padding-bottom: 20px;
-          }
-          .summary {
-            background: #f5f5f5;
-            padding: 15px;
-            margin-bottom: 20px;
-            border-radius: 5px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 10px;
-          }
-          .summary-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 5px 0;
-          }
-          .ledger-table, .items-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
-            font-size: 11px;
-          }
-          th, td {
-            border: 1px solid #ddd;
-            padding: 6px;
-            text-align: left;
-          }
-          th {
-            background-color: #f2f2f2;
-            font-weight: bold;
-          }
-          .amount {
-            text-align: right;
-          }
-          .customer-section {
-            margin-bottom: 40px;
-          }
-          .customer-header {
-            margin-bottom: 10px;
-          }
-          .items-table {
-            margin-top: 8px;
-          }
-          .items-row td {
-            background: #fafafa;
-          }
-          .page-break {
-            page-break-before: always;
-          }
-          @media print {
-            body { margin: 0; }
-            .page-break { page-break-before: always; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <h1>All Customers Ledger Report</h1>
-          <p>Generated on: ${new Date().toLocaleDateString()}</p>
-          <p>Total Customers: ${groupedLedgers.length}</p>
-        </div>
-        ${groupedLedgers.length === 0 ? '<p>No transactions found for the selected filters.</p>' : sectionsHtml}
-      </body>
-    </html>
-  `;
-
   return html;
 };
 

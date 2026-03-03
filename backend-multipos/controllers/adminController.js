@@ -163,13 +163,23 @@ const getAllInventories = async (req, res, next) => {
       LEFT JOIN warehouses w ON i.scope_type = 'WAREHOUSE' AND i.scope_id = w.id
       LEFT JOIN (
         SELECT 
-          inventory_item_id,
-          SUM(CASE WHEN transaction_type = 'PURCHASE' THEN quantity_change ELSE 0 END) as total_purchased,
-          SUM(CASE WHEN transaction_type = 'SALE' THEN ABS(quantity_change) ELSE 0 END) as total_sold,
-          SUM(CASE WHEN transaction_type = 'RETURN' THEN quantity_change ELSE 0 END) as total_returned,
-          SUM(CASE WHEN transaction_type = 'ADJUSTMENT' THEN quantity_change ELSE 0 END) as total_adjusted
-        FROM stock_reports 
-        GROUP BY inventory_item_id
+          sr.inventory_item_id,
+          SUM(CASE WHEN sr.transaction_type = 'PURCHASE' THEN sr.quantity_change ELSE 0 END) as total_purchased,
+          SUM(CASE WHEN sr.transaction_type = 'SALE' THEN ABS(sr.quantity_change) ELSE 0 END) as total_sold,
+          SUM(CASE WHEN sr.transaction_type = 'RETURN' THEN sr.quantity_change ELSE 0 END) as total_returned,
+          SUM(CASE WHEN sr.transaction_type = 'ADJUSTMENT' THEN sr.quantity_change ELSE 0 END) as total_adjusted
+        FROM stock_reports sr
+        INNER JOIN inventory_items ii ON sr.inventory_item_id = ii.id
+        LEFT JOIN branches b_sr ON sr.scope_type = 'BRANCH' AND (sr.scope_id = b_sr.name OR sr.scope_id = b_sr.id)
+        LEFT JOIN warehouses w_sr ON sr.scope_type = 'WAREHOUSE' AND (sr.scope_id = w_sr.name OR sr.scope_id = w_sr.id)
+        WHERE (
+          sr.scope_type IS NULL OR (sr.scope_type = ii.scope_type AND (
+            sr.scope_id = ii.scope_id
+            OR (sr.scope_type = 'BRANCH' AND b_sr.id = ii.scope_id)
+            OR (sr.scope_type = 'WAREHOUSE' AND w_sr.id = ii.scope_id)
+          ))
+        )
+        GROUP BY sr.inventory_item_id
       ) sr ON i.id = sr.inventory_item_id
       ${whereClause}
       ORDER BY i.created_at DESC

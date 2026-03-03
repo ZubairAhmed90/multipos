@@ -1,32 +1,8 @@
 const { validationResult } = require('express-validator');
 const WarehouseSale = require('../models/WarehouseSale');
-const Sale = require('../models/Sale');
 const Retailer = require('../models/Retailer');
 const InventoryItem = require('../models/InventoryItem');
 const { pool } = require('../config/database');
-
-// Helper function to get retailer's current running balance
-const getRetailerRunningBalance = async (retailerId, scopeType, scopeId) => {
-  try {
-    const [latestSale] = await pool.execute(`
-      SELECT running_balance 
-      FROM sales 
-      WHERE JSON_EXTRACT(customer_info, "$.id") = ?
-        AND scope_type = ? 
-        AND scope_id = ?
-      ORDER BY created_at DESC 
-      LIMIT 1
-    `, [retailerId, scopeType, scopeId]);
-    
-    if (latestSale.length > 0) {
-      return parseFloat(latestSale[0].running_balance) || 0;
-    }
-    return 0;
-  } catch (error) {
-    console.error('Error fetching retailer running balance:', error);
-    return 0;
-  }
-};
 
 // @desc    Create warehouse sale to retailer
 // @route   POST /api/warehouse-sales
@@ -34,8 +10,7 @@ const getRetailerRunningBalance = async (retailerId, scopeType, scopeId) => {
 const createWarehouseSale = async (req, res, next) => {
   try {
     console.log('[WarehouseSaleController] Request body:', JSON.stringify(req.body, null, 2));
-    console.log('[WarehouseSaleController] Retailer ID:', req.body.retailerId, 'Type:', typeof req.body.retailerId);
-    
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       console.log('[WarehouseSaleController] Validation errors:', errors.array());
@@ -46,414 +21,641 @@ const createWarehouseSale = async (req, res, next) => {
       });
     }
 
+    const parseNumber = (value, fallback = 0) => {
+      if (value === undefined || value === null || value === '') {
+        return fallback;
+      }
+      const parsed = parseFloat(value);
+      return Number.isNaN(parsed) ? fallback : parsed;
+    };
+
     const {
       retailerId,
-      items,
-      totalAmount,
-      taxAmount = 0,
-      discountAmount = 0,
-      finalAmount,
+      items = [],
+      subtotal,
+      taxAmount,
+      tax,
+      discountAmount,
+      discount,
+      billAmount,
+      totalWithOutstanding,
       paymentMethod = 'CASH',
       paymentType,
       paymentTerms,
       notes,
       paymentAmount,
       creditAmount,
-      finalTotal,
       paymentStatus,
       salespersonId,
       salespersonName,
       salespersonPhone,
       outstandingPayments = [],
-      customerInfo
+      customerInfo,
+      isRefund = false,
+      refundType = null, // 'FULL_REFUND', 'PARTIAL_REFUND', 'CREDIT_NOTE'
+      refundAmount = 0
     } = req.body;
 
-
-    // Verify retailer exists (retailers are now the customers)
-    // Only verify if retailerId is provided
-    let retailer = null;
-    if (retailerId) {
-      retailer = await Retailer.findById(retailerId);
-      if (!retailer) {
-        return res.status(404).json({
-          success: false,
-          message: 'Retailer not found'
-        });
-      }
+    // ========== INPUT VALIDATIONS ==========
+    if (!retailerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Retailer ID is required'
+      });
     }
 
-    // Normalize items: map inventoryItemId to itemId if needed
-    const normalizedItems = items.map(item => ({
-      ...item,
-      itemId: item.itemId || item.inventoryItemId,
-      sku: item.sku || '',
-      name: item.name || '',
-      quantity: parseFloat(item.quantity) || 1,
-      unitPrice: parseFloat(item.unitPrice) || 0,
-      discount: parseFloat(item.discount) || 0,
-      totalPrice: parseFloat(item.totalPrice) || (parseFloat(item.unitPrice) * parseFloat(item.quantity))
-    }));
+    const normalizedRetailerId = (retailerId !== undefined && retailerId !== null && retailerId !== '')
+      ? (Number.isNaN(Number(retailerId)) ? retailerId : Number(retailerId))
+      : null;
 
-    // Verify all items exist and have sufficient stock
-    for (const item of normalizedItems) {
-      const inventoryItem = await InventoryItem.findById(item.itemId);
+    const retailer = await Retailer.findById(normalizedRetailerId);
+    if (!retailer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Retailer not found'
+      });
+    }
+
+    // Get current retailer credit balance
+    const currentCreditBalance = parseNumber(retailer.creditBalance || 0);
+
+    // ========== CREDIT REFUND VALIDATION AND PROCESSING ==========
+    const isCreditRefund = isRefund && (refundType === 'FULL_REFUND' || refundType === 'PARTIAL_REFUND' || refundType === 'CREDIT_NOTE');
+    
+    if (isCreditRefund) {
+      console.log('[WarehouseSaleController] Processing credit refund:', { refundType, retailerId: normalizedRetailerId });
+      
+      // Validate refund type
+      const validRefundTypes = ['FULL_REFUND', 'PARTIAL_REFUND', 'CREDIT_NOTE'];
+      if (!validRefundTypes.includes(refundType)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid refund type. Must be FULL_REFUND, PARTIAL_REFUND, or CREDIT_NOTE'
+        });
+      }
+
+      // Validate refund amount based on type
+      const requestedRefundAmount = parseNumber(refundAmount || 0);
+      
+      if (refundType === 'FULL_REFUND') {
+        // Validate that there's a balance to refund
+        if (currentCreditBalance === 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Cannot process full refund: Credit balance is already 0'
+          });
+        }
+      } else if (refundType === 'PARTIAL_REFUND') {
+        // Validate partial refund amount
+        if (requestedRefundAmount <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Partial refund amount must be greater than 0'
+          });
+        }
+        
+        if (currentCreditBalance >= 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Partial refund only applicable for negative credit balances'
+          });
+        }
+        
+        if (requestedRefundAmount > Math.abs(currentCreditBalance)) {
+          return res.status(400).json({
+            success: false,
+            message: `Partial refund amount (${requestedRefundAmount}) cannot exceed current credit balance (${Math.abs(currentCreditBalance)})`
+          });
+        }
+      } else if (refundType === 'CREDIT_NOTE') {
+        // Validate credit note amount
+        if (requestedRefundAmount === 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Credit note amount cannot be 0'
+          });
+        }
+        
+        // For negative balances, credit note should be positive to reduce the debt
+        if (currentCreditBalance < 0 && requestedRefundAmount < 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'For negative balances, credit note amount should be positive to reduce the debt'
+          });
+        }
+        
+        // For positive balances, credit note can be negative to reduce credit
+        if (currentCreditBalance > 0 && requestedRefundAmount > 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'For positive balances, credit note amount should be negative to reduce available credit'
+          });
+        }
+      }
+
+      // Calculate actual refund amount and new balance
+      let actualRefundAmount = 0;
+      let newBalance = currentCreditBalance;
+      let refundDescription = '';
+      let cashAmount = 0;
+      
+      if (refundType === 'FULL_REFUND') {
+        actualRefundAmount = Math.abs(currentCreditBalance);
+        newBalance = 0;
+        cashAmount = actualRefundAmount;
+        refundDescription = `Full refund of ${actualRefundAmount}`;
+      } else if (refundType === 'PARTIAL_REFUND') {
+        actualRefundAmount = requestedRefundAmount;
+        newBalance = currentCreditBalance + actualRefundAmount;
+        cashAmount = actualRefundAmount;
+        refundDescription = `Partial refund of ${actualRefundAmount}`;
+      } else if (refundType === 'CREDIT_NOTE') {
+        actualRefundAmount = requestedRefundAmount;
+        newBalance = currentCreditBalance + actualRefundAmount;
+        cashAmount = 0; // No cash transaction for credit note
+        refundDescription = `Credit note adjustment of ${actualRefundAmount}`;
+      }
+      
+      console.log('[WarehouseSaleController] Refund calculation:', {
+        currentBalance: currentCreditBalance,
+        refundType,
+        actualRefundAmount,
+        newBalance,
+        cashAmount
+      });
+
+      // Create refund transaction record
+      const refundTransaction = {
+        retailerId: normalizedRetailerId,
+        warehouseKeeperId: req.user.id,
+        type: 'CREDIT_REFUND',
+        refundType: refundType,
+        previousBalance: currentCreditBalance,
+        refundAmount: actualRefundAmount,
+        cashAmount: cashAmount,
+        newBalance: newBalance,
+        notes: notes || `${refundDescription}. Balance updated from ${currentCreditBalance} to ${newBalance}`,
+        transactionDate: new Date(),
+        processedBy: req.user.id,
+        status: 'COMPLETED'
+      };
+
+      // Update retailer's credit balance using update method
+      await retailer.update({ creditBalance: newBalance });
+      retailer.creditBalance = newBalance; // Update local object
+
+      // Create a sale record for the refund (for audit trail)
+      const refundSaleData = {
+        retailerId: normalizedRetailerId,
+        warehouseKeeperId: req.user.id,
+        items: [],
+        subtotal: 0,
+        taxAmount: 0,
+        discountAmount: 0,
+        billAmount: 0,
+        totalWithOutstanding: -cashAmount, // Negative for refund
+        paymentMethod: refundType === 'CREDIT_NOTE' ? 'CREDIT_NOTE' : 'CASH',
+        paymentType: 'REFUND',
+        paymentStatus: 'COMPLETED',
+        paymentAmount: -cashAmount, // Negative payment (money going out)
+        creditAmount: 0,
+        notes: refundTransaction.notes,
+        customerInfo: {
+          id: normalizedRetailerId,
+          name: retailer.name,
+          phone: retailer.phone
+        },
+        isRefund: true,
+        refundType: refundType,
+        refundTransaction: refundTransaction
+      };
+
+      const warehouseSale = await WarehouseSale.create(
+        refundSaleData,
+        retailer.name,
+        refundSaleData.paymentMethod,
+        paymentTerms
+      );
+
+      // Return success response
+      return res.status(201).json({
+        success: true,
+        message: `Credit refund processed successfully. ${refundDescription}.`,
+        data: {
+          ...warehouseSale,
+          invoice_no: warehouseSale.invoiceNumber || warehouseSale.invoice_no || `REF-${Date.now()}`,
+          refundDetails: refundTransaction,
+          newCreditBalance: newBalance,
+          cashRefunded: cashAmount
+        }
+      });
+    }
+
+    // ========== REGULAR SALE PROCESSING WITH VALIDATIONS ==========
+    // Validate items
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Sale must contain at least one item'
+      });
+    }
+
+    // Process and validate items
+    const normalizedItems = [];
+    for (const item of items) {
+      const inventoryItemId = item.inventoryItemId || item.itemId || item.id || null;
+      
+      if (!inventoryItemId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Each item must have an inventoryItemId'
+        });
+      }
+
+      const quantity = parseNumber(item.quantity, 0);
+      if (quantity <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Item ${item.name || inventoryItemId} must have quantity greater than 0`
+        });
+      }
+
+      const unitPrice = parseNumber(
+        item.unitPrice !== undefined ? item.unitPrice : (item.customPrice !== undefined ? item.customPrice : item.price),
+        0
+      );
+      
+      if (unitPrice < 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Item ${item.name || inventoryItemId} cannot have negative price`
+        });
+      }
+
+      const discountValue = parseNumber(item.discount, 0);
+      if (discountValue < 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Item ${item.name || inventoryItemId} cannot have negative discount`
+        });
+      }
+
+      const lineTotal = parseNumber(item.total !== undefined ? item.total : item.totalPrice, (unitPrice * quantity) - discountValue);
+      
+      if (lineTotal < 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Item ${item.name || inventoryItemId} cannot have negative total`
+        });
+      }
+
+      // Check inventory item exists
+      const inventoryItem = await InventoryItem.findById(inventoryItemId);
       if (!inventoryItem) {
         return res.status(404).json({
           success: false,
-          message: `Inventory item with ID ${item.itemId} not found`
+          message: `Inventory item with ID ${inventoryItemId} not found`
         });
       }
 
-      if (inventoryItem.currentStock < item.quantity) {
+      normalizedItems.push({
+        itemId: inventoryItemId,
+        inventoryItemId,
+        sku: item.sku || inventoryItem.sku || '',
+        name: item.name || inventoryItem.name || '',
+        quantity,
+        unitPrice,
+        discount: discountValue,
+        totalPrice: lineTotal
+      });
+    }
+
+    // Calculate totals with validation
+    const calculatedSubtotal = normalizedItems.reduce((sum, item) => sum + item.totalPrice, 0);
+    const normalizedSubtotal = parseNumber(subtotal, calculatedSubtotal);
+    
+    // Validate subtotal matches calculated subtotal (allow small rounding differences)
+    if (Math.abs(normalizedSubtotal - calculatedSubtotal) > 0.01) {
+      console.warn('[WarehouseSaleController] Subtotal mismatch:', { calculated: calculatedSubtotal, provided: normalizedSubtotal });
+    }
+
+    const normalizedTaxAmount = parseNumber(taxAmount, parseNumber(tax, 0));
+    if (normalizedTaxAmount < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tax amount cannot be negative'
+      });
+    }
+
+    const normalizedDiscountAmount = parseNumber(discountAmount, parseNumber(discount, 0));
+    if (normalizedDiscountAmount < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Discount amount cannot be negative'
+      });
+    }
+
+    const calculatedBillAmount = normalizedSubtotal + normalizedTaxAmount - normalizedDiscountAmount;
+    const normalizedBillAmount = parseNumber(billAmount, calculatedBillAmount);
+    
+    // Validate bill amount
+    if (Math.abs(normalizedBillAmount - calculatedBillAmount) > 0.01) {
+      console.warn('[WarehouseSaleController] Bill amount mismatch:', { calculated: calculatedBillAmount, provided: normalizedBillAmount });
+    }
+
+    const normalizedTotalWithOutstanding = parseNumber(
+      totalWithOutstanding,
+      parseNumber(req.body.finalTotal, normalizedBillAmount)
+    );
+
+    // Check for negative totals (returns/refunds)
+    const isNegativeTotal = normalizedTotalWithOutstanding < 0;
+    const isReturnTransaction = isNegativeTotal;
+
+    // Validate return transactions
+    if (isReturnTransaction) {
+      if (normalizedTotalWithOutstanding > 0) {
         return res.status(400).json({
           success: false,
-          message: `Insufficient stock for item ${inventoryItem.name}. Available: ${inventoryItem.currentStock}, Requested: ${item.quantity}`
+          message: 'Return/refund transactions must have negative total amount'
         });
       }
+      
+      // For returns, check if retailer has enough purchase history
+      // (You might want to implement more sophisticated validation here)
+      console.log('[WarehouseSaleController] Processing return transaction:', normalizedTotalWithOutstanding);
     }
 
-    // Get scope info for running balance calculation
-    const scopeType = 'WAREHOUSE';
-    const scopeId = req.user.id; // warehouse keeper's ID
+    const outstandingPortion = parseFloat((normalizedTotalWithOutstanding - normalizedBillAmount).toFixed(2));
 
-    // Get retailer's current running balance
-    const previousRunningBalance = await getRetailerRunningBalance(retailerId, scopeType, scopeId);
-    console.log('💰 Retailer previous running balance:', previousRunningBalance);
-
-    // Normalize amounts: handle both totalAmount and total, also handle subtotal
-    const normalizedSubtotal = parseFloat(req.body.subtotal) || 0;
-    const normalizedTaxAmount = parseFloat(req.body.taxAmount) || parseFloat(req.body.tax) || 0;
-    const normalizedDiscountAmount = parseFloat(req.body.discountAmount) || parseFloat(req.body.discount) || 0;
+    // ========== PAYMENT PROCESSING WITH VALIDATIONS ==========
+    let normalizedPaymentMethod = (paymentMethod || 'CASH').toUpperCase();
+    let paymentTypeValue = paymentType || null;
     
-    const normalizedTotalAmount = totalAmount || parseFloat(req.body.total) || 0;
-    const normalizedFinalAmount = finalAmount || normalizedTotalAmount;
-    
-    // Calculate bill amount
-    const billAmount = normalizedFinalAmount || normalizedTotalAmount || (normalizedSubtotal + normalizedTaxAmount - normalizedDiscountAmount);
-    const totalWithOutstanding = finalTotal || billAmount;
-
-    // ✅ Payment calculation for different scenarios
-    let finalPaymentAmount, finalCreditAmount;
-
-    console.log('💰 Payment calculation - Inputs:', {
-        paymentMethod,
-        paymentAmount: paymentAmount !== undefined ? parseFloat(paymentAmount) : null,
-        creditAmount: creditAmount !== undefined ? parseFloat(creditAmount) : null,
-        billAmount,
-        totalWithOutstanding,
-        previousRunningBalance,
-        retailerHasCredit: previousRunningBalance < 0
-    });
-
-    if (paymentMethod === 'FULLY_CREDIT') {
-        // Scenario: Fully Credit
-        finalPaymentAmount = 0;
-        finalCreditAmount = billAmount;
-        console.log('💰 Scenario - Fully Credit:', { finalPaymentAmount, finalCreditAmount });
-    } else if (paymentType === 'BALANCE_PAYMENT' || (paymentAmount !== undefined && parseFloat(paymentAmount) === 0 && creditAmount !== undefined)) {
-        // Balance Payment - Retailer uses their available credit balance
-        finalPaymentAmount = 0;
-        finalCreditAmount = parseFloat(creditAmount) || billAmount;
-        console.log('💰 Scenario - Balance Payment:', { 
-            previousBalance: previousRunningBalance,
-            finalPaymentAmount, 
-            finalCreditAmount,
-            billAmount 
-        });
-    } else {
-        // Handle other payment methods
-        const providedPaymentAmount = paymentAmount !== undefined ? parseFloat(paymentAmount) : null;
-        const providedCreditAmount = creditAmount !== undefined ? parseFloat(creditAmount) : null;
-        
-        if (providedPaymentAmount !== null && providedCreditAmount !== null) {
-            // Both amounts explicitly provided
-            finalPaymentAmount = providedPaymentAmount;
-            finalCreditAmount = providedCreditAmount;
-            console.log('💰 Both amounts provided:', { finalPaymentAmount, finalCreditAmount });
-        } else if (providedPaymentAmount !== null) {
-            // Only payment amount provided - calculate credit
-            finalPaymentAmount = providedPaymentAmount;
-            finalCreditAmount = billAmount - providedPaymentAmount;
-            console.log('💰 Payment amount provided, credit calculated:', { finalPaymentAmount, finalCreditAmount });
-        } else if (providedCreditAmount !== null) {
-            // Only credit amount provided - calculate payment
-            finalCreditAmount = providedCreditAmount;
-            finalPaymentAmount = billAmount - providedCreditAmount;
-            console.log('💰 Credit amount provided, payment calculated:', { finalPaymentAmount, finalCreditAmount });
-        } else {
-            // No amounts provided - assume full payment
-            finalPaymentAmount = billAmount;
-            finalCreditAmount = 0;
-            console.log('💰 Scenario - Full Payment (default):', { finalPaymentAmount, finalCreditAmount });
-        }
+    // Validate payment method
+    const validPaymentMethods = ['CASH', 'CARD', 'BANK_TRANSFER', 'FULLY_CREDIT', 'MIXED', 'REFUND'];
+    if (!validPaymentMethods.includes(normalizedPaymentMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid payment method. Must be one of: ${validPaymentMethods.join(', ')}`
+      });
     }
 
-    // Handle retailer's previous balance (credit/advance payment)
-    let adjustedCreditAmount = finalCreditAmount;
-    let adjustedPaymentAmount = finalPaymentAmount;
-
-    // Only auto-adjust if amounts weren't explicitly provided
-    const amountsExplicitlyProvided = paymentAmount !== undefined && creditAmount !== undefined;
-    
-    if (paymentType === 'BALANCE_PAYMENT') {
-        console.log('💰 Balance Payment - Using amounts from frontend without adjustment:', {
-            finalPaymentAmount,
-            finalCreditAmount,
-            previousBalance: previousRunningBalance
-        });
-        adjustedPaymentAmount = finalPaymentAmount;
-        adjustedCreditAmount = finalCreditAmount;
-    } else if (previousRunningBalance < 0 && !amountsExplicitlyProvided) {
-        // Retailer has advance credit - use it for this purchase
-        const availableCredit = Math.abs(previousRunningBalance);
-        
-        console.log('💰 Retailer has advance credit:', {
-            previousBalance: previousRunningBalance,
-            availableCredit,
-            billAmount,
-            currentPayment: adjustedPaymentAmount,
-            currentCredit: adjustedCreditAmount
-        });
-        
-        if (billAmount <= availableCredit) {
-            // Entire purchase can be covered by existing credit
-            adjustedPaymentAmount = 0;
-            adjustedCreditAmount = -billAmount;
-            console.log('💰 Using full credit for purchase');
-        } else {
-            // Part of purchase covered by credit, rest by payment
-            adjustedPaymentAmount = billAmount - availableCredit;
-            adjustedCreditAmount = -availableCredit;
-            console.log('💰 Using partial credit for purchase');
-        }
-        
-        console.log('💰 After credit adjustment:', {
-            adjustedPaymentAmount,
-            adjustedCreditAmount
-        });
-    } else if (previousRunningBalance < 0 && amountsExplicitlyProvided) {
-        console.log('💰 Skipping credit adjustment - amounts explicitly provided by frontend');
+    // For return transactions, ensure payment method is appropriate
+    if (isReturnTransaction && normalizedPaymentMethod === 'CASH') {
+      normalizedPaymentMethod = 'REFUND';
     }
 
-    // Use adjusted amounts
-    finalPaymentAmount = adjustedPaymentAmount;
-    finalCreditAmount = adjustedCreditAmount;
-
-    // Calculate running balance for this transaction
-    const newCreditAmount = billAmount - finalPaymentAmount;
-    const runningBalance = previousRunningBalance + newCreditAmount;
-
-    console.log('💰 FINAL Payment calculation:', {
-        scenario: getPaymentScenario(finalPaymentAmount, finalCreditAmount, billAmount),
-        previousRunningBalance,
-        billAmount,
-        finalPaymentAmount,
-        finalCreditAmount,
-        newCreditAmount,
-        runningBalance,
-        calculation: `${previousRunningBalance} + ${newCreditAmount} = ${runningBalance}`
-    });
-
-    // Helper function to identify payment scenario
-    function getPaymentScenario(payment, credit, bill) {
-        if (payment === bill && credit === 0) return 'Full Payment';
-        if (payment === 0 && credit === bill) return 'Fully Credit';
-        if (payment > 0 && credit > 0 && payment + credit === bill) return 'Partial Payment';
-        if (credit < 0) return 'Using Retailer Credit';
-        return 'Mixed Scenario';
-    }
-
-    // Payment validation
-    let isValid = true;
-    let errorMessage = '';
-
-    const amountToCover = totalWithOutstanding;
-    
-    console.log('💰 Validation amounts:', {
-        billAmount,
-        totalWithOutstanding,
-        paymentAmount: finalPaymentAmount,
-        creditAmount: finalCreditAmount,
-        using: 'totalWithOutstanding for validation'
-    });
-
-    if (finalCreditAmount < 0) {
-        // Retailer is using advance credit or overpaying
-        const totalCoverage = finalPaymentAmount + finalCreditAmount;
-        isValid = Math.abs(totalCoverage - totalWithOutstanding) <= 0.01;
-        errorMessage = `Payment (${finalPaymentAmount}) + credit (${finalCreditAmount}) must equal total amount (${totalWithOutstanding})`;
-        
-        console.log('💰 Overpayment/Credit validation:', {
-            billAmount,
-            totalWithOutstanding,
-            creditAmount: finalCreditAmount,
-            paymentAmount: finalPaymentAmount,
-            totalCoverage,
-            isValid
-        });
-    } else {
-        // Normal case
-        const totalCoverage = finalPaymentAmount + finalCreditAmount;
-        isValid = Math.abs(totalCoverage - totalWithOutstanding) <= 0.01;
-        errorMessage = `Payment amount (${finalPaymentAmount}) + credit amount (${finalCreditAmount}) must equal total amount (${totalWithOutstanding})`;
-        
-        console.log('💰 Normal payment validation:', {
-            billAmount,
-            totalWithOutstanding,
-            paymentAmount: finalPaymentAmount,
-            creditAmount: finalCreditAmount,
-            totalCoverage,
-            isValid
-        });
-    }
-
-    if (!isValid) {
-        return res.status(400).json({
-            success: false,
-            message: errorMessage
-        });
-    }
-
-    // Determine payment status
-    let finalPaymentStatus;
-    if (paymentStatus) {
-        finalPaymentStatus = paymentStatus;
-    } else if (paymentType === 'BALANCE_PAYMENT') {
-        finalPaymentStatus = 'COMPLETED';
-    } else if (paymentMethod === 'FULLY_CREDIT') {
-        finalPaymentStatus = 'PENDING';
-    } else if (finalCreditAmount > 0) {
-        finalPaymentStatus = 'PENDING';
-    } else if (finalCreditAmount < 0) {
-        finalPaymentStatus = 'COMPLETED';
-    } else {
-        finalPaymentStatus = 'COMPLETED';
-    }
-
-    console.log('💰 Payment status determination:', {
-        paymentMethod,
-        finalCreditAmount,
-        finalPaymentStatus
-    });
-
-    // Determine credit status
-    const finalCreditStatus = (finalCreditAmount > 0 || finalCreditAmount < 0) ? 'PENDING' : 'NONE';
+    const providedPaymentAmount = (paymentAmount !== undefined && paymentAmount !== null && paymentAmount !== '')
+      ? parseNumber(paymentAmount, 0)
+      : null;
+    const providedCreditAmount = (creditAmount !== undefined && creditAmount !== null && creditAmount !== '')
+      ? parseNumber(creditAmount, 0)
+      : null;
 
     // Validate payment amounts
-    if (finalPaymentAmount < 0 && totalWithOutstanding > 0) {
-        return res.status(400).json({
-            success: false,
-            message: 'Payment amount cannot be negative when total is positive'
-        });
+    if (providedPaymentAmount !== null && providedPaymentAmount < 0 && !isReturnTransaction) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment amount cannot be negative for regular sales'
+      });
     }
 
-    // Prepare customer info - merge from request with retailer data
-    const finalCustomerInfo = customerInfo || {};
-    if (retailer) {
-      // Ensure name is set - prioritize customerInfo.name, then retailer.name
-      finalCustomerInfo.name = finalCustomerInfo.name || retailer.name || (retailerId ? `Retailer ${retailerId}` : 'Walk-in Customer');
-      finalCustomerInfo.phone = finalCustomerInfo.phone || retailer.phone || '';
-      finalCustomerInfo.id = finalCustomerInfo.id || retailer.id || retailerId;
-    } else if (retailerId && !finalCustomerInfo.name) {
-      // If no retailer object but we have retailerId, try to fetch retailer name
-      try {
-        const { pool } = require('../config/database');
-        const [retailerRows] = await pool.execute('SELECT name, phone FROM retailers WHERE id = ?', [retailerId]);
-        if (retailerRows.length > 0) {
-          finalCustomerInfo.name = finalCustomerInfo.name || retailerRows[0].name || `Retailer ${retailerId}`;
-          finalCustomerInfo.phone = finalCustomerInfo.phone || retailerRows[0].phone || '';
-          finalCustomerInfo.id = retailerId;
-        }
-      } catch (error) {
-        console.error('[WarehouseSalesController] Error fetching retailer:', error);
+    if (providedCreditAmount !== null && providedCreditAmount < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Credit amount cannot be negative'
+      });
+    }
+
+    const isBalancePayment = paymentTypeValue === 'BALANCE_PAYMENT';
+    const isFullyCredit = normalizedPaymentMethod === 'FULLY_CREDIT' || paymentTypeValue === 'FULLY_CREDIT';
+    const totalForValidation = isBalancePayment ? normalizedBillAmount : normalizedTotalWithOutstanding;
+
+    let finalPaymentAmount = providedPaymentAmount;
+    let finalCreditAmount = providedCreditAmount;
+
+    // Calculate payment distribution
+    if (isFullyCredit) {
+      finalPaymentAmount = 0;
+      finalCreditAmount = totalForValidation;
+    } else if (isBalancePayment) {
+      finalPaymentAmount = 0;
+      finalCreditAmount = normalizedBillAmount;
+    } else {
+      if (finalPaymentAmount === null && finalCreditAmount === null) {
+        finalPaymentAmount = totalForValidation;
+        finalCreditAmount = 0;
+      } else if (finalPaymentAmount === null) {
+        finalPaymentAmount = totalForValidation - finalCreditAmount;
+      } else if (finalCreditAmount === null) {
+        finalCreditAmount = totalForValidation - finalPaymentAmount;
       }
     }
-    
-    // Make sure name is always set
-    if (!finalCustomerInfo.name) {
-      finalCustomerInfo.name = retailerId ? `Retailer ${retailerId}` : 'Walk-in Customer';
+
+    finalPaymentAmount = parseFloat((finalPaymentAmount ?? 0).toFixed(2));
+    finalCreditAmount = parseFloat((finalCreditAmount ?? 0).toFixed(2));
+
+    // Adjust for return/refund transactions
+    if (isReturnTransaction) {
+      // For returns, payment amount should be negative (money going out to customer)
+      if (finalPaymentAmount > 0 && normalizedTotalWithOutstanding < 0) {
+        finalPaymentAmount = normalizedTotalWithOutstanding;
+        finalCreditAmount = 0;
+      }
+      
+      // For returns with credit, it reduces what customer owes
+      if (finalCreditAmount > 0 && normalizedTotalWithOutstanding < 0) {
+        // Validate credit amount doesn't exceed return amount
+        if (finalCreditAmount > Math.abs(normalizedTotalWithOutstanding)) {
+          return res.status(400).json({
+            success: false,
+            message: `Credit amount (${finalCreditAmount}) cannot exceed return amount (${Math.abs(normalizedTotalWithOutstanding)})`
+          });
+        }
+      }
     }
-    if (!finalCustomerInfo.id && retailerId) {
-      finalCustomerInfo.id = retailerId;
+
+    // Determine payment type if not provided
+    if (!paymentTypeValue) {
+      if (isBalancePayment) {
+        paymentTypeValue = 'BALANCE_PAYMENT';
+      } else if (isFullyCredit) {
+        paymentTypeValue = 'FULLY_CREDIT';
+      } else if (finalCreditAmount > 0) {
+        paymentTypeValue = 'PARTIAL_PAYMENT';
+      } else if (isReturnTransaction) {
+        paymentTypeValue = 'REFUND';
+      } else {
+        paymentTypeValue = 'FULL_PAYMENT';
+      }
     }
-    
-    // Fetch salesperson name and phone if only salespersonId is provided
-    if (salespersonId && (!salespersonName || !salespersonPhone)) {
+
+    // Validate payment covers total
+    const coverageSum = parseFloat((finalPaymentAmount + finalCreditAmount).toFixed(2));
+    if (Math.abs(coverageSum - totalForValidation) > 0.01) {
+      return res.status(400).json({
+        success: false,
+        message: `Payment amount (${finalPaymentAmount}) and credit amount (${finalCreditAmount}) must equal total amount (${totalForValidation}). Difference: ${Math.abs(coverageSum - totalForValidation)}`
+      });
+    }
+
+    // Validate credit amount against retailer's credit limit (if applicable)
+ if (finalCreditAmount > 0 && retailer.creditLimit && retailer.creditLimit > 0) {
+  const availableCredit = retailer.creditLimit + currentCreditBalance;
+  if (finalCreditAmount > availableCredit) {
+    return res.status(400).json({
+      success: false,
+      message: `Credit amount (${finalCreditAmount}) exceeds available credit limit. Available: ${availableCredit}`
+    });
+  }
+}
+
+    // Determine payment status
+    let finalPaymentStatus = paymentStatus || null;
+    if (!finalPaymentStatus) {
+      if (paymentTypeValue === 'BALANCE_PAYMENT') {
+        finalPaymentStatus = 'COMPLETED';
+      } else if (normalizedPaymentMethod === 'FULLY_CREDIT') {
+        finalPaymentStatus = 'PENDING';
+      } else if (finalCreditAmount > 0) {
+        finalPaymentStatus = 'PENDING';
+      } else if (isReturnTransaction) {
+        finalPaymentStatus = 'REFUNDED';
+      } else {
+        finalPaymentStatus = 'COMPLETED';
+      }
+    }
+
+    // ========== PREPARE SALE DATA ==========
+    const finalCustomerInfo = {
+      id: normalizedRetailerId,
+      name: customerInfo?.name || retailer.name || `Retailer ${normalizedRetailerId}`,
+      phone: customerInfo?.phone || retailer.phone || '',
+      email: customerInfo?.email || retailer.email || '',
+      address: customerInfo?.address || retailer.address || '',
+      ...(customerInfo || {})
+    };
+
+    // Fetch salesperson details if needed
+    let resolvedSalespersonName = salespersonName || null;
+    let resolvedSalespersonPhone = salespersonPhone || null;
+
+    if (salespersonId && (!resolvedSalespersonName || !resolvedSalespersonPhone)) {
       try {
-        const { pool } = require('../config/database');
         const [salespersonRows] = await pool.execute(
           'SELECT name, phone FROM salespeople WHERE id = ?',
           [salespersonId]
         );
         if (salespersonRows.length > 0) {
-          salespersonName = salespersonName || salespersonRows[0].name || null;
-          salespersonPhone = salespersonPhone || salespersonRows[0].phone || null;
-          console.log('[WarehouseSalesController] Fetched salesperson:', {
-            id: salespersonId,
-            name: salespersonName,
-            phone: salespersonPhone
-          });
+          resolvedSalespersonName = resolvedSalespersonName || salespersonRows[0].name || null;
+          resolvedSalespersonPhone = resolvedSalespersonPhone || salespersonRows[0].phone || null;
         }
-      } catch (error) {
-        console.error('[WarehouseSalesController] Error fetching salesperson:', error);
+      } catch (salespersonError) {
+        console.error('[WarehouseSalesController] Error fetching salesperson:', salespersonError);
       }
     }
-    
-    // Get the actual customer name from customerInfo
-    const actualCustomerName = finalCustomerInfo.name;
-    console.log('[WarehouseSalesController] Using customer name:', actualCustomerName, 'from customerInfo:', finalCustomerInfo, 'retailerId:', retailerId);
-    console.log('[WarehouseSalesController] Salesperson info:', {
-      id: salespersonId,
-      name: salespersonName,
-      phone: salespersonPhone
-    });
 
-    // Create warehouse sale
     const saleData = {
-      retailerId,
+      retailerId: normalizedRetailerId,
       warehouseKeeperId: req.user.id,
       salespersonId,
-      salespersonName,
-      salespersonPhone,
+      salespersonName: resolvedSalespersonName,
+      salespersonPhone: resolvedSalespersonPhone,
       items: normalizedItems,
-      totalAmount: normalizedTotalAmount || normalizedSubtotal,
+      subtotal: normalizedSubtotal,
       taxAmount: normalizedTaxAmount,
       discountAmount: normalizedDiscountAmount,
-      finalAmount: billAmount,
-      paymentMethod,
+      billAmount: normalizedBillAmount,
+      totalWithOutstanding: normalizedTotalWithOutstanding,
+      paymentMethod: normalizedPaymentMethod,
+      paymentType: paymentTypeValue,
+      paymentStatus: finalPaymentStatus,
       paymentAmount: finalPaymentAmount,
       creditAmount: finalCreditAmount,
       notes,
       outstandingPayments,
-      customerInfo: finalCustomerInfo // Include customerInfo in saleData
+      customerInfo: finalCustomerInfo,
+      paymentTerms,
+     scopeWarehouseId: (req.user.role === 'ADMIN' && req.headers['x-simulate-scope-id'])
+            ? parseInt(req.headers['x-simulate-scope-id'])
+            : req.body.scopeId || 
+              req.body.scopeWarehouseId || 
+              req.user.warehouseId || 
+              null,    
+                  outstandingPortion,
+      isRefund: isRefund || isReturnTransaction,
+      refundType: isReturnTransaction ? 'SALE_REFUND' : refundType,
+      previousCreditBalance: currentCreditBalance // Store previous balance for audit
     };
 
     console.log('[WarehouseSalesController] Creating sale with:', {
-        paymentMethod,
-        totalWithOutstanding,
-        finalPaymentAmount,
-        finalCreditAmount,
-        finalCreditStatus,
-        finalPaymentStatus,
-        customerInfo: finalCustomerInfo
+      paymentMethod: saleData.paymentMethod,
+      paymentType: saleData.paymentType,
+      paymentStatus: saleData.paymentStatus,
+      billAmount: saleData.billAmount,
+      totalWithOutstanding: saleData.totalWithOutstanding,
+      paymentAmount: saleData.paymentAmount,
+      creditAmount: saleData.creditAmount,
+      isRefund: saleData.isRefund,
+      previousBalance: currentCreditBalance
     });
 
-    const warehouseSale = await WarehouseSale.create(saleData, actualCustomerName, paymentMethod, paymentTerms);
+    // ========== CREATE SALE AND UPDATE BALANCE ==========
+    const warehouseSale = await WarehouseSale.create(
+      saleData,
+      finalCustomerInfo.name,
+      saleData.paymentMethod,
+      paymentTerms
+    );
 
-    // WarehouseSale.create already creates the sales table record with correct data
-    
+    // Update retailer credit balance if credit was used
+    if (finalCreditAmount !== 0) {
+      let newBalance = currentCreditBalance;
+      
+      if (isReturnTransaction) {
+        // For returns, credit amount reduces what retailer owes (negative becomes less negative)
+        newBalance = currentCreditBalance + finalCreditAmount;
+      } else {
+        // For sales, credit amount increases what retailer owes
+        newBalance = currentCreditBalance - finalCreditAmount;
+      }
+      
+      // Use the update method instead of save
+      await retailer.update({ creditBalance: newBalance });
+      retailer.creditBalance = newBalance; // Update local object
+      
+      console.log('[WarehouseSaleController] Updated retailer credit balance:', {
+        retailerId: normalizedRetailerId,
+        retailerName: retailer.name,
+        previousBalance: currentCreditBalance,
+        adjustment: finalCreditAmount,
+        newBalance: newBalance,
+        transactionType: isReturnTransaction ? 'RETURN' : 'SALE'
+      });
+    }
+
+    // Prepare response
+    const saleResponse = {
+      ...warehouseSale,
+      invoice_no: warehouseSale.invoiceNumber || warehouseSale.invoice_no || null,
+      payment_status: saleData.paymentStatus,
+      payment_type: saleData.paymentType,
+      retailerCreditBalance: retailer.creditBalance,
+      previousCreditBalance: currentCreditBalance
+    };
 
     res.status(201).json({
       success: true,
-      message: 'Warehouse sale created successfully',
-      data: warehouseSale
+      message: isReturnTransaction ? 'Return transaction processed successfully' : 'Warehouse sale created successfully',
+      data: saleResponse
     });
+
   } catch (error) {
+    console.error('[WarehouseSaleController] Error:', error);
     next(error);
   }
 };
-
-// @desc    Get all warehouse sales
 // @route   GET /api/warehouse-sales
 // @access  Private (Warehouse Keeper, Admin)
 const getWarehouseSales = async (req, res, next) => {

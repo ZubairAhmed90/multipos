@@ -709,13 +709,14 @@ const createCompany = async (req, res, next) => {
     }
 
     // Prepare company data
+    const normalizeOptional = (v) => (v === undefined || v === '' ? null : v);
     const companyData = {
       name,
-      code,
-      contactPerson,
-      phone,
-      email,
-      address,
+      code: normalizeOptional(code),
+      contactPerson: normalizeOptional(contactPerson),
+      phone: normalizeOptional(phone),
+      email: normalizeOptional(email),
+      address: normalizeOptional(address),
       status: status || 'active',
       scopeType: finalScopeType,
       scopeId: finalScopeId,
@@ -779,11 +780,40 @@ const updateCompany = async (req, res, next) => {
       }
     }
 
-    const updatedCompany = await Company.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
-    );
+    const {
+      name,
+      code,
+      contactPerson,
+      phone,
+      email,
+      address,
+      status,
+      transactionType,
+      scopeType,
+      scopeId
+    } = req.body;
+
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (code !== undefined) updateData.code = code;
+    if (contactPerson !== undefined) updateData.contact_person = contactPerson;
+    if (phone !== undefined) updateData.phone = phone;
+    if (email !== undefined) updateData.email = email;
+    if (address !== undefined) updateData.address = address;
+    if (status !== undefined) updateData.status = status;
+    if (transactionType !== undefined) updateData.transaction_type = transactionType;
+    if (scopeType !== undefined) updateData.scope_type = scopeType;
+    if (scopeId !== undefined) updateData.scope_id = scopeId;
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update'
+      });
+    }
+
+    await Company.updateOne({ id: req.params.id }, updateData);
+    const updatedCompany = await Company.findById(req.params.id);
     
     res.json({
       success: true,
@@ -826,7 +856,7 @@ const deleteCompany = async (req, res, next) => {
       }
     }
     
-    await company.deleteOne();
+    await Company.deleteOne({ id: company.id });
     
     res.json({
       success: true,

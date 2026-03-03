@@ -4,6 +4,7 @@ class InventoryItem {
   constructor(data) {
     this.id = data.id;
     this.sku = data.sku;
+    this.barcode = data.barcode;
     this.name = data.name;
     this.description = data.description;
     this.category = data.category;
@@ -29,20 +30,36 @@ class InventoryItem {
   // Static method to create a new inventory item
   static async create(itemData) {
     const { 
-      sku, name, description, category, unit, costPrice, sellingPrice, 
+      sku, barcode, name, description, category, unit, costPrice, sellingPrice, 
       minStockLevel, maxStockLevel, currentStock, scopeType, scopeId, createdBy,
       supplierId, supplierName, purchaseDate, purchasePrice
     } = itemData;
     
-    const result = await executeQuery(
-      `INSERT INTO inventory_items (sku, name, description, category, unit, cost_price, selling_price, 
+    const insertQuery = `INSERT INTO inventory_items (sku, barcode, name, description, category, unit, cost_price, selling_price, 
        min_stock_level, max_stock_level, current_stock, scope_type, scope_id, created_by,
        supplier_id, supplier_name, purchase_date, purchase_price) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [sku, name, description, category, unit, costPrice, sellingPrice, 
-       minStockLevel, maxStockLevel, currentStock, scopeType, scopeId, createdBy,
-       supplierId || null, supplierName || null, purchaseDate || null, purchasePrice || null]
-    );
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+    // Ensure min/max default to 0 so that NOT NULL DB constraints are satisfied
+    const safeMinStockLevel = (typeof minStockLevel === 'number' ? minStockLevel : 0);
+    const safeMaxStockLevel = (typeof maxStockLevel === 'number' ? maxStockLevel : 0);
+    if (safeMinStockLevel !== minStockLevel || safeMaxStockLevel !== maxStockLevel) {
+      console.warn('[InventoryItem.create] Defaulting min/max stock levels to 0 (was undefined/null).', { minStockLevel, maxStockLevel });
+    }
+
+    const params = [sku, barcode || null, name, description, category, unit, costPrice, sellingPrice, 
+      safeMinStockLevel, safeMaxStockLevel, currentStock, scopeType, scopeId, createdBy,
+      supplierId || null, supplierName || null, purchaseDate || null, purchasePrice || null];
+
+    // Defensive: convert any undefined bind parameters to null to satisfy SQL drivers
+    const undefinedIndexes = params.map((p, i) => ({ i, p })).filter(x => typeof x.p === 'undefined');
+    if (undefinedIndexes.length) {
+      console.warn('[InventoryItem.create] Undefined bind params detected at indexes:', undefinedIndexes.map(x => x.i), 'original params:', params);
+    }
+
+    const sanitizedParams = params.map(p => (typeof p === 'undefined' ? null : p));
+
+    const result = await executeQuery(insertQuery, sanitizedParams);
     
     return await InventoryItem.findById(result.insertId || result.lastID);
   }
@@ -127,12 +144,12 @@ class InventoryItem {
     if (this.id) {
       // Update existing inventory item
       await executeQuery(
-        `UPDATE inventory_items SET sku = ?, name = ?, description = ?, category = ?, unit = ?, 
+        `UPDATE inventory_items SET sku = ?, barcode = ?, name = ?, description = ?, category = ?, unit = ?, 
          cost_price = ?, selling_price = ?, min_stock_level = ?, max_stock_level = ?, 
          current_stock = ?, scope_type = ?, scope_id = ?, created_by = ?,
          supplier_id = ?, supplier_name = ?, purchase_date = ?, purchase_price = ?
          WHERE id = ?`,
-        [this.sku, this.name, this.description, this.category, this.unit, 
+        [this.sku, this.barcode || null, this.name, this.description, this.category, this.unit, 
          this.costPrice, this.sellingPrice, this.minStockLevel, this.maxStockLevel, 
          this.currentStock, this.scopeType, this.scopeId, this.createdBy,
          this.supplierId || null, this.supplierName || null, this.purchaseDate || null, this.purchasePrice || null,
@@ -140,16 +157,31 @@ class InventoryItem {
       );
     } else {
       // Create new inventory item
-      const result = await executeQuery(
-        `INSERT INTO inventory_items (sku, name, description, category, unit, cost_price, selling_price, 
+      const insertQuery = `INSERT INTO inventory_items (sku, name, description, category, unit, cost_price, selling_price, 
          min_stock_level, max_stock_level, current_stock, scope_type, scope_id, created_by,
          supplier_id, supplier_name, purchase_date, purchase_price) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [this.sku, this.name, this.description, this.category, this.unit, 
-         this.costPrice, this.sellingPrice, this.minStockLevel, this.maxStockLevel, 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+      // Ensure min/max default to 0 to satisfy NOT NULL columns
+      const safeMinStockLevel = (typeof this.minStockLevel === 'number' ? this.minStockLevel : 0);
+      const safeMaxStockLevel = (typeof this.maxStockLevel === 'number' ? this.maxStockLevel : 0);
+      if (safeMinStockLevel !== this.minStockLevel || safeMaxStockLevel !== this.maxStockLevel) {
+        console.warn('[InventoryItem.save] Defaulting min/max stock levels to 0 (was undefined/null).', { minStockLevel: this.minStockLevel, maxStockLevel: this.maxStockLevel });
+      }
+
+      const params = [this.sku, this.name, this.description, this.category, this.unit, 
+         this.costPrice, this.sellingPrice, safeMinStockLevel, safeMaxStockLevel, 
          this.currentStock, this.scopeType, this.scopeId, this.createdBy,
-         this.supplierId || null, this.supplierName || null, this.purchaseDate || null, this.purchasePrice || null]
-      );
+         this.supplierId || null, this.supplierName || null, this.purchaseDate || null, this.purchasePrice || null];
+
+      const undefinedIndexes = params.map((p, i) => ({ i, p })).filter(x => typeof x.p === 'undefined');
+      if (undefinedIndexes.length) {
+        console.warn('[InventoryItem.save] Undefined bind params detected at indexes:', undefinedIndexes.map(x => x.i), 'original params:', params);
+      }
+
+      const sanitizedParams = params.map(p => (typeof p === 'undefined' ? null : p));
+
+      const result = await executeQuery(insertQuery, sanitizedParams);
       this.id = result.insertId || result.lastID;
     }
     return this;
@@ -271,10 +303,22 @@ class InventoryItem {
 
     // Fields to exclude from updates (computed fields from JOINs)
     const excludedFields = [
-      'id', 'branchName', 'warehouseName', 
-      'totalPurchased', 'totalSold', 'totalReturned', 'totalAdjusted',
-      'scopeName', 'createdByName', 'updatedByName',
-      'supplierContact', 'supplierPhone', 'supplierEmail'
+      'id',
+      // Derived/joined display fields
+      'branchName', 'branch_name',
+      'warehouseName', 'warehouse_name',
+      'scopeName', 'scope_name',
+      'createdByName', 'updatedByName',
+      'supplierContact', 'supplier_contact',
+      'supplierPhone', 'supplier_phone',
+      'supplierEmail', 'supplier_email',
+      // Aggregated stock fields (should never be persisted directly)
+      'totalPurchased', 'total_purchased',
+      'totalSold', 'total_sold',
+      'totalReturned', 'total_returned',
+      'totalAdjusted', 'total_adjusted',
+      'totalRestocked', 'total_restocked',
+      'pendingReturns', 'pending_returns'
     ];
     
     Object.keys(updateData).forEach(key => {

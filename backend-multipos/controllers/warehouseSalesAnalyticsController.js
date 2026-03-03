@@ -20,8 +20,25 @@ const getWarehouseSalesAnalytics = async (req, res) => {
     // TEMPORARY FIX: Show data from warehouse 5 for demonstration
     // TODO: Fix database - move retailers to warehouse 5 or sales to warehouse 3
     const targetWarehouseId = warehouseId == 3 ? 5 : warehouseId;
-    let whereConditions = ['s.scope_type = ? AND s.scope_id = ?'];
-    let params = ['WAREHOUSE', targetWarehouseId];
+    const [warehouseRows] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [targetWarehouseId]);
+    const warehouseName = warehouseRows.length > 0 ? warehouseRows[0].name : null;
+
+    const scopeFilterValues = [];
+    scopeFilterValues.push(String(targetWarehouseId));
+    if (!scopeFilterValues.includes(Number(targetWarehouseId))) {
+      const numericId = Number(targetWarehouseId);
+      if (!Number.isNaN(numericId)) {
+        scopeFilterValues.push(numericId);
+      }
+    }
+    if (warehouseName) {
+      scopeFilterValues.push(warehouseName);
+    }
+
+    const scopePlaceholders = scopeFilterValues.map(() => '?').join(', ');
+
+    let whereConditions = [`s.scope_type = ? AND s.scope_id IN (${scopePlaceholders})`];
+    let params = ['WAREHOUSE', ...scopeFilterValues];
 
     if (retailerId && retailerId !== 'all') {
       whereConditions.push('JSON_EXTRACT(s.customer_info, "$.id") = ?');
@@ -301,8 +318,25 @@ const exportWarehouseSalesAnalytics = async (req, res) => {
     // Build WHERE conditions (same as analytics query)
     // TEMPORARY FIX: Show data from warehouse 5 for demonstration
     const targetWarehouseId = warehouseId == 3 ? 5 : warehouseId;
-    let whereConditions = ['s.scope_type = ? AND s.scope_id = ?'];
-    let params = ['WAREHOUSE', targetWarehouseId];
+    const [warehouseRows] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [targetWarehouseId]);
+    const warehouseName = warehouseRows.length > 0 ? warehouseRows[0].name : null;
+
+    const scopeFilterValues = [];
+    scopeFilterValues.push(String(targetWarehouseId));
+    if (!scopeFilterValues.includes(Number(targetWarehouseId))) {
+      const numericId = Number(targetWarehouseId);
+      if (!Number.isNaN(numericId)) {
+        scopeFilterValues.push(numericId);
+      }
+    }
+    if (warehouseName) {
+      scopeFilterValues.push(warehouseName);
+    }
+
+    const scopePlaceholders = scopeFilterValues.map(() => '?').join(', ');
+
+    let whereConditions = [`s.scope_type = ? AND s.scope_id IN (${scopePlaceholders})`];
+    let params = ['WAREHOUSE', ...scopeFilterValues];
 
     if (retailerId && retailerId !== 'all') {
       whereConditions.push('JSON_EXTRACT(s.customer_info, "$.id") = ?');

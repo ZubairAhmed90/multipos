@@ -79,59 +79,60 @@ const getInventoryItems = async (req, res, next) => {
       warehouseId: req.user.warehouseId
     });
     
-    const { scopeType, scopeId, category, includeCrossBranch = false, supplierId } = req.query;
+    const { scopeType, scopeId, category, includeCrossBranch = false, supplierId, search } = req.query;
+
+    // Pagination defaults (allow "all" to fetch entire dataset)
+    const isLimitAll = typeof req.query.limit === 'string' && req.query.limit.toLowerCase() === 'all';
+    let page = parseInt(req.query.page, 10);
+    let limit = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(page) || page < 1) page = 1;
+    if (isLimitAll) {
+      limit = 1000000; // effectively "no limit" while still preventing runaway queries
+      page = 1;
+    }
+    if (!Number.isFinite(limit) || limit < 1) limit = 25;
+    if (!isLimitAll && limit > 1000000) limit = 1000000;
+    const offset = isLimitAll ? 0 : (page - 1) * limit;
+
     let whereConditions = [];
     let params = [];
     
-    // Admin can see everything
-    if (req.user.role === 'ADMIN') {
-      if (scopeType && scopeId) {
-        whereConditions.push('i.scope_type = ? AND i.scope_id = ?');
-        params.push(scopeType, scopeId);
-      }
+    // Admin can see everything; ignore scope filters to prevent accidental narrowing
+if (req.user.role === 'ADMIN') {
+  // Admin can filter by scope if query params provided (e.g. simulation mode)
+  if (scopeType) {
+    whereConditions.push('i.scope_type = ?');
+    params.push(scopeType);
+  }
+  if (scopeId) {
+    whereConditions.push('i.scope_id = ?');
+    params.push(scopeId);
+  }
+} else {
+  // Non-admin users have scope restrictions
+  const userBranchId = req.user.branch_id || req.user.branchId;
+  const userWarehouseId = req.user.warehouse_id || req.user.warehouseId;
+  
+  if (req.user.role === 'WAREHOUSE_KEEPER') {
+    if (userWarehouseId) {
+      whereConditions.push('i.scope_type = ? AND i.scope_id = ?');
+      params.push('WAREHOUSE', userWarehouseId);
     } else {
-    // Non-admin users have scope restrictions
-    // Handle both branch_id and branchId for backward compatibility
-    const userBranchId = req.user.branch_id || req.user.branchId;
-    const userWarehouseId = req.user.warehouse_id || req.user.warehouseId;
-    
-    if (req.user.role === 'WAREHOUSE_KEEPER') {
-      // Warehouse keepers can ONLY see their assigned warehouse inventory
-      if (userWarehouseId) {
-        whereConditions.push('i.scope_type = ? AND i.scope_id = ?');
-        params.push('WAREHOUSE', userWarehouseId);
-        console.log('[InventoryController] Warehouse keeper filtering:', {
-          warehouseId: userWarehouseId,
-          role: req.user.role
-        });
-      } else {
-        // If no warehouse ID, show no products
-        whereConditions.push('1 = 0');
-        console.log('[InventoryController] No warehouse ID for warehouse keeper');
-      }
-    } else if (req.user.role === 'CASHIER') {
-      // Cashiers can see their assigned branch inventory
-      // Use branch ID directly for filtering (inventory items store numeric IDs)
-      if (userBranchId) {
-        whereConditions.push('i.scope_type = ? AND i.scope_id = ?');
-        params.push('BRANCH', userBranchId);
-        console.log('[InventoryController] Cashier branch filtering:', {
-          branchId: userBranchId,
-          role: req.user.role
-        });
-      } else {
-        // If no branch ID, show no products
-        whereConditions.push('1 = 0');
-        console.log('[InventoryController] No branch ID for cashier');
-      }
-      
-      // If specific branch requested, filter to that branch
-      if (scopeType === 'BRANCH' && scopeId) {
-        whereConditions.push('i.scope_id = ?');
-        params.push(scopeId);
-      }
+      whereConditions.push('1 = 0');
     }
+  } else if (req.user.role === 'CASHIER') {
+    if (userBranchId) {
+      whereConditions.push('i.scope_type = ? AND i.scope_id = ?');
+      params.push('BRANCH', userBranchId);
+    } else {
+      whereConditions.push('1 = 0');
     }
+    if (scopeType === 'BRANCH' && scopeId) {
+      whereConditions.push('i.scope_id = ?');
+      params.push(scopeId);
+    }
+  }
+}
     
     // Filter by category if provided
     if (category) {
@@ -144,15 +145,52 @@ const getInventoryItems = async (req, res, next) => {
       whereConditions.push('i.supplier_id = ?');
       params.push(supplierId);
     }
+
+    // Text search
+    if (search && search.trim()) {
+      const like = `%${search.trim()}%`;
+      whereConditions.push('(i.name LIKE ? OR i.category LIKE ? OR i.description LIKE ? OR i.barcode LIKE ? OR i.sku LIKE ?)');
+      params.push(like, like, like, like, like);
+    }
     
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
     
     console.log('[InventoryController] Final query conditions:', {
       whereClause,
       params,
-      userRole: req.user.role
+      userRole: req.user.role,
+      branchId: req.user.branchId,
+      warehouseId: req.user.warehouseId
     });
     
+    // Debug: Test the aggregation query directly for cashiers/warehouse keepers
+    if ((req.user.role === 'CASHIER' && req.user.branchId) || (req.user.role === 'WAREHOUSE_KEEPER' && req.user.warehouseId)) {
+      const testScopeType = req.user.role === 'CASHIER' ? 'BRANCH' : 'WAREHOUSE';
+      const testScopeId = req.user.role === 'CASHIER' ? req.user.branchId : req.user.warehouseId;
+      
+      const [testAggregation] = await pool.execute(`
+        SELECT 
+          sr.inventory_item_id,
+          SUM(CASE WHEN sr.transaction_type = 'RETURN' THEN sr.quantity_change ELSE 0 END) as total_returned
+        FROM stock_reports sr
+        INNER JOIN inventory_items ii ON sr.inventory_item_id = ii.id
+        WHERE sr.transaction_type = 'RETURN'
+          AND ii.scope_type = ?
+          AND ii.scope_id = ?
+        GROUP BY sr.inventory_item_id
+        LIMIT 5
+      `, [testScopeType, testScopeId]);
+      console.log('[InventoryController] Test aggregation query results:', testAggregation);
+    }
+    
+    // Total count for pagination
+    const countRows = await executeQuery(`
+      SELECT COUNT(*) as count
+      FROM inventory_items i
+      ${whereClause}
+    `, params);
+    const total = countRows?.[0]?.count || 0;
+
     const inventoryItems = await executeQuery(`
       SELECT 
         i.*,
@@ -165,6 +203,7 @@ const getInventoryItems = async (req, res, next) => {
         COALESCE(sr.total_purchased, 0) as total_purchased,
         COALESCE(sr.total_sold, 0) as total_sold,
         COALESCE(sr.total_returned, 0) as total_returned,
+        COALESCE(sr.total_restocked, 0) as total_restocked,
         COALESCE(sr.total_adjusted, 0) as total_adjusted,
         COALESCE(pr.pending_returns, 0) as pending_returns
       FROM inventory_items i
@@ -173,62 +212,206 @@ const getInventoryItems = async (req, res, next) => {
       LEFT JOIN companies c ON i.supplier_id = c.id
       LEFT JOIN (
         SELECT 
-          inventory_item_id,
-          SUM(CASE WHEN transaction_type = 'PURCHASE' THEN quantity_change ELSE 0 END) as total_purchased,
-          SUM(CASE WHEN transaction_type = 'SALE' THEN ABS(quantity_change) ELSE 0 END) as total_sold,
-          SUM(CASE WHEN transaction_type = 'RETURN' THEN quantity_change ELSE 0 END) as total_returned,
-          SUM(CASE WHEN transaction_type = 'ADJUSTMENT' THEN quantity_change ELSE 0 END) as total_adjusted
-        FROM stock_reports 
-        GROUP BY inventory_item_id
+          sr.inventory_item_id,
+          SUM(CASE WHEN sr.transaction_type = 'PURCHASE' THEN sr.quantity_change ELSE 0 END) as total_purchased,
+          SUM(CASE WHEN sr.transaction_type = 'SALE' THEN ABS(sr.quantity_change) ELSE 0 END) as total_sold,
+          SUM(CASE WHEN sr.transaction_type = 'RETURN' THEN sr.quantity_change ELSE 0 END) as total_returned,
+          SUM(CASE WHEN sr.transaction_type = 'RESTOCK' THEN sr.quantity_change ELSE 0 END) as total_restocked,
+          SUM(CASE WHEN sr.transaction_type = 'ADJUSTMENT' THEN sr.quantity_change ELSE 0 END) as total_adjusted
+        FROM stock_reports sr
+        WHERE sr.inventory_item_id IS NOT NULL
+        GROUP BY sr.inventory_item_id
       ) sr ON i.id = sr.inventory_item_id
       LEFT JOIN (
         SELECT 
           sri.inventory_item_id,
           SUM(sri.remaining_quantity) AS pending_returns
         FROM sales_return_items sri
+        WHERE sri.remaining_quantity > 0
         GROUP BY sri.inventory_item_id
       ) pr ON i.id = pr.inventory_item_id
       ${whereClause}
       ORDER BY i.created_at DESC
-    `, params);
+      LIMIT ? OFFSET ?
+    `, [...params, limit, offset]);
+    
+    console.log(`[InventoryController] Raw database results:`, inventoryItems.length);
+    
+    // Debug: Check return data for cashiers/warehouse keepers
+    if (inventoryItems.length > 0 && (req.user.role === 'CASHIER' || req.user.role === 'WAREHOUSE_KEEPER')) {
+      const sampleItems = inventoryItems.slice(0, 5).map(item => ({
+        id: item.id,
+        name: item.name,
+        scopeType: item.scope_type,
+        scopeId: item.scope_id,
+        total_returned: item.total_returned,
+        pending_returns: item.pending_returns,
+        total_purchased: item.total_purchased,
+        total_sold: item.total_sold,
+        // Check raw values
+        total_returned_raw: item.total_returned,
+        pending_returns_raw: item.pending_returns,
+        total_returned_type: typeof item.total_returned,
+        pending_returns_type: typeof item.pending_returns
+      }));
+      console.log('[InventoryController] Sample items for non-admin user (RAW DB VALUES):', JSON.stringify(sampleItems, null, 2));
+      
+      // Check if any items have returns
+      const itemsWithReturns = inventoryItems.filter(item => 
+        (parseFloat(item.total_returned) || 0) > 0 || (parseFloat(item.pending_returns) || 0) > 0
+      );
+      console.log('[InventoryController] Items with returns > 0:', itemsWithReturns.length);
+      if (itemsWithReturns.length > 0) {
+        console.log('[InventoryController] Sample items WITH returns:', itemsWithReturns.slice(0, 3).map(item => ({
+          id: item.id,
+          name: item.name,
+          total_returned: item.total_returned,
+          pending_returns: item.pending_returns
+        })));
+      }
+      
+      // Check if there are any returns in stock_reports for these items
+      if (sampleItems.length > 0) {
+        const itemIds = sampleItems.map(item => item.id);
+        const [returnCheck] = await pool.execute(`
+          SELECT inventory_item_id, transaction_type, SUM(quantity_change) as total
+          FROM stock_reports
+          WHERE inventory_item_id IN (${itemIds.map(() => '?').join(',')})
+            AND transaction_type = 'RETURN'
+          GROUP BY inventory_item_id, transaction_type
+        `, itemIds);
+        console.log('[InventoryController] Returns found in stock_reports for sample items:', JSON.stringify(returnCheck, null, 2));
+        
+        // Check what the aggregation subquery would return (simulating the exact query)
+        const [aggregationCheck] = await pool.execute(`
+          SELECT 
+            sr.inventory_item_id,
+            SUM(CASE WHEN sr.transaction_type = 'RETURN' THEN sr.quantity_change ELSE 0 END) as total_returned
+          FROM stock_reports sr
+          WHERE sr.inventory_item_id IN (${itemIds.map(() => '?').join(',')})
+            AND sr.inventory_item_id IS NOT NULL
+          GROUP BY sr.inventory_item_id
+        `, itemIds);
+        console.log('[InventoryController] Aggregation subquery simulation results:', JSON.stringify(aggregationCheck, null, 2));
+        
+        // Check pending returns
+        const [pendingCheck] = await pool.execute(`
+          SELECT inventory_item_id, SUM(remaining_quantity) as total
+          FROM sales_return_items
+          WHERE inventory_item_id IN (${itemIds.map(() => '?').join(',')})
+            AND remaining_quantity > 0
+          GROUP BY inventory_item_id
+        `, itemIds);
+        console.log('[InventoryController] Pending returns found for sample items:', JSON.stringify(pendingCheck, null, 2));
+        
+        // Check one specific item in detail (the first one)
+        if (itemIds.length > 0) {
+          const [detailCheck] = await pool.execute(`
+            SELECT 
+              sr.id,
+              sr.inventory_item_id,
+              sr.transaction_type,
+              sr.quantity_change,
+              sr.scope_type,
+              sr.scope_id,
+              sr.created_at,
+              ii.id as item_id,
+              ii.scope_type as item_scope_type,
+              ii.scope_id as item_scope_id,
+              ii.name as item_name
+            FROM stock_reports sr
+            LEFT JOIN inventory_items ii ON sr.inventory_item_id = ii.id
+            WHERE sr.inventory_item_id = ?
+              AND sr.transaction_type = 'RETURN'
+            ORDER BY sr.created_at DESC
+            LIMIT 5
+          `, [itemIds[0]]);
+          console.log('[InventoryController] Detailed return records for first item:', JSON.stringify(detailCheck, null, 2));
+          
+          // Also check ALL returns for this item (no transaction_type filter)
+          const [allTransactions] = await pool.execute(`
+            SELECT 
+              sr.id,
+              sr.inventory_item_id,
+              sr.transaction_type,
+              sr.quantity_change,
+              sr.scope_type,
+              sr.scope_id,
+              sr.created_at
+            FROM stock_reports sr
+            WHERE sr.inventory_item_id = ?
+            ORDER BY sr.created_at DESC
+            LIMIT 10
+          `, [itemIds[0]]);
+          console.log('[InventoryController] ALL transactions for first item:', JSON.stringify(allTransactions, null, 2));
+        }
+      }
+    }
     
     // Transform field names to match frontend expectations
-    const transformedItems = inventoryItems.map(item => ({
-      id: item.id,
-      name: item.name,
-      sku: item.sku,
-      barcode: item.barcode,
-      description: item.description,
-      category: item.category,
-      unit: item.unit,
-      costPrice: item.cost_price,
-      sellingPrice: item.selling_price,
-      currentStock: item.current_stock,
-      minStockLevel: item.min_stock_level,
-      maxStockLevel: item.max_stock_level,
-      scopeType: item.scope_type,
-      scopeId: item.scope_id,
-      createdBy: item.created_by,
-      createdAt: item.created_at,
-      updatedAt: item.updated_at,
-      branchName: item.branch_name,
-      warehouseName: item.warehouse_name,
-      totalPurchased: parseFloat(item.total_purchased) || 0,
-      totalSold: parseFloat(item.total_sold) || 0,
-      totalReturned: parseFloat(item.pending_returns) || 0,
-      totalAdjusted: parseFloat(item.total_adjusted) || 0,
-      supplierId: item.supplier_id,
-      supplierName: item.supplier_name,
-      supplierContact: item.supplier_contact,
-      supplierPhone: item.supplier_phone,
-      supplierEmail: item.supplier_email,
-      purchaseDate: item.purchase_date,
-      purchasePrice: parseFloat(item.purchase_price) || null
-    }));
+    const transformedItems = inventoryItems.map(item => {
+      const rawSold = parseFloat(item.total_sold) || 0;
+      const rawReturned = parseFloat(item.total_returned) || 0;
+      const rawRestocked = parseFloat(item.total_restocked) || 0;
+      const rawPending = parseFloat(item.pending_returns) || 0;
+
+      // Net values for UI:
+      // - totalSold: sold minus returns
+      // - totalReturned: outstanding returns (pending to restock)
+      // Prefer pending returns (remaining_quantity) as the source of truth for outstanding returns
+      // If pending is known (0 or more), use it; only fall back when pending is unavailable
+      const pendingKnown = Number.isFinite(rawPending);
+      const outstandingReturns = pendingKnown
+        ? Math.max(rawPending, 0)
+        : Math.max(rawReturned - rawRestocked, 0);
+      const netSold = Math.max(rawSold - rawReturned, 0);
+
+      // Current stock: use live DB value; returns do not change stock until restock
+      const rawCurrentStock = parseFloat(item.current_stock) || 0;
+      const displayCurrentStock = rawCurrentStock;
+
+      return {
+        id: item.id,
+        name: item.name,
+        sku: item.sku,
+        barcode: item.barcode,
+        description: item.description,
+        category: item.category,
+        unit: item.unit,
+        costPrice: item.cost_price,
+        sellingPrice: item.selling_price,
+        currentStock: displayCurrentStock,
+        minStockLevel: item.min_stock_level,
+        maxStockLevel: item.max_stock_level,
+        scopeType: item.scope_type,
+        scopeId: item.scope_id,
+        createdBy: item.created_by,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at,
+        branchName: item.branch_name,
+        warehouseName: item.warehouse_name,
+        totalPurchased: parseFloat(item.total_purchased) || 0,
+        totalSold: netSold,
+        totalReturned: outstandingReturns,
+        totalRestocked: rawRestocked,
+        pendingReturns: rawPending,
+        totalAdjusted: parseFloat(item.total_adjusted) || 0,
+        supplierId: item.supplier_id,
+        supplierName: item.supplier_name,
+        supplierContact: item.supplier_contact,
+        supplierPhone: item.supplier_phone,
+        supplierEmail: item.supplier_email,
+        purchaseDate: item.purchase_date,
+        purchasePrice: parseFloat(item.purchase_price) || null
+      };
+    });
     
     res.json({
       success: true,
       count: transformedItems.length,
+      total,
+      page,
+      limit,
       data: transformedItems
     });
   } catch (error) {
@@ -302,6 +485,7 @@ const createInventoryItem = async (req, res, next) => {
 
     const {
       sku,
+      barcode,
       name,
       description,
       category,
@@ -318,6 +502,46 @@ const createInventoryItem = async (req, res, next) => {
       purchaseDate,
       purchasePrice
     } = req.body;
+
+    // Debug: log incoming payload and validation results
+    console.log('[InventoryController] createInventoryItem called. validation errors:', validationResult(req).array());
+    console.log('[InventoryController] createInventoryItem payload:', JSON.stringify(req.body));
+
+    // Normalise numeric fields to avoid unexpected types or undefined values
+    const numericFields = {
+      costPrice: 'float',
+      sellingPrice: 'float',
+      currentStock: 'int',
+      minStockLevel: 'int',
+      maxStockLevel: 'int',
+      purchasePrice: 'float'
+    };
+
+    const normalizedBody = { ...req.body };
+    Object.entries(numericFields).forEach(([field, type]) => {
+      if (Object.prototype.hasOwnProperty.call(normalizedBody, field)) {
+        const val = normalizedBody[field];
+        if (val === null || val === '' || typeof val === 'undefined') {
+          normalizedBody[field] = null;
+        } else {
+          const parsed = type === 'int' ? parseInt(val, 10) : parseFloat(val);
+          normalizedBody[field] = Number.isNaN(parsed) ? null : parsed;
+        }
+      } else {
+        // Ensure optional numeric fields are explicit null when missing
+        normalizedBody[field] = null;
+      }
+    });
+
+    // Some DB schemas don't allow NULL for min/max stock; default to 0 to avoid SQL errors
+    if (normalizedBody.minStockLevel === null) {
+      console.warn('[InventoryController] minStockLevel missing/null - defaulting to 0 to satisfy DB constraints');
+      normalizedBody.minStockLevel = 0;
+    }
+    if (normalizedBody.maxStockLevel === null) {
+      console.warn('[InventoryController] maxStockLevel missing/null - defaulting to 0 to satisfy DB constraints');
+      normalizedBody.maxStockLevel = 0;
+    }
 
     // Check permissions - cashiers are now allowed to create inventory items
     // Permission checking is handled by middleware (checkCashierInventoryPermission)
@@ -364,25 +588,34 @@ const createInventoryItem = async (req, res, next) => {
       }
     }
 
-    const inventoryItem = await InventoryItem.create({
-      sku: finalSku,
-      name,
-      description,
-      category,
-      unit,
-      costPrice,
-      sellingPrice,
-      minStockLevel,
-      maxStockLevel,
-      currentStock,
-      scopeType,
-      scopeId: scopeId, // Store branch/warehouse ID instead of name
-      createdBy: req.user.id,
-      supplierId: supplierId || null,
-      supplierName: supplierName || null,
-      purchaseDate: purchaseDate || null,
-      purchasePrice: purchasePrice || null
-    });
+// Find this section in createInventoryItem, just before the InventoryItem.create() call:
+const rawItemData = {
+  sku: finalSku,
+  barcode: normalizedBody.barcode ?? null,
+  name,
+  description: description ?? null,
+  category: category || 'General',
+  unit: unit || 'piece',
+  costPrice: normalizedBody.costPrice ?? 0,
+  sellingPrice: normalizedBody.sellingPrice ?? 0,
+  minStockLevel: normalizedBody.minStockLevel ?? 0,
+  maxStockLevel: normalizedBody.maxStockLevel ?? 0,
+  currentStock: normalizedBody.currentStock ?? 0,
+  scopeType: scopeType ?? null,        // ← was: scopeType (undefined when missing)
+  scopeId: scopeId ?? null,            // ← was: scopeId (undefined when missing)
+  createdBy: req.user.id,
+  supplierId: supplierId ?? null,
+  supplierName: supplierName ?? null,
+  purchaseDate: purchaseDate ?? null,
+  purchasePrice: normalizedBody.purchasePrice ?? null
+};    // Defensive: convert any undefined values to null before creating DB record
+    const undefinedFields = Object.entries(rawItemData).filter(([k, v]) => typeof v === 'undefined').map(([k]) => k);
+    if (undefinedFields.length) {
+      console.warn('[InventoryController] Fields with undefined values before create:', undefinedFields);
+    }
+    const safeItemData = Object.fromEntries(Object.entries(rawItemData).map(([k, v]) => [k, typeof v === 'undefined' ? null : v]));
+
+    const inventoryItem = await InventoryItem.create(safeItemData);
 
     // Create stock report entry for initial inventory creation
     if (currentStock > 0) {
@@ -413,10 +646,15 @@ const createInventoryItem = async (req, res, next) => {
       data: inventoryItem
     });
   } catch (error) {
+    // Enhanced logging to help trace where the error originates
+    console.error('[InventoryController] Error creating inventory item:', error && error.message ? error.message : error);
+    if (error && error.stack) console.error(error.stack);
+    console.error('[InventoryController] request validation result (on error):', validationResult(req).array());
+
     res.status(500).json({
       success: false,
       message: 'Error creating inventory item',
-      error: error.message
+      error: error && error.message ? error.message : String(error)
     });
   }
 };
@@ -1083,6 +1321,75 @@ const getCrossBranchInventory = async (req, res, next) => {
   }
 };
 
+// @desc    Get cross-warehouse inventory
+// @route   GET /api/inventory/cross-warehouse
+// @access  Private (Admin, Warehouse Keeper)
+const getCrossWarehouseInventory = async (req, res, next) => {
+  try {
+    const { category } = req.query;
+    const whereConditions = ['i.scope_type = ?'];
+    const params = ['WAREHOUSE'];
+
+    if (category) {
+      whereConditions.push('i.category = ?');
+      params.push(category);
+    }
+
+    if (req.user.role === 'WAREHOUSE_KEEPER' && req.user.warehouseId) {
+      whereConditions.push('i.scope_id <> ?');
+      params.push(req.user.warehouseId);
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    const inventoryItems = await executeQuery(`
+      SELECT 
+        i.*,
+        w.name AS warehouse_name,
+        w.code AS warehouse_code,
+        w.location AS warehouse_location
+      FROM inventory_items i
+      LEFT JOIN warehouses w ON i.scope_id = w.id
+      WHERE ${whereClause}
+      ORDER BY i.created_at DESC
+    `, params);
+
+    const transformedItems = inventoryItems.map(item => ({
+      id: item.id,
+      name: item.name,
+      sku: item.sku,
+      description: item.description,
+      category: item.category,
+      unit: item.unit,
+      costPrice: item.cost_price,
+      sellingPrice: item.selling_price,
+      currentStock: item.current_stock,
+      minStockLevel: item.min_stock_level,
+      maxStockLevel: item.max_stock_level,
+      scopeType: item.scope_type,
+      scopeId: item.scope_id,
+      createdBy: item.created_by,
+      createdAt: item.created_at,
+      updatedAt: item.updated_at,
+      warehouseName: item.warehouse_name,
+      warehouseCode: item.warehouse_code,
+      warehouseLocation: item.warehouse_location
+    }));
+
+    res.json({
+      success: true,
+      count: transformedItems.length,
+      data: transformedItems
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error retrieving cross-warehouse inventory',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getInventoryItems,
   getInventoryItem,
@@ -1095,5 +1402,6 @@ module.exports = {
   getSummary,
   getLatestInventoryChanges,
   getInventoryChangesSince,
-  getCrossBranchInventory
+  getCrossBranchInventory,
+  getCrossWarehouseInventory
 };

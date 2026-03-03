@@ -109,7 +109,8 @@ const checkWarehouseKeeperInventoryPermission = async (req, res, next) => {
     
     // Warehouse keepers can only edit their own warehouse inventory
     if (scopeType === 'WAREHOUSE') {
-      if (scopeId !== req.user.warehouseId) {
+      // Normalize both values to strings for safe comparison
+      if (String(scopeId) !== String(req.user.warehouseId)) {
         return res.status(403).json({
           success: false,
           message: 'Warehouse keepers can only edit their own warehouse inventory'
