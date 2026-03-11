@@ -566,6 +566,68 @@ const checkReturnPermission = async (req, res, next) => {
   }
 };
 
+// Check if cashiers can edit customer info (granted per branch by admin)
+const checkCashierCustomerEditPermission = async (req, res, next) => {
+  try {
+    if (isAdmin(req)) {
+      return next();
+    }
+
+    if (req.user.role === 'CASHIER') {
+      const branch = await Branch.findById(getBranchId(req));
+
+      if (!branch) {
+        return res.status(404).json({
+          success: false,
+          message: 'Branch not found'
+        });
+      }
+
+      if (!branch.allow_cashier_customer_edit) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to edit customer info in this branch'
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Check if warehouse keepers can edit retailer/customer info (granted per warehouse by admin)
+const checkWarehouseKeeperCustomerEditPermission = async (req, res, next) => {
+  try {
+    if (isAdmin(req)) {
+      return next();
+    }
+
+    if (req.user.role === 'WAREHOUSE_KEEPER') {
+      const warehouse = await Warehouse.findById(getWarehouseId(req));
+
+      if (!warehouse) {
+        return res.status(404).json({
+          success: false,
+          message: 'Warehouse not found'
+        });
+      }
+
+      if (!warehouse.allow_retailer_customer_edit) {
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to edit customer info in this warehouse'
+        });
+      }
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
 // UPDATED: Check cross-branch visibility
 const checkCrossBranchVisibility = async (req, res, next) => {
   try {
@@ -621,6 +683,10 @@ module.exports = {
   checkBranchCompanyDeletePermission,
   checkBranchCompanyPermission, // Combined version
   
+  // Customer info edit permissions
+  checkCashierCustomerEditPermission,
+  checkWarehouseKeeperCustomerEditPermission,
+
   // Other permissions
   checkReturnPermission,
   checkCrossBranchVisibility

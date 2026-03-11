@@ -4,9 +4,9 @@ const auth = require('../middleware/auth')
 const { getDashboardAnalytics, getDashboardSummary } = require('../controllers/dashboardController')
 
 // Dashboard analytics endpoint
-router.get('/analytics', auth, getDashboardAnalytics)
+router.get('/analytics', getDashboardAnalytics)
 
 // Dashboard summary endpoint (lighter version)
-router.get('/summary', auth, getDashboardSummary)
+router.get('/summary', getDashboardSummary)
 
 module.exports = router

@@ -9,6 +9,15 @@ const nextConfig = {
   reactStrictMode: true,
   // Ensure proper transpilation
   transpilePackages: ['@mui/material', '@mui/icons-material', '@mui/x-data-grid'],
+  // Redirect outdated dashboard paths to new locations
+  async redirects() {
+    return [
+      { source: '/dashboard/warehouse-billing', destination: '/warehouse-billing', permanent: true },
+      { source: '/dashboard/pos', destination: '/pos', permanent: true },
+      { source: '/dashboard/pos/terminal', destination: '/pos/terminal', permanent: true },
+    ]
+  },
+
   // Add webpack configuration for better module resolution
   webpack: (config, { isServer }) => {
     // Add resolve extensions

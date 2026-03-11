@@ -48,21 +48,25 @@ const Sidebar = ({ mobileOpen, sidebarOpen = true, sidebarCollapsed = false, onD
     currentWarehouse: userWarehouse 
   } = usePermissions()
 
-  const handleNavigation = (path) => {
-    router.push(path)
+  const handleNavigation = (item) => {
+    if (item?.newWindow && item.path) {
+      window.open(item.path, '_blank')
+    } else if (item?.path) {
+      router.push(item.path)
+    }
     
     if (isMobile) {
       onDrawerToggle()
     }
   }
 
-  const handleContextMenu = (event, path) => {
+  const handleContextMenu = (event, item) => {
     event.preventDefault()
     setContextMenu({
       mouseX: event.clientX + 2,
       mouseY: event.clientY - 6,
     })
-    setContextMenuPath(path)
+    setContextMenuPath(item?.path)
   }
 
   const handleCloseContextMenu = () => {
@@ -196,8 +200,8 @@ const Sidebar = ({ mobileOpen, sidebarOpen = true, sidebarCollapsed = false, onD
                             : '#f5f5f5',
                         },
                       }}
-                      onClick={() => handleNavigation(child.path)}
-                      onContextMenu={(e) => handleContextMenu(e, child.path)}
+                      onClick={() => handleNavigation(child)}
+                      onContextMenu={(e) => handleContextMenu(e, child)}
                     >
                       <ListItemIcon sx={{ 
                         minWidth: 32,
@@ -251,8 +255,8 @@ const Sidebar = ({ mobileOpen, sidebarOpen = true, sidebarCollapsed = false, onD
     const menuItem = (
       <ListItem key={item.id} disablePadding sx={{ px: sidebarCollapsed ? 0 : 1 }}>
         <ListItemButton 
-          onClick={() => handleNavigation(item.path)}
-          onContextMenu={(e) => handleContextMenu(e, item.path)}
+          onClick={() => handleNavigation(item)}
+          onContextMenu={(e) => handleContextMenu(e, item)}
           sx={{
             minHeight: 36,
             borderRadius: '6px',

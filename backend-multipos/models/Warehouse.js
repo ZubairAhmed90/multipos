@@ -13,63 +13,61 @@ class Warehouse {
     this.stock = data.stock || null;
     this.manager = data.manager || 'Not Assigned';
     this.status = data.status || 'active';
-    
+
     // Parse settings from JSON field
     this.settings = {};
     if (data.settings) {
       try {
-        this.settings = typeof data.settings === 'string' 
-          ? JSON.parse(data.settings) 
+        this.settings = typeof data.settings === 'string'
+          ? JSON.parse(data.settings)
           : data.settings;
       } catch (error) {
         this.settings = {};
       }
     }
-    
-    // Basic warehouse permissions
-    this.allow_warehouse_inventory_edit = data.allow_warehouse_inventory_edit || 0;
-    this.allow_warehouse_returns = data.allow_warehouse_returns || 0;
-    this.allow_warehouse_companies = data.allow_warehouse_companies || 0;
-    this.allow_warehouse_direct_sales = data.allow_warehouse_direct_sales || 0;
-    this.allow_warehouse_ledger_edit = data.allow_warehouse_ledger_edit || 0;
+
+    // ==================== BASIC WAREHOUSE PERMISSIONS ====================
+    this.allow_warehouse_inventory_add  = data.allow_warehouse_inventory_add  !== undefined ? data.allow_warehouse_inventory_add  : 0;
+    this.allow_warehouse_inventory_edit = data.allow_warehouse_inventory_edit !== undefined ? data.allow_warehouse_inventory_edit : 0;
+    this.allow_warehouse_returns        = data.allow_warehouse_returns        !== undefined ? data.allow_warehouse_returns        : 0;
+    this.allow_warehouse_companies      = data.allow_warehouse_companies      !== undefined ? data.allow_warehouse_companies      : 0;
+    this.allow_warehouse_direct_sales   = data.allow_warehouse_direct_sales   !== undefined ? data.allow_warehouse_direct_sales   : 0;
+    this.allow_warehouse_ledger_edit    = data.allow_warehouse_ledger_edit    !== undefined ? data.allow_warehouse_ledger_edit    : 0;
     this.require_approval_for_transfers = data.require_approval_for_transfers !== undefined ? data.require_approval_for_transfers : 1;
-    this.auto_stock_alerts = data.auto_stock_alerts || 0;
-    
-    // Old company CRUD (for backward compatibility)
+    this.auto_stock_alerts              = data.auto_stock_alerts              !== undefined ? data.auto_stock_alerts              : 0;
+
+    // Old company CRUD (backward compatibility)
     this.allow_warehouse_company_crud = data.allow_warehouse_company_crud || 0;
-    
-    // NEW: Company permissions - separate columns
+
+    // ==================== COMPANY PERMISSIONS ====================
     this.allow_company_create = data.allow_company_create !== undefined ? data.allow_company_create : 0;
-    this.allow_company_edit = data.allow_company_edit !== undefined ? data.allow_company_edit : 0;
+    this.allow_company_edit   = data.allow_company_edit   !== undefined ? data.allow_company_edit   : 0;
     this.allow_company_delete = data.allow_company_delete !== undefined ? data.allow_company_delete : 0;
-    
-    // NEW: Retailer permissions - separate columns
-    this.allow_retailer_create = data.allow_retailer_create !== undefined ? data.allow_retailer_create : 0;
-    this.allow_retailer_edit = data.allow_retailer_edit !== undefined ? data.allow_retailer_edit : 0;
-    this.allow_retailer_delete = data.allow_retailer_delete !== undefined ? data.allow_retailer_delete : 0;
-    
-    // Transfer settings columns
-    this.allow_warehouse_transfers = data.allow_warehouse_transfers || 0;
-    this.allow_warehouse_to_branch_transfers = data.allow_warehouse_to_branch_transfers || 0;
-    this.allow_warehouse_to_warehouse_transfers = data.allow_warehouse_to_warehouse_transfers || 0;
+
+    // ==================== RETAILER PERMISSIONS ====================
+    this.allow_retailer_create        = data.allow_retailer_create        !== undefined ? data.allow_retailer_create        : 0;
+    this.allow_retailer_edit          = data.allow_retailer_edit          !== undefined ? data.allow_retailer_edit          : 0;
+    this.allow_retailer_delete        = data.allow_retailer_delete        !== undefined ? data.allow_retailer_delete        : 0;
+    this.allow_retailer_customer_edit = data.allow_retailer_customer_edit !== undefined ? data.allow_retailer_customer_edit : 0;
+
+    // ==================== TRANSFER SETTINGS ====================
+    this.allow_warehouse_transfers              = data.allow_warehouse_transfers              !== undefined ? data.allow_warehouse_transfers              : 0;
+    this.allow_warehouse_to_branch_transfers    = data.allow_warehouse_to_branch_transfers    !== undefined ? data.allow_warehouse_to_branch_transfers    : 0;
+    this.allow_warehouse_to_warehouse_transfers = data.allow_warehouse_to_warehouse_transfers !== undefined ? data.allow_warehouse_to_warehouse_transfers : 0;
     this.require_approval_for_warehouse_transfers = data.require_approval_for_warehouse_transfers !== undefined ? data.require_approval_for_warehouse_transfers : 1;
-    
-    // IMPORTANT: Fix decimal values - ensure they're numbers, not strings
-    this.max_transfer_amount = data.max_transfer_amount ? parseFloat(data.max_transfer_amount) : 50000.00;
-    this.auto_approve_small_transfers = data.auto_approve_small_transfers || 0;
-    this.small_transfer_threshold = data.small_transfer_threshold ? parseFloat(data.small_transfer_threshold) : 1000.00;
-    
-    // Backward compatibility properties (camelCase versions)
-    const settings = this.settings;
-    
-    this.allowWarehouseTransfers = this.allow_warehouse_transfers === 1 || settings.allowWarehouseTransfers || false;
-    this.allowWarehouseToBranchTransfers = this.allow_warehouse_to_branch_transfers === 1 || settings.allowWarehouseToBranchTransfers || false;
-    this.allowWarehouseToWarehouseTransfers = this.allow_warehouse_to_warehouse_transfers === 1 || settings.allowWarehouseToWarehouseTransfers || false;
-    this.requireApprovalForWarehouseTransfers = this.require_approval_for_warehouse_transfers === 1 || settings.requireApprovalForWarehouseTransfers !== false;
-    this.maxTransferAmount = this.max_transfer_amount;
-    this.autoApproveSmallTransfers = this.auto_approve_small_transfers === 1 || settings.autoApproveSmallTransfers || false;
-    this.smallTransferThreshold = this.small_transfer_threshold;
-    
+    this.max_transfer_amount        = data.max_transfer_amount        ? parseFloat(data.max_transfer_amount)        : 50000.00;
+    this.auto_approve_small_transfers = data.auto_approve_small_transfers !== undefined ? data.auto_approve_small_transfers : 0;
+    this.small_transfer_threshold   = data.small_transfer_threshold   ? parseFloat(data.small_transfer_threshold)   : 1000.00;
+
+    // ==================== BACKWARD COMPAT CAMELCASE ====================
+    this.allowWarehouseTransfers              = this.allow_warehouse_transfers === 1;
+    this.allowWarehouseToBranchTransfers      = this.allow_warehouse_to_branch_transfers === 1;
+    this.allowWarehouseToWarehouseTransfers   = this.allow_warehouse_to_warehouse_transfers === 1;
+    this.requireApprovalForWarehouseTransfers = this.require_approval_for_warehouse_transfers === 1;
+    this.maxTransferAmount                    = this.max_transfer_amount;
+    this.autoApproveSmallTransfers            = this.auto_approve_small_transfers === 1;
+    this.smallTransferThreshold               = this.small_transfer_threshold;
+
     this.createdBy = data.created_by;
     this.updatedBy = data.updated_by;
     this.createdAt = data.created_at;
@@ -78,99 +76,55 @@ class Warehouse {
 
   // Static method to create a new warehouse
   static async create(warehouseData) {
-    const { 
-      name, 
-      code, 
-      location, 
-      branch_id, 
+    const {
+      name,
+      code,
+      location,
+      branch_id,
       capacity = null,
       stock = null,
       manager = 'Not Assigned',
       phone,
       status = 'active',
       created_by,
-      settings = {} 
+      settings = {}
     } = warehouseData;
-    
-    // Set default values for all columns
-    const defaultValues = {
-      allow_warehouse_inventory_edit: 0,
-      allow_warehouse_returns: 0,
-      allow_warehouse_companies: 0,
-      allow_warehouse_direct_sales: 0,
-      allow_warehouse_ledger_edit: 0,
-      require_approval_for_transfers: 1,
-      auto_stock_alerts: 0,
-      allow_warehouse_company_crud: 0,
-      
-      // Company permissions
-      allow_company_create: 0,
-      allow_company_edit: 0,
-      allow_company_delete: 0,
-      
-      // Retailer permissions
-      allow_retailer_create: 0,
-      allow_retailer_edit: 0,
-      allow_retailer_delete: 0,
-      
-      // Transfer settings
-      allow_warehouse_transfers: 0,
-      allow_warehouse_to_branch_transfers: 0,
-      allow_warehouse_to_warehouse_transfers: 0,
-      require_approval_for_warehouse_transfers: 1,
-      max_transfer_amount: 50000.00,
-      auto_approve_small_transfers: 0,
-      small_transfer_threshold: 1000.00
-    };
-    
+
     const [result] = await pool.execute(
       `INSERT INTO warehouses (
         name, code, location, branch_id, capacity, stock, manager, phone, status, created_by, settings,
-        allow_warehouse_inventory_edit, allow_warehouse_returns, allow_warehouse_companies,
-        allow_warehouse_direct_sales, allow_warehouse_ledger_edit, require_approval_for_transfers,
-        auto_stock_alerts, allow_warehouse_company_crud,
+        allow_warehouse_inventory_add, allow_warehouse_inventory_edit,
+        allow_warehouse_returns, allow_warehouse_companies,
+        allow_warehouse_direct_sales, allow_warehouse_ledger_edit,
+        require_approval_for_transfers, auto_stock_alerts, allow_warehouse_company_crud,
         allow_company_create, allow_company_edit, allow_company_delete,
         allow_retailer_create, allow_retailer_edit, allow_retailer_delete,
-        allow_warehouse_transfers, allow_warehouse_to_branch_transfers, allow_warehouse_to_warehouse_transfers,
-        require_approval_for_warehouse_transfers, max_transfer_amount, auto_approve_small_transfers,
-        small_transfer_threshold
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        allow_retailer_customer_edit,
+        allow_warehouse_transfers, allow_warehouse_to_branch_transfers,
+        allow_warehouse_to_warehouse_transfers, require_approval_for_warehouse_transfers,
+        max_transfer_amount, auto_approve_small_transfers, small_transfer_threshold
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        name, code, location, branch_id, capacity, stock, manager, phone || null, status, created_by, JSON.stringify(settings),
-        defaultValues.allow_warehouse_inventory_edit,
-        defaultValues.allow_warehouse_returns,
-        defaultValues.allow_warehouse_companies,
-        defaultValues.allow_warehouse_direct_sales,
-        defaultValues.allow_warehouse_ledger_edit,
-        defaultValues.require_approval_for_transfers,
-        defaultValues.auto_stock_alerts,
-        defaultValues.allow_warehouse_company_crud,
-        defaultValues.allow_company_create,
-        defaultValues.allow_company_edit,
-        defaultValues.allow_company_delete,
-        defaultValues.allow_retailer_create,
-        defaultValues.allow_retailer_edit,
-        defaultValues.allow_retailer_delete,
-        defaultValues.allow_warehouse_transfers,
-        defaultValues.allow_warehouse_to_branch_transfers,
-        defaultValues.allow_warehouse_to_warehouse_transfers,
-        defaultValues.require_approval_for_warehouse_transfers,
-        defaultValues.max_transfer_amount,
-        defaultValues.auto_approve_small_transfers,
-        defaultValues.small_transfer_threshold
+        name, code, location, branch_id, capacity, stock, manager, phone || null,
+        status, created_by, JSON.stringify(settings),
+        0, 0, // allow_warehouse_inventory_add, allow_warehouse_inventory_edit
+        0, 0, // allow_warehouse_returns, allow_warehouse_companies
+        0, 0, // allow_warehouse_direct_sales, allow_warehouse_ledger_edit
+        1, 0, 0, // require_approval_for_transfers, auto_stock_alerts, allow_warehouse_company_crud
+        0, 0, 0, // allow_company_create, allow_company_edit, allow_company_delete
+        0, 0, 0, // allow_retailer_create, allow_retailer_edit, allow_retailer_delete
+        0,       // allow_retailer_customer_edit
+        0, 0, 0, // allow_warehouse_transfers, allow_warehouse_to_branch_transfers, allow_warehouse_to_warehouse_transfers
+        1, 50000.00, 0, 1000.00 // require_approval_for_warehouse_transfers, max_transfer_amount, auto_approve_small_transfers, small_transfer_threshold
       ]
     );
-    
+
     return await Warehouse.findById(result.insertId);
   }
 
   // Static method to find warehouse by ID
   static async findById(id) {
-    const [rows] = await pool.execute(
-      'SELECT * FROM warehouses WHERE id = ?',
-      [id]
-    );
-    
+    const [rows] = await pool.execute('SELECT * FROM warehouses WHERE id = ?', [id]);
     if (rows.length === 0) return null;
     return new Warehouse(rows[0]);
   }
@@ -181,33 +135,16 @@ class Warehouse {
     const params = [];
     const conditionsArray = [];
 
-    if (conditions.code) {
-      conditionsArray.push('code = ?');
-      params.push(conditions.code);
-    }
-
-    if (conditions.name) {
-      conditionsArray.push('name = ?');
-      params.push(conditions.name);
-    }
-
-    if (conditions._id) {
-      conditionsArray.push('id = ?');
-      params.push(conditions._id);
-    }
-
-    if (conditions.id) {
-      conditionsArray.push('id = ?');
-      params.push(conditions.id);
-    }
+    if (conditions.code) { conditionsArray.push('code = ?'); params.push(conditions.code); }
+    if (conditions.name) { conditionsArray.push('name = ?'); params.push(conditions.name); }
+    if (conditions._id) { conditionsArray.push('id = ?'); params.push(conditions._id); }
+    if (conditions.id)  { conditionsArray.push('id = ?'); params.push(conditions.id); }
 
     if (conditionsArray.length === 0) return null;
 
-    query += conditionsArray.join(' AND ');
-    query += ' LIMIT 1';
+    query += conditionsArray.join(' AND ') + ' LIMIT 1';
 
     const [rows] = await pool.execute(query, params);
-    
     if (rows.length === 0) return null;
     return new Warehouse(rows[0]);
   }
@@ -215,13 +152,13 @@ class Warehouse {
   // Instance method to save warehouse
   async save() {
     if (this.id) {
-      // Update existing warehouse with all columns
       await pool.execute(
-        `UPDATE warehouses SET 
-          name = ?, 
-          code = ?, 
-          location = ?, 
+        `UPDATE warehouses SET
+          name = ?,
+          code = ?,
+          location = ?,
           settings = ?,
+          allow_warehouse_inventory_add = ?,
           allow_warehouse_inventory_edit = ?,
           allow_warehouse_returns = ?,
           allow_warehouse_companies = ?,
@@ -236,6 +173,7 @@ class Warehouse {
           allow_retailer_create = ?,
           allow_retailer_edit = ?,
           allow_retailer_delete = ?,
+          allow_retailer_customer_edit = ?,
           allow_warehouse_transfers = ?,
           allow_warehouse_to_branch_transfers = ?,
           allow_warehouse_to_warehouse_transfers = ?,
@@ -244,76 +182,78 @@ class Warehouse {
           auto_approve_small_transfers = ?,
           small_transfer_threshold = ?,
           updated_at = NOW()
-         WHERE id = ?`,
+        WHERE id = ?`,
         [
-          this.name, 
-          this.code, 
-          this.location, 
+          this.name,
+          this.code,
+          this.location,
           JSON.stringify(this.settings),
-          this.allow_warehouse_inventory_edit,
-          this.allow_warehouse_returns,
-          this.allow_warehouse_companies,
-          this.allow_warehouse_direct_sales,
-          this.allow_warehouse_ledger_edit,
-          this.require_approval_for_transfers,
-          this.auto_stock_alerts,
-          this.allow_warehouse_company_crud,
-          this.allow_company_create,
-          this.allow_company_edit,
-          this.allow_company_delete,
-          this.allow_retailer_create,
-          this.allow_retailer_edit,
-          this.allow_retailer_delete,
-          this.allow_warehouse_transfers,
-          this.allow_warehouse_to_branch_transfers,
-          this.allow_warehouse_to_warehouse_transfers,
-          this.require_approval_for_warehouse_transfers,
-          this.max_transfer_amount,
-          this.auto_approve_small_transfers,
-          this.small_transfer_threshold,
+          this.allow_warehouse_inventory_add  || 0,
+          this.allow_warehouse_inventory_edit || 0,
+          this.allow_warehouse_returns        || 0,
+          this.allow_warehouse_companies      || 0,
+          this.allow_warehouse_direct_sales   || 0,
+          this.allow_warehouse_ledger_edit    || 0,
+          this.require_approval_for_transfers !== undefined ? this.require_approval_for_transfers : 1,
+          this.auto_stock_alerts              || 0,
+          this.allow_warehouse_company_crud   || 0,
+          this.allow_company_create           || 0,
+          this.allow_company_edit             || 0,
+          this.allow_company_delete           || 0,
+          this.allow_retailer_create          || 0,
+          this.allow_retailer_edit            || 0,
+          this.allow_retailer_delete          || 0,
+          this.allow_retailer_customer_edit   || 0,
+          this.allow_warehouse_transfers              || 0,
+          this.allow_warehouse_to_branch_transfers    || 0,
+          this.allow_warehouse_to_warehouse_transfers || 0,
+          this.require_approval_for_warehouse_transfers !== undefined ? this.require_approval_for_warehouse_transfers : 1,
+          this.max_transfer_amount          || 50000.00,
+          this.auto_approve_small_transfers || 0,
+          this.small_transfer_threshold     || 1000.00,
           this.id
         ]
       );
     } else {
-      // Create new warehouse (similar to create method)
       const [result] = await pool.execute(
         `INSERT INTO warehouses (
           name, code, location, settings,
-          allow_warehouse_inventory_edit, allow_warehouse_returns, allow_warehouse_companies,
-          allow_warehouse_direct_sales, allow_warehouse_ledger_edit, require_approval_for_transfers,
-          auto_stock_alerts, allow_warehouse_company_crud,
+          allow_warehouse_inventory_add, allow_warehouse_inventory_edit,
+          allow_warehouse_returns, allow_warehouse_companies,
+          allow_warehouse_direct_sales, allow_warehouse_ledger_edit,
+          require_approval_for_transfers, auto_stock_alerts, allow_warehouse_company_crud,
           allow_company_create, allow_company_edit, allow_company_delete,
           allow_retailer_create, allow_retailer_edit, allow_retailer_delete,
-          allow_warehouse_transfers, allow_warehouse_to_branch_transfers, allow_warehouse_to_warehouse_transfers,
-          require_approval_for_warehouse_transfers, max_transfer_amount, auto_approve_small_transfers,
-          small_transfer_threshold
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          allow_retailer_customer_edit,
+          allow_warehouse_transfers, allow_warehouse_to_branch_transfers,
+          allow_warehouse_to_warehouse_transfers, require_approval_for_warehouse_transfers,
+          max_transfer_amount, auto_approve_small_transfers, small_transfer_threshold
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          this.name, 
-          this.code, 
-          this.location, 
-          JSON.stringify(this.settings),
+          this.name, this.code, this.location, JSON.stringify(this.settings),
+          this.allow_warehouse_inventory_add  || 0,
           this.allow_warehouse_inventory_edit || 0,
-          this.allow_warehouse_returns || 0,
-          this.allow_warehouse_companies || 0,
-          this.allow_warehouse_direct_sales || 0,
-          this.allow_warehouse_ledger_edit || 0,
+          this.allow_warehouse_returns        || 0,
+          this.allow_warehouse_companies      || 0,
+          this.allow_warehouse_direct_sales   || 0,
+          this.allow_warehouse_ledger_edit    || 0,
           this.require_approval_for_transfers !== undefined ? this.require_approval_for_transfers : 1,
-          this.auto_stock_alerts || 0,
+          this.auto_stock_alerts            || 0,
           this.allow_warehouse_company_crud || 0,
-          this.allow_company_create || 0,
-          this.allow_company_edit || 0,
-          this.allow_company_delete || 0,
-          this.allow_retailer_create || 0,
-          this.allow_retailer_edit || 0,
-          this.allow_retailer_delete || 0,
-          this.allow_warehouse_transfers || 0,
-          this.allow_warehouse_to_branch_transfers || 0,
+          this.allow_company_create         || 0,
+          this.allow_company_edit           || 0,
+          this.allow_company_delete         || 0,
+          this.allow_retailer_create        || 0,
+          this.allow_retailer_edit          || 0,
+          this.allow_retailer_delete        || 0,
+          this.allow_retailer_customer_edit || 0,
+          this.allow_warehouse_transfers              || 0,
+          this.allow_warehouse_to_branch_transfers    || 0,
           this.allow_warehouse_to_warehouse_transfers || 0,
           this.require_approval_for_warehouse_transfers !== undefined ? this.require_approval_for_warehouse_transfers : 1,
-          this.max_transfer_amount || 50000.00,
+          this.max_transfer_amount          || 50000.00,
           this.auto_approve_small_transfers || 0,
-          this.small_transfer_threshold || 1000.00
+          this.small_transfer_threshold     || 1000.00
         ]
       );
       this.id = result.insertId;
@@ -326,22 +266,10 @@ class Warehouse {
     let query = 'SELECT * FROM warehouses WHERE 1=1';
     const params = [];
 
-    if (conditions.name) {
-      query += ' AND name LIKE ?';
-      params.push(`%${conditions.name}%`);
-    }
+    if (conditions.name)     { query += ' AND name LIKE ?';     params.push(`%${conditions.name}%`); }
+    if (conditions.code)     { query += ' AND code LIKE ?';     params.push(`%${conditions.code}%`); }
+    if (conditions.location) { query += ' AND location LIKE ?'; params.push(`%${conditions.location}%`); }
 
-    if (conditions.code) {
-      query += ' AND code LIKE ?';
-      params.push(`%${conditions.code}%`);
-    }
-
-    if (conditions.location) {
-      query += ' AND location LIKE ?';
-      params.push(`%${conditions.location}%`);
-    }
-
-    // Add sorting
     if (options.sort) {
       const sortField = options.sort.replace(/^-/, '');
       const sortOrder = options.sort.startsWith('-') ? 'DESC' : 'ASC';
@@ -350,15 +278,10 @@ class Warehouse {
       query += ' ORDER BY created_at DESC';
     }
 
-    // Add pagination
     if (options.limit) {
       query += ' LIMIT ?';
       params.push(options.limit);
-      
-      if (options.skip) {
-        query += ' OFFSET ?';
-        params.push(options.skip);
-      }
+      if (options.skip) { query += ' OFFSET ?'; params.push(options.skip); }
     }
 
     const [rows] = await pool.execute(query, params);
@@ -370,20 +293,9 @@ class Warehouse {
     let query = 'SELECT COUNT(*) as count FROM warehouses WHERE 1=1';
     const params = [];
 
-    if (conditions.name) {
-      query += ' AND name LIKE ?';
-      params.push(`%${conditions.name}%`);
-    }
-
-    if (conditions.code) {
-      query += ' AND code LIKE ?';
-      params.push(`%${conditions.code}%`);
-    }
-
-    if (conditions.location) {
-      query += ' AND location LIKE ?';
-      params.push(`%${conditions.location}%`);
-    }
+    if (conditions.name)     { query += ' AND name LIKE ?';     params.push(`%${conditions.name}%`); }
+    if (conditions.code)     { query += ' AND code LIKE ?';     params.push(`%${conditions.code}%`); }
+    if (conditions.location) { query += ' AND location LIKE ?'; params.push(`%${conditions.location}%`); }
 
     const [rows] = await pool.execute(query, params);
     return rows[0].count;
@@ -391,67 +303,60 @@ class Warehouse {
 
   // Static method to update warehouse by ID
   static async update(id, updateData) {
-    // Convert camelCase to snake_case for database fields
     const dbUpdateData = {};
-    
-    if (updateData.name !== undefined) dbUpdateData.name = updateData.name;
-    if (updateData.code !== undefined) dbUpdateData.code = updateData.code;
-    if (updateData.location !== undefined) dbUpdateData.location = updateData.location;
-    if (updateData.branchId !== undefined) dbUpdateData.branch_id = updateData.branchId;
-    if (updateData.capacity !== undefined) dbUpdateData.capacity = updateData.capacity;
-    if (updateData.stock !== undefined) dbUpdateData.stock = updateData.stock;
-    if (updateData.phone !== undefined) dbUpdateData.phone = updateData.phone;
-    if (updateData.manager !== undefined) dbUpdateData.manager = updateData.manager;
-    if (updateData.status !== undefined) dbUpdateData.status = updateData.status;
-    
-    // Handle all permission columns
+
+    if (updateData.name      !== undefined) dbUpdateData.name      = updateData.name;
+    if (updateData.code      !== undefined) dbUpdateData.code      = updateData.code;
+    if (updateData.location  !== undefined) dbUpdateData.location  = updateData.location;
+    if (updateData.branchId  !== undefined) dbUpdateData.branch_id = updateData.branchId;
+    if (updateData.capacity  !== undefined) dbUpdateData.capacity  = updateData.capacity;
+    if (updateData.stock     !== undefined) dbUpdateData.stock     = updateData.stock;
+    if (updateData.phone     !== undefined) dbUpdateData.phone     = updateData.phone;
+    if (updateData.manager   !== undefined) dbUpdateData.manager   = updateData.manager;
+    if (updateData.status    !== undefined) dbUpdateData.status    = updateData.status;
+
     const permissionFields = [
-      'allow_warehouse_inventory_edit', 'allow_warehouse_returns', 'allow_warehouse_companies',
-      'allow_warehouse_direct_sales', 'allow_warehouse_ledger_edit', 'require_approval_for_transfers',
-      'auto_stock_alerts', 'allow_warehouse_company_crud',
+      'allow_warehouse_inventory_add', 'allow_warehouse_inventory_edit',
+      'allow_warehouse_returns', 'allow_warehouse_companies',
+      'allow_warehouse_direct_sales', 'allow_warehouse_ledger_edit',
+      'require_approval_for_transfers', 'auto_stock_alerts', 'allow_warehouse_company_crud',
       'allow_company_create', 'allow_company_edit', 'allow_company_delete',
       'allow_retailer_create', 'allow_retailer_edit', 'allow_retailer_delete',
-      'allow_warehouse_transfers', 'allow_warehouse_to_branch_transfers', 'allow_warehouse_to_warehouse_transfers',
-      'require_approval_for_warehouse_transfers', 'max_transfer_amount', 'auto_approve_small_transfers',
-      'small_transfer_threshold'
+      'allow_retailer_customer_edit',
+      'allow_warehouse_transfers', 'allow_warehouse_to_branch_transfers',
+      'allow_warehouse_to_warehouse_transfers', 'require_approval_for_warehouse_transfers',
+      'max_transfer_amount', 'auto_approve_small_transfers', 'small_transfer_threshold'
     ];
-    
+
     permissionFields.forEach(field => {
-      if (updateData[field] !== undefined) {
-        dbUpdateData[field] = updateData[field];
-      }
+      if (updateData[field] !== undefined) dbUpdateData[field] = updateData[field];
     });
-    
+
     if (updateData.settings !== undefined) {
-      dbUpdateData.settings = typeof updateData.settings === 'string' ? updateData.settings : JSON.stringify(updateData.settings);
+      dbUpdateData.settings = typeof updateData.settings === 'string'
+        ? updateData.settings
+        : JSON.stringify(updateData.settings);
     }
-    
+
     if (updateData.updatedBy !== undefined) dbUpdateData.updated_by = updateData.updatedBy;
-    
-    // Add updated_at timestamp
     dbUpdateData.updated_at = new Date();
-    
+
     const setClauses = [];
     const params = [];
-    
+
     Object.keys(dbUpdateData).forEach(key => {
       setClauses.push(`${key} = ?`);
       params.push(dbUpdateData[key]);
     });
-    
-    if (setClauses.length === 0) {
-      throw new Error('No fields to update');
-    }
-    
+
+    if (setClauses.length === 0) throw new Error('No fields to update');
+
     const query = `UPDATE warehouses SET ${setClauses.join(', ')} WHERE id = ?`;
     params.push(id);
-    
+
     const [result] = await pool.execute(query, params);
-    
-    if (result.affectedRows === 0) {
-      throw new Error('Warehouse not found');
-    }
-    
+    if (result.affectedRows === 0) throw new Error('Warehouse not found');
+
     return await Warehouse.findById(id);
   }
 
@@ -462,30 +367,17 @@ class Warehouse {
     const setClauses = [];
 
     Object.keys(updateData).forEach(key => {
-      if (key !== 'id') {
-        setClauses.push(`${key} = ?`);
-        params.push(updateData[key]);
-      }
+      if (key !== 'id') { setClauses.push(`${key} = ?`); params.push(updateData[key]); }
     });
 
     if (setClauses.length === 0) return { modifiedCount: 0 };
 
-    query += setClauses.join(', ');
-    query += ' WHERE ';
+    query += setClauses.join(', ') + ' WHERE ';
 
     const whereClauses = [];
-    if (conditions._id) {
-      whereClauses.push('id = ?');
-      params.push(conditions._id);
-    }
-    if (conditions.id) {
-      whereClauses.push('id = ?');
-      params.push(conditions.id);
-    }
-    if (conditions.code) {
-      whereClauses.push('code = ?');
-      params.push(conditions.code);
-    }
+    if (conditions._id)  { whereClauses.push('id = ?');   params.push(conditions._id); }
+    if (conditions.id)   { whereClauses.push('id = ?');   params.push(conditions.id); }
+    if (conditions.code) { whereClauses.push('code = ?'); params.push(conditions.code); }
 
     if (whereClauses.length === 0) return { modifiedCount: 0 };
 
@@ -498,11 +390,7 @@ class Warehouse {
   // Static method to delete warehouse by ID
   static async delete(id) {
     const [result] = await pool.execute('DELETE FROM warehouses WHERE id = ?', [id]);
-    
-    if (result.affectedRows === 0) {
-      throw new Error('Warehouse not found');
-    }
-    
+    if (result.affectedRows === 0) throw new Error('Warehouse not found');
     return { deletedCount: result.affectedRows };
   }
 
@@ -512,18 +400,9 @@ class Warehouse {
     const params = [];
     const whereClauses = [];
 
-    if (conditions._id) {
-      whereClauses.push('id = ?');
-      params.push(conditions._id);
-    }
-    if (conditions.id) {
-      whereClauses.push('id = ?');
-      params.push(conditions.id);
-    }
-    if (conditions.code) {
-      whereClauses.push('code = ?');
-      params.push(conditions.code);
-    }
+    if (conditions._id)  { whereClauses.push('id = ?');   params.push(conditions._id); }
+    if (conditions.id)   { whereClauses.push('id = ?');   params.push(conditions.id); }
+    if (conditions.code) { whereClauses.push('code = ?'); params.push(conditions.code); }
 
     if (whereClauses.length === 0) return { deletedCount: 0 };
 
@@ -535,11 +414,7 @@ class Warehouse {
 
   // Static method to find warehouse by code
   static async findByCode(code) {
-    const [rows] = await pool.execute(
-      'SELECT * FROM warehouses WHERE code = ?',
-      [code]
-    );
-    
+    const [rows] = await pool.execute('SELECT * FROM warehouses WHERE code = ?', [code]);
     if (rows.length === 0) return null;
     return new Warehouse(rows[0]);
   }
@@ -548,7 +423,7 @@ class Warehouse {
   getCompanyPermissions() {
     return {
       canCreate: this.allow_company_create === 1,
-      canEdit: this.allow_company_edit === 1,
+      canEdit:   this.allow_company_edit   === 1,
       canDelete: this.allow_company_delete === 1
     };
   }
@@ -557,7 +432,7 @@ class Warehouse {
   getRetailerPermissions() {
     return {
       canCreate: this.allow_retailer_create === 1,
-      canEdit: this.allow_retailer_edit === 1,
+      canEdit:   this.allow_retailer_edit   === 1,
       canDelete: this.allow_retailer_delete === 1
     };
   }

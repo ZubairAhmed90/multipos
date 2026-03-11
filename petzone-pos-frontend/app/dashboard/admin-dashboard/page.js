@@ -139,7 +139,7 @@ const AdminDashboardPage = () => {
       alert('Please select a branch first')
       return
     }
-    router.push(`/dashboard/pos/terminal?role=cashier&scope=branch&id=${selectedScope}`)
+    window.open(`/pos/terminal?role=cashier&scope=branch&id=${selectedScope}`, '_blank')
   }
 
   const handleWarehouseBillingAccess = () => {
@@ -147,7 +147,7 @@ const AdminDashboardPage = () => {
       alert('Please select a warehouse first')
       return
     }
-    router.push(`/dashboard/warehouse-billing?role=warehouse_keeper&scope=warehouse&id=${selectedScope}`)
+    window.open(`/warehouse-billing?role=warehouse_keeper&scope=warehouse&id=${selectedScope}`, '_blank')
   }
 
   const handleInventoryAccess = () => {

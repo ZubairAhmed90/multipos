@@ -238,7 +238,7 @@ class PurchaseOrder {
     }
 
     if (conditions.search) {
-      query += ' AND (po.order_number LIKE ? OR c.name LIKE ?)';
+      query += ' AND (po.order_number LIKE ? OR EXISTS(SELECT 1 FROM companies c WHERE c.id = po.supplier_id AND c.name LIKE ?))';
       params.push(`%${conditions.search}%`, `%${conditions.search}%`);
     }
 

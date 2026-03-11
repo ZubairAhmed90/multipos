@@ -3,7 +3,7 @@ const WarehouseSale = require('../models/WarehouseSale');
 const Retailer = require('../models/Retailer');
 const InventoryItem = require('../models/InventoryItem');
 const { pool } = require('../config/database');
-
+const InvoiceNumberService = require('../services/invoiceNumberService');
 // @desc    Create warehouse sale to retailer
 // @route   POST /api/warehouse-sales
 // @access  Private (Warehouse Keeper, Admin)
@@ -53,7 +53,8 @@ const createWarehouseSale = async (req, res, next) => {
       customerInfo,
       isRefund = false,
       refundType = null, // 'FULL_REFUND', 'PARTIAL_REFUND', 'CREDIT_NOTE'
-      refundAmount = 0
+      refundAmount = 0,
+      saleDate = null
     } = req.body;
 
     // ========== INPUT VALIDATIONS ==========
@@ -421,12 +422,12 @@ const createWarehouseSale = async (req, res, next) => {
       });
     }
 
-    if (providedCreditAmount !== null && providedCreditAmount < 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Credit amount cannot be negative'
-      });
-    }
+    // if (providedCreditAmount !== null && providedCreditAmount < 0) {
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: 'Credit amount cannot be negative'
+    //   });
+    // }
 
     const isBalancePayment = paymentTypeValue === 'BALANCE_PAYMENT';
     const isFullyCredit = normalizedPaymentMethod === 'FULLY_CREDIT' || paymentTypeValue === 'FULLY_CREDIT';
@@ -491,14 +492,15 @@ const createWarehouseSale = async (req, res, next) => {
       }
     }
 
-    // Validate payment covers total
-    const coverageSum = parseFloat((finalPaymentAmount + finalCreditAmount).toFixed(2));
-    if (Math.abs(coverageSum - totalForValidation) > 0.01) {
-      return res.status(400).json({
-        success: false,
-        message: `Payment amount (${finalPaymentAmount}) and credit amount (${finalCreditAmount}) must equal total amount (${totalForValidation}). Difference: ${Math.abs(coverageSum - totalForValidation)}`
-      });
-    }
+   
+// Validate payment covers total
+const coverageSum = parseFloat((finalPaymentAmount + finalCreditAmount).toFixed(2));
+if (Math.abs(coverageSum - totalForValidation) > 0.01) {
+  return res.status(400).json({
+    success: false,
+    message: `Payment amount (${finalPaymentAmount}) and credit amount (${finalCreditAmount}) must equal total amount (${totalForValidation}). Difference: ${Math.abs(coverageSum - totalForValidation)}`
+  });
+}
 
     // Validate credit amount against retailer's credit limit (if applicable)
  if (finalCreditAmount > 0 && retailer.creditLimit && retailer.creditLimit > 0) {
@@ -574,6 +576,7 @@ const createWarehouseSale = async (req, res, next) => {
       paymentAmount: finalPaymentAmount,
       creditAmount: finalCreditAmount,
       notes,
+      saleDate: saleDate || null,
       outstandingPayments,
       customerInfo: finalCustomerInfo,
       paymentTerms,
@@ -601,8 +604,103 @@ const createWarehouseSale = async (req, res, next) => {
       previousBalance: currentCreditBalance
     });
 
-    // ========== CREATE SALE AND UPDATE BALANCE ==========
-    const warehouseSale = await WarehouseSale.create(
+// ========== HANDLE OUTSTANDING SETTLEMENT BEFORE CREATING SALE ==========
+const outstandingAmount = normalizedTotalWithOutstanding - normalizedBillAmount;
+
+if (outstandingAmount > 0.01 && finalCustomerInfo.name && finalCustomerInfo.phone && paymentTypeValue !== 'BALANCE_PAYMENT') {
+  try {
+    // Get warehouse scope name FIRST
+    const [whRows] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [saleData.scopeWarehouseId]);
+    const whScopeName = whRows[0]?.name || String(saleData.scopeWarehouseId);
+
+    // Get customer's latest running balance
+    const [latestBalanceRows] = await pool.execute(`
+      SELECT running_balance FROM sales
+      WHERE (
+        LOWER(TRIM(customer_name)) = LOWER(TRIM(?))
+        OR customer_phone = ?
+        OR LOWER(TRIM(JSON_EXTRACT(customer_info, '$.name'))) = LOWER(TRIM(?))
+        OR JSON_EXTRACT(customer_info, '$.phone') = ?
+      )
+      AND scope_type = 'WAREHOUSE'
+      AND scope_id = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `, [
+      finalCustomerInfo.name,
+      finalCustomerInfo.phone,
+      finalCustomerInfo.name,
+      finalCustomerInfo.phone,
+      whScopeName
+    ]);
+
+    const balanceBeforeSettlement = latestBalanceRows.length > 0
+      ? parseFloat(latestBalanceRows[0].running_balance) || 0
+      : 0;
+
+    const settlementAmount = Math.min(outstandingAmount, balanceBeforeSettlement);
+
+    if (settlementAmount > 0.01) {
+      const settlementOldBalance = balanceBeforeSettlement;
+      const settlementNewBalance = settlementOldBalance - settlementAmount;
+      const settlementStatus = Math.abs(settlementNewBalance) <= 0.01 ? 'COMPLETED' : 'PARTIAL';
+
+      let settlementInvoiceNo;
+      try {
+        settlementInvoiceNo = await InvoiceNumberService.generateInvoiceNumber('WAREHOUSE', saleData.scopeWarehouseId);
+      } catch (e) {
+        settlementInvoiceNo = `SETTLE-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+      }
+
+      await pool.execute(`
+        INSERT INTO sales (
+          invoice_no, scope_type, scope_id, user_id, subtotal, tax, discount, total,
+          payment_method, payment_type, payment_status, customer_info, customer_name,
+          customer_phone, payment_amount, credit_amount, old_balance, running_balance,
+          credit_status, notes, status, created_at, updated_at
+        ) VALUES (?, 'WAREHOUSE', ?, ?, 0, 0, 0, ?, ?, 'OUTSTANDING_SETTLEMENT', ?, ?, ?, ?, ?, 0, ?, ?, 'NONE', ?, 'COMPLETED', NOW(), NOW())
+      `, [
+        settlementInvoiceNo,
+        whScopeName,
+        req.user.id,
+        settlementAmount,
+        normalizedPaymentMethod,
+        settlementStatus,
+        JSON.stringify({ name: finalCustomerInfo.name, phone: finalCustomerInfo.phone }),
+        finalCustomerInfo.name,
+        finalCustomerInfo.phone,
+        settlementAmount,
+        settlementOldBalance,
+        settlementNewBalance,
+        `Outstanding settlement before sale - retailer ${saleData.retailerId}`
+      ]);
+
+      console.log('[WarehouseSaleController] ✅ Settlement created:', {
+        settlementInvoiceNo,
+        whScopeName,
+        settlementAmount,
+        settlementOldBalance,
+        settlementNewBalance
+      });
+
+      // ✅ Pass post-settlement balance to model so it doesn't re-query
+      saleData.previousRunningBalance = settlementNewBalance;
+
+    } else {
+      console.log('[WarehouseSaleController] No settlement needed:', {
+        outstandingAmount,
+        balanceBeforeSettlement,
+        settlementAmount
+      });
+    }
+  } catch (settlementError) {
+    console.error('[WarehouseSaleController] ❌ Settlement error:', settlementError);
+    // Don't fail the sale if settlement fails
+  }
+}
+
+// ========== CREATE SALE AND UPDATE BALANCE ==========
+const warehouseSale = await WarehouseSale.create(
       saleData,
       finalCustomerInfo.name,
       saleData.paymentMethod,

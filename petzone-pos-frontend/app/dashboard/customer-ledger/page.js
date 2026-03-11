@@ -34,7 +34,7 @@ import {
   Menu,
   ListItemIcon
 } from '@mui/material'
-import { 
+import {
   Search as SearchIcon,
   Download as DownloadIcon,
   Visibility as ViewIcon,
@@ -43,7 +43,8 @@ import {
   ArrowUpward as ArrowUpIcon,
   ArrowDownward as ArrowDownIcon,
   Receipt as ReceiptIcon,
-  GetApp as ExportIcon
+  GetApp as ExportIcon,
+  Edit as EditIcon
 } from '@mui/icons-material'
 import withAuth from '../../../components/auth/withAuth'
 import DashboardLayout from '../../../components/layout/DashboardLayout'
@@ -156,12 +157,21 @@ function CustomerLedgerPage() {
   
   // Export dropdown state
   const [exportAnchorEl, setExportAnchorEl] = useState(null)
+
+  // Edit customer dialog state
+  const [editDialogOpen, setEditDialogOpen] = useState(false)
+  const [editingCustomer, setEditingCustomer] = useState(null)
+  const [editForm, setEditForm] = useState({ name: '', phone: '' })
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState(null)
+  const [canEditCustomer, setCanEditCustomer] = useState(false)
   
   const getCustomerIdentifier = (customer) => {
     if (!customer) return ''
-    if (customer.id) return customer.id
-    if (customer.customer_name) return customer.customer_name
+    if (customer.isAllCustomers) return '__all__'
+    // prefer phone when available; names are non‑unique
     if (customer.customer_phone) return customer.customer_phone
+    if (customer.customer_name) return customer.customer_name
     return ''
   }
 
@@ -192,11 +202,37 @@ function CustomerLedgerPage() {
     loadCustomers()
   }, [loadCustomers])
 
-  const loadCustomerLedger = useCallback((customerId) => {
+  // Check if current user can edit customer info
+  useEffect(() => {
+    const checkEditPermission = async () => {
+      if (!user) return
+      if (user.role === 'ADMIN') {
+        setCanEditCustomer(true)
+        return
+      }
+      try {
+        if (user.role === 'CASHIER' && user.branchId) {
+          const res = await api.get(`/branches/${user.branchId}/settings`)
+          setCanEditCustomer(!!res.data?.data?.settings?.allowCashierCustomerEdit)
+        } else if (user.role === 'WAREHOUSE_KEEPER' && user.warehouseId) {
+          const res = await api.get(`/warehouses/${user.warehouseId}/settings`)
+          setCanEditCustomer(!!res.data?.data?.settings?.allowRetailerCustomerEdit)
+        }
+      } catch {
+        setCanEditCustomer(false)
+      }
+    }
+    checkEditPermission()
+  }, [user?.role, user?.branchId, user?.warehouseId])
+
+  const loadCustomerLedger = useCallback((customerId, extraParams = {}) => {
     const params = {
       ...ledgerFilters,
       limit: 50,
-      offset: (ledgerPage - 1) * 50
+      offset: (ledgerPage - 1) * 50,
+      // forward explicit filter fields if provided
+      ...(extraParams.customerName ? { filterName: extraParams.customerName } : {}),
+      ...(extraParams.customerPhone ? { filterPhone: extraParams.customerPhone } : {})
     }
     dispatch(fetchCustomerLedger({ customerId, params }))
   }, [dispatch, ledgerFilters, ledgerPage])
@@ -215,7 +251,10 @@ function CustomerLedgerPage() {
     setSelectedCustomer(enrichedCustomer)
     setLedgerDialogOpen(true)
     setLedgerPage(1)
-    loadCustomerLedger(identifier)
+    loadCustomerLedger(identifier, {
+      customerName: customer.customer_name,
+      customerPhone: customer.customer_phone
+    })
   }
 
   const handleViewAllLedger = () => {
@@ -270,6 +309,38 @@ function CustomerLedgerPage() {
       params: { ...ledgerFilters, format, detailed: detailed.toString() }
     }))
     handleExportClose()
+  }
+
+  // Edit customer handlers
+  const handleOpenEditDialog = (customer) => {
+    setEditingCustomer(customer)
+    setEditForm({
+      name: customer.customer_name || '',
+      phone: customer.customer_phone || ''
+    })
+    setEditError(null)
+    setEditDialogOpen(true)
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editingCustomer) return
+    const customerId = getCustomerIdentifier(editingCustomer)
+    if (!customerId) return
+
+    setEditSaving(true)
+    setEditError(null)
+    try {
+      await api.put(`/customer-ledger/${encodeURIComponent(customerId)}/update-info`, {
+        name: editForm.name,
+        phone: editForm.phone
+      })
+      setEditDialogOpen(false)
+      loadCustomers()
+    } catch (err) {
+      setEditError(err?.response?.data?.message || 'Failed to update customer info')
+    } finally {
+      setEditSaving(false)
+    }
   }
 
   // Manual refresh function
@@ -464,10 +535,13 @@ const calculateSummaryTotals = () => {
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
-    const date = new Date(dateString);
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const year = date.getFullYear();
+    // Parse the date part directly from the string to avoid UTC→local timezone shift.
+    // new Date() would convert UTC to local time and potentially show tomorrow's date
+    // for sales made in the evening in timezones ahead of UTC (e.g. UTC+5).
+    const datePart = String(dateString).substring(0, 10); // "2026-03-04"
+    const parts = datePart.split('-');
+    if (parts.length !== 3) return 'N/A';
+    const [year, month, day] = parts;
     return `${day}/${month}/${year}`;
   }
 
@@ -1160,6 +1234,17 @@ const calculateSummaryTotals = () => {
                                   <DownloadIcon />
                                 </IconButton>
                               </Tooltip>
+                              {canEditCustomer && (
+                                <Tooltip title="Edit Customer Info">
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => handleOpenEditDialog(customer)}
+                                    color="warning"
+                                  >
+                                    <EditIcon />
+                                  </IconButton>
+                                </Tooltip>
+                              )}
                             </TableCell>
                           </TableRow>
                         )) : (
@@ -1397,6 +1482,42 @@ const calculateSummaryTotals = () => {
               Detailed Excel
             </MenuItem>
           </Menu>
+          {/* Edit Customer Dialog */}
+          <Dialog open={editDialogOpen} onClose={() => setEditDialogOpen(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>Edit Customer Info</DialogTitle>
+            <DialogContent>
+              {editError && (
+                <Alert severity="error" sx={{ mb: 2 }}>
+                  {editError}
+                </Alert>
+              )}
+              <Box sx={{ pt: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <TextField
+                  label="Customer Name"
+                  value={editForm.name}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, name: e.target.value }))}
+                  fullWidth
+                />
+                <TextField
+                  label="Phone Number"
+                  value={editForm.phone}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, phone: e.target.value }))}
+                  fullWidth
+                />
+              </Box>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setEditDialogOpen(false)}>Cancel</Button>
+              <Button
+                variant="contained"
+                onClick={handleSaveEdit}
+                disabled={editSaving}
+              >
+                {editSaving ? <CircularProgress size={20} /> : 'Save'}
+              </Button>
+            </DialogActions>
+          </Dialog>
+
         </Box>
       </DashboardLayout>
     </RouteGuard>

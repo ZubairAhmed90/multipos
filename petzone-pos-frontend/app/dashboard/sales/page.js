@@ -4,7 +4,7 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import api from '../../../utils/axios'
 import { Box, Typography, Chip, Button, Grid, Card, CardContent, FormControl, InputLabel, Select, MenuItem, Paper, Drawer, List, ListItem, ListItemText, Divider, IconButton, Badge, TextField, Menu, ListItemIcon, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Alert, CircularProgress, Tooltip, InputAdornment, Pagination, Dialog, DialogTitle, DialogContent, Accordion, AccordionSummary, AccordionDetails } from '@mui/material'
-import { Close as CloseIcon, FilterList as FilterIcon, GetApp as ExportIcon, FileDownload as DownloadIcon, Delete as DeleteIcon, Search as SearchIcon, Clear as ClearIcon, Visibility as ViewIcon, Receipt as ReceiptIcon, Refresh as RefreshIcon, ExpandMore as ExpandMoreIcon } from '@mui/icons-material'
+import { Close as CloseIcon, FilterList as FilterIcon, GetApp as ExportIcon, FileDownload as DownloadIcon, Delete as DeleteIcon, Search as SearchIcon, Clear as ClearIcon, Visibility as ViewIcon, Receipt as ReceiptIcon, Refresh as RefreshIcon, ExpandMore as ExpandMoreIcon, Print as PrintIcon } from '@mui/icons-material'
 import { DataGrid } from '@mui/x-data-grid'
 import { DatePicker } from '@mui/x-date-pickers/DatePicker'
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
@@ -25,6 +25,167 @@ import { fetchRetailers } from '../../store/slices/retailersSlice'
 import usePermissions from '../../../hooks/usePermissions'
 import pollingService from '../../../utils/pollingService'
 import EditableInvoiceForm from '../../../components/sales/EditableInvoiceForm'
+import PrintDialog from '../../../components/print/PrintDialog'
+
+// Read-only invoice view component
+const ReadOnlyInvoiceView = ({ open, onClose, sale }) => {
+  const [printData, setPrintData] = useState(null)
+  const [showPrintDialog, setShowPrintDialog] = useState(false)
+
+  useEffect(() => {
+    if (sale && open) {
+      // Prepare print data from sale
+      const items = sale.items || []
+      const subtotal = items.reduce((sum, item) => sum + parseFloat(item.total || 0), 0)
+      const tax = parseFloat(sale.tax || 0)
+      const total = subtotal + tax
+
+      setPrintData({
+        title: 'SALES RECEIPT',
+        receiptNumber: sale.invoice_no || sale.id,
+        date: new Date(sale.created_at).toLocaleDateString(),
+        time: new Date(sale.created_at).toLocaleTimeString(),
+        cashierName: sale.created_by || 'System',
+        customerName: sale.customer_name || 'Walk-in Customer',
+        companyName: 'PetZone',
+        companyAddress: '123 Pet Street, City, State',
+        companyPhone: '+1 (555) 123-4567',
+        items: items.map(item => ({
+          name: item.itemName || item.name,
+          quantity: item.quantity,
+          price: parseFloat(item.unitPrice || 0),
+          total: parseFloat(item.total || 0)
+        })),
+        subtotal: subtotal.toFixed(2),
+        tax: tax.toFixed(2),
+        total: total.toFixed(2),
+        paymentMethod: sale.paymentMethod || 'CASH'
+      })
+    }
+  }, [sale, open])
+
+  if (!sale) return null
+
+  const items = sale.items || []
+  const subtotal = items.reduce((sum, item) => sum + parseFloat(item.total || 0), 0)
+  const tax = parseFloat(sale.tax || 0)
+  const total = subtotal + tax
+
+  return (
+    <>
+      <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="h6">Sale Invoice - {sale.invoice_no}</Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button
+                variant="outlined"
+                startIcon={<PrintIcon />}
+                onClick={() => setShowPrintDialog(true)}
+                size="small"
+              >
+                Print
+              </Button>
+              <Button onClick={onClose} size="small">Close</Button>
+            </Box>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          {/* Header Info */}
+          <Paper sx={{ p: 2, mb: 2, bgcolor: 'grey.50' }}>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={6}>
+                <Typography variant="subtitle2" color="text.secondary">Invoice #</Typography>
+                <Typography variant="h6" fontWeight="bold">{sale.invoice_no}</Typography>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Typography variant="subtitle2" color="text.secondary">Date & Time</Typography>
+                <Typography variant="body1">
+                  {new Date(sale.created_at).toLocaleDateString()} {new Date(sale.created_at).toLocaleTimeString()}
+                </Typography>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Typography variant="subtitle2" color="text.secondary">Customer</Typography>
+                <Typography variant="body1">{sale.customer_name || 'Walk-in Customer'}</Typography>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Typography variant="subtitle2" color="text.secondary">Payment Method</Typography>
+                <Typography variant="body1">{sale.paymentMethod || 'CASH'}</Typography>
+              </Grid>
+            </Grid>
+          </Paper>
+
+          {/* Items Table */}
+          <TableContainer component={Paper} sx={{ mb: 2 }}>
+            <Table>
+              <TableHead>
+                <TableRow sx={{ bgcolor: 'primary.main' }}>
+                  <TableCell sx={{ color: 'white', fontWeight: 'bold' }}>Item</TableCell>
+                  <TableCell sx={{ color: 'white', fontWeight: 'bold' }} align="center">Qty</TableCell>
+                  <TableCell sx={{ color: 'white', fontWeight: 'bold' }} align="right">Unit Price</TableCell>
+                  <TableCell sx={{ color: 'white', fontWeight: 'bold' }} align="right">Total</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {items.map((item, index) => (
+                  <TableRow key={index}>
+                    <TableCell>
+                      <Box>
+                        <Typography variant="body2" fontWeight="medium">
+                          {item.itemName || item.name}
+                        </Typography>
+                        {item.sku && (
+                          <Typography variant="caption" color="text.secondary">
+                            SKU: {item.sku}
+                          </Typography>
+                        )}
+                      </Box>
+                    </TableCell>
+                    <TableCell align="center">{item.quantity}</TableCell>
+                    <TableCell align="right">${parseFloat(item.unitPrice || 0).toFixed(2)}</TableCell>
+                    <TableCell align="right">${parseFloat(item.total || 0).toFixed(2)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+
+          {/* Totals */}
+          <Paper sx={{ p: 2 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Box sx={{ width: 200 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography variant="body2">Subtotal:</Typography>
+                  <Typography variant="body2">${subtotal.toFixed(2)}</Typography>
+                </Box>
+                {tax > 0 && (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                    <Typography variant="body2">Tax:</Typography>
+                    <Typography variant="body2">${tax.toFixed(2)}</Typography>
+                  </Box>
+                )}
+                <Divider sx={{ my: 1 }} />
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="h6" fontWeight="bold">Total:</Typography>
+                  <Typography variant="h6" fontWeight="bold">${total.toFixed(2)}</Typography>
+                </Box>
+              </Box>
+            </Box>
+          </Paper>
+        </DialogContent>
+      </Dialog>
+
+      {showPrintDialog && printData && (
+        <PrintDialog
+          open={showPrintDialog}
+          onClose={() => setShowPrintDialog(false)}
+          printData={printData}
+          title="Print Sales Receipt"
+        />
+      )}
+    </>
+  )
+}
 
 
 // Table columns configuration
@@ -1065,7 +1226,7 @@ const returnsColumns = [
         baseScopeParams
       })
     }
-  }, [sales, totalItems, page, rowsPerPage, scopeTypeFilter, searchTerm, paymentMethodFilter, statusFilter, startDate, endDate, user, baseScopeParams, salesLoading, paginatedSales.length])
+  }, [sales, totalItems, page, rowsPerPage, scopeTypeFilter, searchTerm, paymentMethodFilter, statusFilter, startDate, endDate, user, baseScopeParams, salesLoading, paginatedSales.length, startIndex, endIndex, totalPages])
 
   // Handle page change
   const handlePageChange = (event, newPage) => {
@@ -2461,51 +2622,12 @@ const returnsColumns = [
         message={`Are you sure you want to delete this sale? This action cannot be undone.`}
       />
       
-      {/* Sale Items Dialog */}
-      <Dialog open={showItemsDialog} onClose={() => setShowItemsDialog(false)} maxWidth="md" fullWidth>
-        <DialogTitle>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Typography variant="h6">Sale Items - {viewingSale?.invoice_no}</Typography>
-            <Button onClick={() => setShowItemsDialog(false)}>Close</Button>
-          </Box>
-        </DialogTitle>
-        <DialogContent>
-          {saleItems.length > 0 ? (
-            <TableContainer component={Paper} sx={{ mt: 2 }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Item Name</TableCell>
-                    <TableCell>SKU</TableCell>
-                    <TableCell align="right">Quantity</TableCell>
-                    <TableCell align="right">Unit Price</TableCell>
-                    <TableCell align="right">Discount</TableCell>
-                    <TableCell align="right">Total</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {saleItems.map((item, index) => (
-                    <TableRow key={index}>
-                      <TableCell>{item.itemName || item.name}</TableCell>
-                      <TableCell>{item.sku}</TableCell>
-                      <TableCell align="right">{item.quantity}</TableCell>
-                      <TableCell align="right">{parseFloat(item.unitPrice || 0).toFixed(2)}</TableCell>
-                      <TableCell align="right">{parseFloat(item.discount || 0).toFixed(2)}</TableCell>
-                      <TableCell align="right">{parseFloat(item.total || 0).toFixed(2)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          ) : (
-            <Box sx={{ p: 3, textAlign: 'center' }}>
-              <Typography variant="body1" color="text.secondary">
-                No items found for this sale.
-              </Typography>
-            </Box>
-          )}
-        </DialogContent>
-      </Dialog>
+      {/* Sale Invoice View Dialog */}
+      <ReadOnlyInvoiceView
+        open={showItemsDialog}
+        onClose={() => setShowItemsDialog(false)}
+        sale={viewingSale}
+      />
       
       {/* Filter Results Drawer */}
       <Drawer

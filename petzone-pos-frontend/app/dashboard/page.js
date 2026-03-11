@@ -139,13 +139,17 @@ const StatCard = ({ title, value, icon, color = 'primary', trend, trendValue, su
   )
 }
 
-const QuickActionCard = ({ title, description, icon, color, href, onClick }) => {
+const QuickActionCard = ({ title, description, icon, color, href, onClick, newWindow = false }) => {
   const theme = useTheme()
   const router = useRouter()
   
   const handleClick = () => {
     if (href) {
-      router.push(href)
+      if (newWindow) {
+        window.open(href, '_blank')
+      } else {
+        router.push(href)
+      }
     } else if (onClick) {
       onClick()
     }
@@ -499,7 +503,7 @@ export default function DashboardPage() {
       case 'CASHIER':
         return [
           { title: "My Products", description: "Manage products in your branch (Admin permission required)", icon: <Inventory sx={{ fontSize: 24 }} />, color: "primary", href: "/dashboard/inventory" },
-          { title: "Point of Sale", description: "Process sales and manage transactions", icon: <PointOfSale sx={{ fontSize: 24 }} />, color: "success", href: "/dashboard/pos" },
+          { title: "Point of Sale", description: "Process sales and manage transactions", icon: <PointOfSale sx={{ fontSize: 24 }} />, color: "success", href: "/pos", newWindow: true },
           { title: "My Sales", description: "View and manage your sales records", icon: <ShoppingCart sx={{ fontSize: 24 }} />, color: "info", href: "/dashboard/sales" },
           { title: "My Customers", description: "Manage customer information", icon: <People sx={{ fontSize: 24 }} />, color: "secondary", href: "/dashboard/customers" }
         ]

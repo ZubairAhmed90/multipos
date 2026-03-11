@@ -65,7 +65,8 @@ class WarehouseSale {
         notes,
         customerInfo: incomingCustomerInfo,
         scopeWarehouseId = null,
-        outstandingPortion = null
+        outstandingPortion = null,
+        saleDate = null
       } = saleData;
 
       if (!warehouseKeeperId) {
@@ -226,16 +227,30 @@ class WarehouseSale {
       let previousRunningBalance = 0;
       try {
         if (retailerId) {
-          const [latestSale] = await connection.execute(
-            `SELECT running_balance
-             FROM sales
-             WHERE JSON_EXTRACT(customer_info, "$.id") = ?
-               AND scope_type = 'WAREHOUSE'
-               AND (scope_id = ? OR scope_id = ?)
-             ORDER BY created_at DESC
-             LIMIT 1`,
-            [retailerId, scopeIdForSale, String(warehouseKeeperId)]
-          );
+          const balanceParams = [retailerId, scopeIdForSale, String(warehouseKeeperId)];
+          let dateCond = '';
+          if (saleDate) {
+            dateCond = 'AND COALESCE(sale_date, created_at) < ?';
+            balanceParams.push(saleDate);
+          }
+          const finalCustName = customerInfoPayload?.name || customerName || '';
+const finalCustPhone = customerInfoPayload?.phone || '';
+
+const [latestSale] = await connection.execute(
+  `SELECT running_balance
+   FROM sales
+   WHERE (
+     JSON_EXTRACT(customer_info, '$.id') = ?
+     OR LOWER(TRIM(customer_name)) = LOWER(TRIM(?))
+     OR customer_phone = ?
+   )
+   AND scope_type = 'WAREHOUSE'
+   AND (scope_id = ? OR scope_id = ?)
+   ${dateCond}
+   ORDER BY id DESC
+   LIMIT 1`,
+  [retailerId, finalCustName, finalCustPhone, scopeIdForSale, String(warehouseKeeperId), ...(saleDate ? [saleDate] : [])]
+);
 
           if (latestSale.length > 0) {
             previousRunningBalance = parseNumber(latestSale[0].running_balance, 0);
@@ -255,8 +270,8 @@ class WarehouseSale {
       const customerPhone = customerInfoPayload?.phone || '';
 
       const [saleResult] = await connection.execute(
-        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_type, payment_status, payment_amount, credit_amount, old_balance, running_balance, status, customer_info, customer_name, customer_phone, notes, created_at, updated_at)
-         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, NOW(), NOW())`,
+        `INSERT INTO sales (user_id, scope_type, scope_id, invoice_no, subtotal, tax, discount, total, payment_method, payment_type, payment_status, payment_amount, credit_amount, old_balance, running_balance, status, customer_info, customer_name, customer_phone, notes, retailer_id, sale_date, created_at, updated_at)
+         VALUES (?, 'WAREHOUSE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
         [
           warehouseKeeperId,
           scopeIdForSale,
@@ -270,8 +285,8 @@ class WarehouseSale {
           paymentStatusValue,
           paymentAmountValue,
           creditAmountValue,
-          oldBalance, // ✅ Save old_balance
-          runningBalance, // ✅ Save running_balance
+          oldBalance,
+          runningBalance,
           JSON.stringify({
             ...customerInfoPayload,
             creditStatus,
@@ -280,7 +295,9 @@ class WarehouseSale {
           }),
           finalCustomerName,
           customerPhone,
-          notes
+          notes,
+          normalizeId(retailerId) || null,
+          saleDate || null
         ]
       );
 
@@ -334,6 +351,27 @@ class WarehouseSale {
             console.error(`[WarehouseSale] Stock error stack:`, stockError.stack);
             throw stockError; // Re-throw to ensure transaction rollback
           }
+        }
+      }
+
+      // Cascade-update running balances for records that come AFTER a backdated sale.
+      // Any record for the same retailer/warehouse dated on or after saleDate needs
+      // its old_balance and running_balance shifted by the delta this sale introduces.
+      if (saleDate && retailerId) {
+        const delta = billAmount - paymentAmountValue; // net balance change from this sale
+        if (Math.abs(delta) > 0.001) {
+          await connection.execute(
+            `UPDATE sales
+             SET old_balance     = old_balance     + ?,
+                 running_balance = running_balance + ?
+             WHERE JSON_EXTRACT(customer_info, "$.id") = ?
+               AND scope_type = 'WAREHOUSE'
+               AND (scope_id = ? OR scope_id = ?)
+               AND COALESCE(sale_date, created_at) >= ?
+               AND id != ?`,
+            [delta, delta, retailerId, scopeIdForSale, String(warehouseKeeperId), saleDate, saleId]
+          );
+          console.log('[WarehouseSale] ✅ Cascade updated subsequent running balances, delta:', delta, 'backdated to:', saleDate);
         }
       }
 

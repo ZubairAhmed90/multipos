@@ -158,9 +158,10 @@ export const menuConfig = [
         id: 'pos',
         label: 'POS',
         icon: <PointOfSale />,
-        path: '/dashboard/pos',
+        path: '/pos',
         roles: ['ADMIN', 'CASHIER'],
         order: 1,
+        newWindow: true,
       },
       {
         id: 'sales-management',
@@ -217,10 +218,11 @@ export const menuConfig = [
     id: 'warehouse-billing',
     label: 'Warehouse Billing',
     icon: <Receipt />,
-    path: '/dashboard/warehouse-billing',
+    path: '/warehouse-billing',
     roles: ['WAREHOUSE_KEEPER', 'ADMIN'],
     order: 8,
     section: 'warehouse',
+    newWindow: true,
   },
   {
     id: 'warehouse-ledger',
@@ -516,7 +518,7 @@ export const isPathAccessibleForRole = (path, role) => {
   )
   if (nestedMatch) return true
   
-  // Check sub-paths (e.g., /dashboard/pos/terminal should be accessible if /dashboard/pos is accessible)
+  // Check sub-paths (e.g., /pos/terminal should be accessible if /pos is accessible)
   const subPathMatch = menuConfig.find(item => {
     if (item.path && path.startsWith(item.path + '/') && item.roles.includes(role)) {
       return true

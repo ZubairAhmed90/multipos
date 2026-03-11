@@ -1,76 +1,30 @@
 const express = require('express');
 const router = express.Router();
 const billingController = require('../controllers/billingController');
-const auth = require('../middleware/auth');
-const { requireAdmin, requireWarehouseKeeper, requireCashier } = require('../middleware/rbac');
+const { requireAdmin, requireWarehouseKeeper } = require('../middleware/rbac');
 const { checkWarehouseKeeperCompanyPermission } = require('../middleware/branchPermissions');
 const { validateBilling, validateBillingUpdate } = require('../middleware/validation');
+// auth is already applied globally in server.js — do NOT add it here
 
-// ===== CRUD ROUTES FOR BILLING RECORDS =====
+// GET /api/billing
+router.get('/', billingController.getBillingRecords);
 
-// @route   GET /api/billing
-// @desc    Get all billing records
-// @access  Private (Admin, Manager, Cashier)
-router.get('/', 
-  auth, 
-  billingController.getBillingRecords
-);
+// POST /api/billing
+router.post('/', validateBilling, billingController.createBillingRecord);
 
-// @route   POST /api/billing
-// @desc    Create billing record
-// @access  Private (Admin, Manager, Cashier)
-router.post('/', 
-  auth, 
-  validateBilling,
-  billingController.createBillingRecord
-);
+// PUT /api/billing/:id
+router.put('/:id', validateBillingUpdate, billingController.updateBillingRecord);
 
-// @route   PUT /api/billing/:id
-// @desc    Update billing record
-// @access  Private (Admin, Manager, Cashier)
-router.put('/:id', 
-  auth, 
-  validateBillingUpdate,
-  billingController.updateBillingRecord
-);
+// DELETE /api/billing/:id
+router.delete('/:id', requireAdmin, billingController.deleteBillingRecord);
 
-// @route   DELETE /api/billing/:id
-// @desc    Delete billing record
-// @access  Private (Admin, Manager)
-router.delete('/:id', 
-  auth, 
-  requireAdmin,
-  billingController.deleteBillingRecord
-);
+// POST /api/billing/generate
+router.post('/generate', requireWarehouseKeeper, checkWarehouseKeeperCompanyPermission, billingController.generateBill);
 
-// ===== WAREHOUSE BILLING ROUTES =====
+// POST /api/billing/:saleId/print
+router.post('/:saleId/print', requireWarehouseKeeper, billingController.printInvoice);
 
-// @route   POST /api/billing/generate
-// @desc    Generate bill/invoice from warehouse
-// @access  Private (Admin, Warehouse Keeper)
-router.post('/generate', 
-  auth, 
-  requireWarehouseKeeper, 
-  checkWarehouseKeeperCompanyPermission, 
-  billingController.generateBill
-);
-
-// @route   POST /api/billing/:saleId/print
-// @desc    Print invoice/receipt
-// @access  Private (Admin, Warehouse Keeper)
-router.post('/:saleId/print', 
-  auth, 
-  requireWarehouseKeeper, 
-  billingController.printInvoice
-);
-
-// @route   GET /api/billing/history
-// @desc    Get billing history
-// @access  Private (Admin, Warehouse Keeper)
-router.get('/history', 
-  auth, 
-  billingController.getBillingHistory
-);
+// GET /api/billing/history
+router.get('/history', billingController.getBillingHistory);
 
 module.exports = router;
-

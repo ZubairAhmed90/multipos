@@ -1,33 +1,25 @@
 const express = require('express');
 const router = express.Router();
-const auth = require('../middleware/auth');
 const { rbac } = require('../middleware/rbac');
 const {
-  getSalespeople,
-  getSalesperson,
-  createSalesperson,
-  updateSalesperson,
-  deleteSalesperson,
-  getSalespersonPerformance,
-  getSalespeopleForWarehouseBilling
+  getSalespeople, getSalesperson, createSalesperson, updateSalesperson,
+  deleteSalesperson, getSalespersonPerformance, getSalespeopleForWarehouseBilling
 } = require('../controllers/salespersonController');
+// auth is already applied globally in server.js — do NOT add it here
 
-// Salespeople routes
 router.route('/')
-  .get(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), getSalespeople)
-  .post(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), createSalesperson);
+  .get(rbac('ADMIN', 'WAREHOUSE_KEEPER'), getSalespeople)
+  .post(rbac('ADMIN', 'WAREHOUSE_KEEPER'), createSalesperson);
 
-// Warehouse billing specific route (must be before /:id route)
 router.route('/warehouse-billing')
-  .get(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), getSalespeopleForWarehouseBilling);
+  .get(rbac('ADMIN', 'WAREHOUSE_KEEPER'), getSalespeopleForWarehouseBilling);
 
 router.route('/:id')
-  .get(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), getSalesperson)
-  .put(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), updateSalesperson)
-  .delete(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), deleteSalesperson);
+  .get(rbac('ADMIN', 'WAREHOUSE_KEEPER'), getSalesperson)
+  .put(rbac('ADMIN', 'WAREHOUSE_KEEPER'), updateSalesperson)
+  .delete(rbac('ADMIN', 'WAREHOUSE_KEEPER'), deleteSalesperson);
 
-// Salesperson performance route
 router.route('/:id/performance')
-  .get(auth, rbac('ADMIN', 'WAREHOUSE_KEEPER'), getSalespersonPerformance);
+  .get(rbac('ADMIN', 'WAREHOUSE_KEEPER'), getSalespersonPerformance);
 
 module.exports = router;

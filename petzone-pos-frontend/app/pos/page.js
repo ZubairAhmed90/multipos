@@ -3,9 +3,9 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import * as yup from 'yup'
-import DashboardLayout from '../../../components/layout/DashboardLayout'
-import RouteGuard from '../../../components/auth/RouteGuard'
-import EntityFormDialog from '../../../components/crud/EntityFormDialog'
+
+import RouteGuard from '../../components/auth/RouteGuard'
+import EntityFormDialog from '../../components/crud/EntityFormDialog'
 import { Link } from '@mui/material'
 import { PointOfSale as TerminalIcon } from '@mui/icons-material'
 import {
@@ -25,7 +25,7 @@ import {
   deleteHeldBill,
   setActiveTab,
   toggleInventoryModal
-} from '../../store/slices/posSlice'
+} from '../store/slices/posSlice'
 
 // Validation schemas
 const posSchema = yup.object({
@@ -483,8 +483,7 @@ function POSPage() {
   )
 
   return (
-    <RouteGuard allowedRoles={['ADMIN', 'MANAGER', 'CASHIER']}>
-      <DashboardLayout>
+    <RouteGuard allowedRoles={['ADMIN', 'MANAGER', 'CASHIER']}> 
         <div className="space-y-6">
           {/* Terminal Access */}
           <div className="grid grid-cols-1 gap-6">
@@ -496,7 +495,8 @@ function POSPage() {
                   <p className="text-green-100">Multi-tab terminal for multiple simultaneous sales</p>
                 </div>
                 <Link 
-                  href="/dashboard/pos/terminal" 
+                  href="/pos/terminal" 
+                  target="_blank" rel="noopener noreferrer"
                   className="bg-white text-green-600 px-6 py-3 rounded-lg font-semibold hover:bg-gray-100 transition-colors flex items-center gap-2"
                 >
                   <TerminalIcon />
@@ -606,7 +606,6 @@ function POSPage() {
 
       {/* Inventory Modal */}
       {showInventoryModal && renderInventoryModal()}
-    </DashboardLayout>
     </RouteGuard>
   )
 }

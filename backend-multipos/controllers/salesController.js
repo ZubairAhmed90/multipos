@@ -13,19 +13,28 @@ const LedgerService = require('../services/ledgerService');
 
 // Helper function to get customer's current running balance
 // Returns the latest running_balance from the most recent transaction (sale or return)
-const getCustomerRunningBalance = async (customerName, customerPhone, scopeType, scopeName) => {
+// If saleDate is provided, only considers records BEFORE that date (for backdated sale support)
+const getCustomerRunningBalance = async (customerName, customerPhone, scopeType, scopeName, saleDate = null) => {
   try {
+    const params = [customerName || '', customerPhone || '', customerName || '', customerPhone || '', scopeType, scopeName];
+    let dateClause = '';
+    if (saleDate) {
+      dateClause = 'AND COALESCE(sale_date, created_at) < ?';
+      params.push(saleDate);
+    }
+
     // Use case-insensitive matching like the ledger query
     const [latestSale] = await pool.execute(`
       SELECT running_balance, invoice_no, payment_method, payment_type, created_at
-      FROM sales 
+      FROM sales
       WHERE (LOWER(TRIM(customer_name)) = LOWER(TRIM(?)) OR customer_phone = ? OR LOWER(TRIM(JSON_EXTRACT(customer_info, "$.name"))) = LOWER(TRIM(?)) OR JSON_EXTRACT(customer_info, "$.phone") = ?)
-        AND scope_type = ? 
+        AND scope_type = ?
         AND scope_id = ?
-      ORDER BY created_at DESC, id DESC 
+        ${dateClause}
+      ORDER BY COALESCE(sale_date, created_at) DESC, id DESC
       LIMIT 1
-    `, [customerName || '', customerPhone || '', customerName || '', customerPhone || '', scopeType, scopeName]);
-    
+    `, params);
+
     if (latestSale.length > 0) {
       const balance = parseFloat(latestSale[0].running_balance) || 0;
       console.log('💰 getCustomerRunningBalance - Latest balance found:', {
@@ -33,6 +42,7 @@ const getCustomerRunningBalance = async (customerName, customerPhone, scopeType,
         customerPhone,
         scopeType,
         scopeName,
+        saleDate,
         runningBalance: balance,
         invoiceNo: latestSale[0].invoice_no,
         paymentMethod: latestSale[0].payment_method,
@@ -41,7 +51,7 @@ const getCustomerRunningBalance = async (customerName, customerPhone, scopeType,
       });
       return balance;
     }
-    
+
     console.log('💰 getCustomerRunningBalance - No previous transactions found, returning 0');
     return 0;
   } catch (error) {
@@ -63,7 +73,7 @@ const createSale = async (req, res, next) => {
       });
     }
 
-    const { items, scopeType, scopeId, paymentMethod, paymentType, customerInfo, notes, subtotal, tax, discount, total, paymentStatus, status, paymentAmount, creditAmount, creditStatus, outstandingPayments, selectedOutstandingPayments } = req.body;
+    const { items, scopeType, scopeId, paymentMethod, paymentType, customerInfo, notes, subtotal, tax, discount, total, paymentStatus, status, paymentAmount, creditAmount, creditStatus, outstandingPayments, selectedOutstandingPayments, saleDate } = req.body;
 
     // Debug: Log the received payment method
     console.log('[SalesController] Received paymentMethod:', paymentMethod, 'Type:', typeof paymentMethod);
@@ -205,9 +215,22 @@ const createSale = async (req, res, next) => {
     }
 
     // Extract customer name and phone from customerInfo
-    const customerName = customerInfo?.name || '';
-    const customerPhone = customerInfo?.phone || '';
-    
+    // trim values to avoid accidental spaces
+    let customerName = customerInfo?.name ? customerInfo.name.trim() : '';
+    let customerPhone = customerInfo?.phone ? customerInfo.phone.trim() : '';
+
+    // If the POS terminal puts the phone number into the name field and phone field
+    // is blank, treat that value as the phone. Many terminals allow typing the phone
+    // directly into the "name" input so we detect numeric-only strings and move
+    // them to the phone variable.
+    if (!customerPhone && customerName && /^\d+$/.test(customerName)) {
+      console.log('✨ Detected numeric customerName, interpreting as phone number');
+      customerPhone = customerName;
+      // clear the name so that the customer record uses a generic name
+      // (Walk-in Customer) instead of a numeric string
+      customerName = '';
+    }
+
     // Get branch/warehouse name for scope_id
     let scopeName = '';
     if (scopeType === 'BRANCH' && scopeId) {
@@ -243,7 +266,8 @@ const createSale = async (req, res, next) => {
                 customerName,
                 customerPhone,
                 scopeType,
-                scopeName
+                scopeName,
+                saleDate || null
             );
             
             // The outstanding amount should be cleared
@@ -314,9 +338,9 @@ const createSale = async (req, res, next) => {
     // Get customer's current running balance from previous transactions
     // This will be used as old_balance for the new sale
     // If settlement was created, this will include the settlement's running_balance
-    const previousRunningBalance = await getCustomerRunningBalance(customerName, customerPhone, scopeType, scopeName);
+    const previousRunningBalance = await getCustomerRunningBalance(customerName, customerPhone, scopeType, scopeName, saleDate || null);
     const oldBalance = previousRunningBalance; // old_balance = previous row's running_balance
-    console.log('💰 Customer previous running balance (old_balance):', oldBalance, settlementCreated ? '(after settlement)' : '');
+    console.log('💰 Customer previous running balance (old_balance):', oldBalance, settlementCreated ? '(after settlement)' : '', saleDate ? `[backdated to ${saleDate}]` : '');
 
     // ✅ CORRECTED: Payment calculation for different scenarios
     let finalPaymentAmount, finalCreditAmount;
@@ -611,11 +635,26 @@ const createSale = async (req, res, next) => {
         try {
             console.log('🔍 Creating customer record for:', { customerName, customerPhone, scopeType, scopeId, scopeIdType: typeof scopeId });
             
-            // Check if customer already exists
-            const [existingCustomers] = await pool.execute(
-                'SELECT id FROM customers WHERE name = ? OR phone = ?',
-                [customerName, customerPhone]
-            );
+            // Determine lookup strategy.  Phone is considered the unique
+            // identifier when provided; we only fall back to name when no phone is
+            // available.  This allows multiple customers with the same name but
+            // different phones.
+            let lookupQuery;
+            let lookupParams = [];
+            if (customerPhone) {
+                lookupQuery = 'SELECT id FROM customers WHERE phone = ?';
+                lookupParams = [customerPhone];
+                console.log('🔍 Looking up existing customer by phone only');
+            } else if (customerName) {
+                lookupQuery = 'SELECT id FROM customers WHERE name = ?';
+                lookupParams = [customerName];
+                console.log('🔍 Looking up existing customer by name only (no phone provided)');
+            } else {
+                // shouldn't happen due to outer if, but keep a safe fallback
+                lookupQuery = 'SELECT id FROM customers WHERE 1=0';
+            }
+
+            const [existingCustomers] = await pool.execute(lookupQuery, lookupParams);
             
             if (existingCustomers.length === 0) {
                 // Resolve scopeId to actual ID if it's a string (branch/warehouse name)
@@ -757,6 +796,7 @@ const createSale = async (req, res, next) => {
         creditStatus: finalCreditStatus || 'NONE',
         creditDueDate: finalCreditAmount > 0 ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : null,
         notes: notes || null,
+        saleDate: saleDate || null,
         status: status || 'COMPLETED',
         items: enrichedItems.map(item => ({
             inventoryItemId: item.inventoryItemId || null,
@@ -825,6 +865,36 @@ const createSale = async (req, res, next) => {
     } catch (saleError) {
         console.error('[SalesController] Error in Sale.create:', saleError);
         throw saleError;
+    }
+
+    // Cascade-update running balances for all records that come AFTER a backdated sale.
+    // When saleDate is in the past, records already in the DB after that date need their
+    // old_balance and running_balance shifted by the delta this sale introduces.
+    if (saleDate && (customerName || customerPhone)) {
+        const delta = runningBalance - previousRunningBalance; // net balance change from this sale
+        if (Math.abs(delta) > 0.001) {
+            try {
+                await pool.execute(`
+                    UPDATE sales
+                    SET old_balance     = old_balance     + ?,
+                        running_balance = running_balance + ?
+                    WHERE scope_type = ?
+                      AND scope_id = ?
+                      AND (LOWER(TRIM(customer_name)) = LOWER(TRIM(?))
+                           OR customer_phone = ?
+                           OR LOWER(TRIM(JSON_EXTRACT(customer_info, "$.name"))) = LOWER(TRIM(?))
+                           OR JSON_EXTRACT(customer_info, "$.phone") = ?)
+                      AND COALESCE(sale_date, created_at) >= ?
+                      AND id != ?
+                `, [delta, delta, scopeType, scopeName,
+                    customerName || '', customerPhone || '',
+                    customerName || '', customerPhone || '',
+                    saleDate, sale.id]);
+                console.log('[SalesController] ✅ Cascade updated subsequent running balances, delta:', delta, 'backdated to:', saleDate);
+            } catch (cascadeError) {
+                console.error('[SalesController] ❌ Error in cascade balance update:', cascadeError);
+            }
+        }
     }
 
     // Update inventory stock and create transaction records
@@ -1885,11 +1955,15 @@ const updateSale = async (req, res, next) => {
       }
 
       // 7. Update customer balance
-      if (customerIdentifier && customerPhoneIdentifier) {
-        const [customerRows] = await connection.execute(
-          'SELECT id FROM customers WHERE (name = ? OR phone = ?) LIMIT 1',
-          [customerIdentifier, customerPhoneIdentifier]
-        );
+if (customerIdentifier && customerPhoneIdentifier) {
+  const [customerRows] = await connection.execute(
+    `SELECT id FROM customers 
+     WHERE phone = ? 
+     AND (branch_id = (SELECT id FROM branches WHERE name = ? LIMIT 1)
+          OR warehouse_id = (SELECT id FROM warehouses WHERE name = ? LIMIT 1))
+     LIMIT 1`,
+    [customerPhoneIdentifier, sale.scope_id, sale.scope_id]
+  );
         
         if (customerRows.length > 0) {
           const customerId = customerRows[0].id;
@@ -4172,30 +4246,49 @@ const searchOutstandingPayments = async (req, res) => {
       });
     }
 
-    // Get user's scope information
-    let scopeType, scopeName;
-    
+    // Determine user scope for filtering and debugging
+    let scopeType = null;
+    let scopeId = null;
+    let scopeName = null;
+
     if (req.user.role === 'CASHIER' && req.user.branchId) {
-      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [req.user.branchId]);
+      scopeType = 'BRANCH';
+      scopeId = req.user.branchId;
+      const [branches] = await pool.execute('SELECT name FROM branches WHERE id = ?', [scopeId]);
       if (branches.length > 0) {
-        scopeType = 'BRANCH';
         scopeName = branches[0].name;
       }
     } else if (req.user.role === 'WAREHOUSE_KEEPER' && req.user.warehouseId) {
-      const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [req.user.warehouseId]);
+      scopeType = 'WAREHOUSE';
+      scopeId = req.user.warehouseId;
+      const [warehouses] = await pool.execute('SELECT name FROM warehouses WHERE id = ?', [scopeId]);
       if (warehouses.length > 0) {
-        scopeType = 'WAREHOUSE';
         scopeName = warehouses[0].name;
       }
     } else if (req.user.role === 'ADMIN') {
-      scopeType = null;
-      scopeName = null;
+      // admin has no scope restrictions
     }
 
-    console.log('🔍 Scope info:', { scopeType, scopeName });
+    console.log('🔍 Scope info:', { scopeType, scopeId, scopeName });
 
-    // ✅ FIXED: Get the latest transaction first, then check if balance is outstanding
-    // This ensures returns (which set running_balance to 0) are correctly handled
+    // Build dynamic WHERE clause depending on which criteria were provided
+    const whereClauses = [];
+    const params = [];
+
+    if (customerName && customerName.trim().length > 0) {
+      whereClauses.push('(LOWER(TRIM(s.customer_name)) LIKE LOWER(TRIM(?)))');
+      params.push(`%${customerName.trim()}%`);
+      whereClauses.push('(LOWER(TRIM(JSON_EXTRACT(s.customer_info, "$.name"))) LIKE LOWER(TRIM(?)))');
+      params.push(`%${customerName.trim()}%`);
+    }
+
+    if (phone && phone.trim().length > 0) {
+      whereClauses.push('(s.customer_phone LIKE ?)');
+      params.push(`%${phone.trim()}%`);
+      whereClauses.push('(JSON_EXTRACT(s.customer_info, "$.phone") LIKE ?)');
+      params.push(`%${phone.trim()}%`);
+    }
+
     let query = `
       SELECT 
         s.customer_name,
@@ -4209,20 +4302,20 @@ const searchOutstandingPayments = async (req, res) => {
         s.total,
         s.subtotal,
         s.payment_method,
-        s.payment_type
+        s.payment_type,
+        s.scope_type,
+        s.scope_id
       FROM sales s
-      WHERE (LOWER(TRIM(s.customer_name)) = LOWER(TRIM(?)) OR s.customer_phone = ? OR LOWER(TRIM(JSON_EXTRACT(s.customer_info, "$.name"))) = LOWER(TRIM(?)) OR JSON_EXTRACT(s.customer_info, "$.phone") = ?)
+      WHERE (${whereClauses.join(' OR ')})
     `;
-    
-    let params = [customerName || phone || '', phone || customerName || '', customerName || phone || '', phone || customerName || ''];
 
-    // Add scope filtering for non-admin users
-    if (req.user.role !== 'ADMIN' && scopeType && scopeName) {
+    // Apply scope restriction for non-admins
+    if (req.user.role !== 'ADMIN' && scopeType && scopeId) {
       query += ' AND s.scope_type = ? AND s.scope_id = ?';
-      params.push(scopeType, scopeName);
+      params.push(scopeType, scopeId);
     }
 
-    // ✅ CRITICAL: Order by latest and get only one record per customer
+    // Most recent record only
     query += ' ORDER BY s.created_at DESC, s.id DESC LIMIT 1';
 
     console.log('🔍 FINAL OUTSTANDING PAYMENTS QUERY:', query);

@@ -1,30 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const {
-  getCompanyLedgerEntries,
-  createCompanyLedgerEntry,
-  getCompanyLedgerBalance
-} = require('../controllers/companyLedgerController');
-const auth = require('../middleware/auth');
+const { getCompanyLedgerEntries, createCompanyLedgerEntry, getCompanyLedgerBalance } = require('../controllers/companyLedgerController');
+// auth is already applied globally in server.js — do NOT add it here
 
-// @route   GET /api/company-ledger/entries/:companyId
-// @desc    Get company ledger entries
-// @access  Private
-router.get('/entries/:companyId', auth, getCompanyLedgerEntries);
-
-// @route   POST /api/company-ledger/entries
-// @desc    Create company ledger entry
-// @access  Private
-router.post('/entries', auth, createCompanyLedgerEntry);
-
-// @route   GET /api/company-ledger/balance/:companyId
-// @desc    Get company ledger balance summary
-// @access  Private
-router.get('/balance/:companyId', auth, getCompanyLedgerBalance);
+router.get('/entries/:companyId', getCompanyLedgerEntries);
+router.post('/entries', createCompanyLedgerEntry);
+router.get('/balance/:companyId', getCompanyLedgerBalance);
 
 module.exports = router;
-
-
-
-
-

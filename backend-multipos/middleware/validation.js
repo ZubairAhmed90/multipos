@@ -1,4 +1,19 @@
-const { body } = require('express-validator');
+const { body, validationResult } = require('express-validator');
+
+// ─────────────────────────────────────────────────────────────
+// SHARED HELPER — import in any route that needs validation
+// ─────────────────────────────────────────────────────────────
+const handleValidation = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation error',
+      errors: errors.array()
+    });
+  }
+  next();
+};
 
 // User validation for admin creation
 const userValidation = [
@@ -155,7 +170,7 @@ const branchValidation = [
     .optional()
     .custom((value) => {
       if (!value || value.trim() === '') {
-        return true; // Allow empty or null values
+        return true;
       }
       if (value.length > 20) {
         throw new Error('Phone must not exceed 20 characters');
@@ -168,7 +183,7 @@ const branchValidation = [
     .optional()
     .custom((value) => {
       if (!value || value.trim() === '') {
-        return true; // Allow empty or null values
+        return true;
       }
       return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
     })
@@ -178,7 +193,7 @@ const branchValidation = [
     .optional()
     .custom((value) => {
       if (!value || value.trim() === '') {
-        return true; // Allow empty or null values
+        return true;
       }
       if (value.length > 100) {
         throw new Error('Manager name must not exceed 100 characters');
@@ -191,7 +206,7 @@ const branchValidation = [
     .optional()
     .custom((value) => {
       if (!value || value.trim() === '') {
-        return true; // Allow empty or null values
+        return true;
       }
       if (value.length > 20) {
         throw new Error('Manager phone must not exceed 20 characters');
@@ -204,7 +219,7 @@ const branchValidation = [
     .optional()
     .custom((value) => {
       if (!value || value.trim() === '') {
-        return true; // Allow empty or null values
+        return true;
       }
       return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
     })
@@ -214,7 +229,7 @@ const branchValidation = [
     .optional({ nullable: true })
     .custom((value) => {
       if (value === null || value === undefined || value === '') {
-        return true; // Allow null, undefined, or empty string
+        return true;
       }
       if (!Number.isInteger(Number(value)) || Number(value) < 1) {
         throw new Error('Linked warehouse ID must be a valid positive integer');
@@ -323,6 +338,30 @@ const warehouseValidation = [
 ];
 
 // Inventory item validation
+const inventoryItemValidation = [
+  body('name')
+    .trim()
+    .isLength({ min: 1, max: 200 })
+    .withMessage('Item name must be between 1 and 200 characters'),
+  body('sku').optional().trim(),
+  body('barcode').optional().trim(),
+  body('category').optional().trim(),
+  body('unit').optional().trim(),
+  body('costPrice').optional().isFloat({ min: 0 }).withMessage('Cost price must be a positive number'),
+  body('sellingPrice').optional().isFloat({ min: 0 }).withMessage('Selling price must be a positive number'),
+  body('currentStock').optional().isInt({ min: 0 }).withMessage('Current stock must be a non-negative integer'),
+  body('minStockLevel').optional().isInt({ min: 0 }),
+  body('maxStockLevel').optional().isInt({ min: 0 }),
+  body('scopeType').optional().custom((value) => {
+    if (value === null || value === undefined || value === '') return true;
+    if (!['BRANCH', 'WAREHOUSE'].includes(value)) {
+      throw new Error('Scope type must be BRANCH or WAREHOUSE');
+    }
+    return true;
+  }),
+  body('scopeId').optional().customSanitizer(value => value !== null && value !== undefined ? String(value) : value),
+];
+
 // Inventory update validation (more lenient than create validation)
 const inventoryItemUpdateValidation = [
   body('sku')
@@ -337,13 +376,13 @@ const inventoryItemUpdateValidation = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       if (typeof value === 'string' && value.trim().length === 0) {
-        return true; // Allow empty strings
+        return true;
       }
       if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 50) {
-        return true; // Allow valid barcodes
+        return true;
       }
       throw new Error('Barcode must be between 1 and 50 characters');
     })
@@ -397,14 +436,12 @@ const inventoryItemUpdateValidation = [
     .isIn(['BRANCH', 'WAREHOUSE'])
     .withMessage('Scope type must be BRANCH or WAREHOUSE'),
   
-  // FIXED: Accept both string and number for scopeId
   body('scopeId')
     .optional()
     .custom((value) => {
       if (value === null || value === undefined || value === '') {
         return true;
       }
-      // Accept both string and number
       const strValue = String(value);
       return strValue.length >= 1;
     })
@@ -417,30 +454,7 @@ const inventoryItemUpdateValidation = [
     })
 ];
 
-const inventoryItemValidation = [
-  body('name')
-    .trim()
-    .isLength({ min: 1, max: 200 })
-    .withMessage('Item name must be between 1 and 200 characters'),
-  body('sku').optional().trim(),
-  body('barcode').optional().trim(),
-  body('category').optional().trim(),
-  body('unit').optional().trim(),
-  body('costPrice').optional().isFloat({ min: 0 }).withMessage('Cost price must be a positive number'),
-  body('sellingPrice').optional().isFloat({ min: 0 }).withMessage('Selling price must be a positive number'),
-  body('currentStock').optional().isInt({ min: 0 }).withMessage('Current stock must be a non-negative integer'),
-  body('minStockLevel').optional().isInt({ min: 0 }),
-  body('maxStockLevel').optional().isInt({ min: 0 }),
-body('scopeType').optional().custom((value) => {
-  if (value === null || value === undefined || value === '') return true;
-  if (!['BRANCH', 'WAREHOUSE'].includes(value)) {
-    throw new Error('Scope type must be BRANCH or WAREHOUSE');
-  }
-  return true;
-}),
-body('scopeId').optional().customSanitizer(value => value !== null && value !== undefined ? String(value) : value),
-]
-// Company validation - FIXED for CASHIER with numeric scopeId
+// Company validation
 const companyValidation = [
   body('name')
     .trim()
@@ -485,22 +499,17 @@ const companyValidation = [
     .isIn(['BRANCH', 'WAREHOUSE', 'COMPANY'])
     .withMessage('Scope type must be BRANCH, WAREHOUSE, or COMPANY'),
   
-  // FIXED: Accept both string and number for scopeId
   body('scopeId')
     .optional()
     .custom((value) => {
-      // Allow null, undefined, or empty values
       if (value === null || value === undefined || value === '') {
         return true;
       }
-      
-      // Convert to string and check length
       const strValue = String(value);
       return strValue.length >= 1 && strValue.length <= 100;
     })
     .withMessage('Scope ID must be between 1 and 100 characters')
     .customSanitizer(value => {
-      // Convert to string if it's a number
       if (value !== null && value !== undefined) {
         return String(value);
       }
@@ -518,7 +527,7 @@ const validateSale = [
     .optional()
     .custom((value) => {
       if (value === null || value === undefined || value === '') {
-        return true; // Allow null/empty for manual items
+        return true;
       }
       const num = parseInt(value);
       if (isNaN(num) || num < 1) {
@@ -540,7 +549,7 @@ const validateSale = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
       if (isNaN(num) || num < 0) {
@@ -554,13 +563,11 @@ const validateSale = [
     .isIn(['BRANCH', 'WAREHOUSE'])
     .withMessage('Scope type must be BRANCH or WAREHOUSE'),
   
-  // FIXED: Accept both string and number for scopeId
   body('scopeId')
     .custom((value) => {
       if (value === null || value === undefined || value === '') {
         throw new Error('Scope ID is required');
       }
-      // Accept both string and number
       return String(value).length >= 1;
     })
     .withMessage('Scope ID must be a valid string or number')
@@ -575,7 +582,7 @@ const validateSale = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
       if (isNaN(num) || num < 0) {
@@ -589,7 +596,7 @@ const validateSale = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
       if (isNaN(num) || num < 0) {
@@ -602,13 +609,11 @@ const validateSale = [
   body('total')
     .optional()
     .custom((value) => {
-      // Allow negative total to represent customer advance credit
-      // Example: Customer has -29000 credit, buys 9000 item → Total = -20000
       if (value === undefined || value === null || value === '') {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
-      return !isNaN(num); // Allow any number (positive or negative)
+      return !isNaN(num);
     })
     .withMessage('Total must be a valid number'),
   
@@ -629,26 +634,22 @@ const validateSale = [
   body('paymentAmount')
     .optional()
     .custom((value) => {
-      // Allow negative payment amount to represent customer advance credit being used
-      // Example: Customer has advance credit, payment amount can be negative
       if (value === undefined || value === null || value === '') {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
-      return !isNaN(num); // Allow any number (positive or negative)
+      return !isNaN(num);
     })
     .withMessage('Payment amount must be a valid number'),
   
   body('creditAmount')
     .optional()
     .custom((value) => {
-      // Allow negative credit amounts to represent overpayments/advance credit
-      // Example: -18000 means customer has 18000 credit balance
       if (value === undefined || value === null || value === '') {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
-      return !isNaN(num); // Allow any number (positive or negative)
+      return !isNaN(num);
     })
     .withMessage('Credit amount must be a valid number'),
   
@@ -673,7 +674,7 @@ const validateSale = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
         throw new Error('Customer email must be a valid email address');
@@ -694,36 +695,22 @@ const validateSale = [
     .isLength({ max: 500 })
     .withMessage('Notes cannot exceed 500 characters'),
   
-  body('paymentMethod')
-    .optional()
-    .custom((value) => {
-      if (value === null || value === undefined || value === '') {
-        return true; // Allow null, undefined, or empty values
-      }
-      const validMethods = ['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT', 'CHEQUE', 'MOBILE_MONEY', 'FULLY_CREDIT', 'PARTIAL_PAYMENT'];
-      if (validMethods.includes(value)) {
-        return true; // Allow valid payment methods
-      }
-      throw new Error('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, CHEQUE, MOBILE_MONEY, FULLY_CREDIT, or PARTIAL_PAYMENT');
-    })
-    .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, CHEQUE, MOBILE_MONEY, FULLY_CREDIT, or PARTIAL_PAYMENT'),
-  
   body('paymentType')
     .optional()
     .custom((value) => {
       if (value === null || value === undefined || value === '') {
-        return true; // Allow null, undefined, or empty values
+        return true;
       }
       const validTypes = ['FULL_PAYMENT', 'PARTIAL_PAYMENT', 'FULLY_CREDIT'];
       if (validTypes.includes(value)) {
-        return true; // Allow valid payment types
+        return true;
       }
       throw new Error('Payment type must be FULL_PAYMENT, PARTIAL_PAYMENT, or FULLY_CREDIT');
     })
     .withMessage('Payment type must be FULL_PAYMENT, PARTIAL_PAYMENT, or FULLY_CREDIT')
 ];
 
-// Sale update validation (more lenient than create validation)
+// Sale update validation
 const validateSaleUpdate = [
   body('subtotal')
     .optional()
@@ -734,7 +721,7 @@ const validateSaleUpdate = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
       if (isNaN(num) || num < 0) {
@@ -748,7 +735,7 @@ const validateSaleUpdate = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
       if (isNaN(num) || num < 0) {
@@ -761,13 +748,11 @@ const validateSaleUpdate = [
   body('total')
     .optional()
     .custom((value) => {
-      // Allow negative total to represent customer advance credit
-      // Example: Customer has -29000 credit, buys 9000 item → Total = -20000
       if (value === undefined || value === null || value === '') {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
-      return !isNaN(num); // Allow any number (positive or negative)
+      return !isNaN(num);
     })
     .withMessage('Total must be a valid number'),
   
@@ -802,7 +787,7 @@ const validateSaleUpdate = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
         throw new Error('Customer email must be a valid email address');
@@ -888,7 +873,7 @@ const validateHoldBill = [
     .optional()
     .custom((value) => {
       if (value === null || value === undefined || value === '') {
-        return true; // Allow null/empty for manual items
+        return true;
       }
       const num = parseInt(value);
       if (isNaN(num) || num < 1) {
@@ -910,7 +895,7 @@ const validateHoldBill = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       const num = parseFloat(value);
       if (isNaN(num) || num < 0) {
@@ -936,7 +921,7 @@ const validateHoldBill = [
     .optional()
     .custom((value) => {
       if (value === '' || value === null || value === undefined) {
-        return true; // Allow empty values
+        return true;
       }
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
         throw new Error('Customer email must be a valid email address');
@@ -986,13 +971,36 @@ const validateLedgerEntry = [
     .trim()
     .isLength({ min: 1, max: 50 })
     .withMessage('Reference must be between 1 and 50 characters'),
-  
+
+  // ✅ FIX: was isMongoId() — your IDs are integers
   body('referenceId')
-    .isMongoId()
-    .withMessage('Reference ID must be a valid MongoDB ObjectId')
+    .isInt({ min: 1 })
+    .withMessage('Reference ID must be a valid positive integer')
 ];
 
-// Transfer validation
+// Ledger account validation
+const validateLedgerAccount = [
+  body('accountName').notEmpty().withMessage('Account name is required'),
+  body('accountType').notEmpty().withMessage('Account type is required'),
+  body('description').notEmpty().withMessage('Description is required'),
+  body('balance').isNumeric().withMessage('Balance must be a number')
+];
+
+const validateLedgerAccountUpdate = [
+  body('accountName').optional().notEmpty().withMessage('Account name cannot be empty'),
+  body('accountType').optional().notEmpty().withMessage('Account type cannot be empty'),
+  body('description').optional().notEmpty().withMessage('Description cannot be empty'),
+  body('balance').optional().isNumeric().withMessage('Balance must be a number')
+];
+
+const validateLedgerEntryUpdate = [
+  body('amount').optional().isNumeric().withMessage('Amount must be a number'),
+  body('description').optional().notEmpty().withMessage('Description cannot be empty'),
+  body('reference').optional().isString(),
+  body('referenceId').optional().isString()
+];
+
+// Transfer validation — ORIGINAL nested format (kept for backward compat)
 const validateTransfer = [
   body('from.scopeType')
     .isIn(['BRANCH', 'WAREHOUSE'])
@@ -1003,7 +1011,6 @@ const validateTransfer = [
       if (value === null || value === undefined || value === '') {
         throw new Error('From scope ID is required');
       }
-      // Accept both string and number
       return String(value).length >= 1;
     })
     .withMessage('From scope ID must be a valid string or number')
@@ -1018,7 +1025,6 @@ const validateTransfer = [
       if (value === null || value === undefined || value === '') {
         throw new Error('To scope ID is required');
       }
-      // Accept both string and number
       return String(value).length >= 1;
     })
     .withMessage('To scope ID must be a valid string or number')
@@ -1048,6 +1054,48 @@ const validateTransfer = [
     .withMessage('Notes cannot exceed 500 characters')
 ];
 
+// Transfer validation — FLAT format (matches transferController.js fields)
+const transferValidation = [
+  body('fromScopeType')
+    .isIn(['BRANCH', 'WAREHOUSE'])
+    .withMessage('From scope type must be BRANCH or WAREHOUSE'),
+  body('fromScopeId')
+    .isInt({ min: 1 })
+    .withMessage('From scope ID must be a positive integer'),
+  body('toScopeType')
+    .isIn(['BRANCH', 'WAREHOUSE'])
+    .withMessage('To scope type must be BRANCH or WAREHOUSE'),
+  body('toScopeId')
+    .isInt({ min: 1 })
+    .withMessage('To scope ID must be a positive integer'),
+  body('transferType')
+    .isIn(['BRANCH_TO_BRANCH', 'WAREHOUSE_TO_WAREHOUSE', 'BRANCH_TO_WAREHOUSE', 'WAREHOUSE_TO_BRANCH'])
+    .withMessage('Invalid transfer type'),
+  body('items')
+    .isArray({ min: 1 })
+    .withMessage('Transfer must contain at least one item'),
+  body('items.*.inventoryItemId')
+    .isInt({ min: 1 })
+    .withMessage('Inventory item ID must be a positive integer'),
+  body('items.*.quantityRequested')
+    .isFloat({ min: 0.01 })
+    .withMessage('Quantity requested must be greater than 0'),
+  body('expectedDate')
+    .optional()
+    .isISO8601()
+    .withMessage('Expected date must be a valid date')
+];
+
+// Transfer status update validation
+const transferStatusValidation = [
+  body('status')
+    .isIn(['PENDING', 'APPROVED', 'IN_TRANSIT', 'COMPLETED', 'REJECTED', 'CANCELLED'])
+    .withMessage('Invalid status'),
+  body('notes')
+    .optional()
+    .isString()
+];
+
 // Transfer rejection validation
 const validateTransferRejection = [
   body('rejectionReason')
@@ -1067,7 +1115,6 @@ const validateHardwareOperation = [
       if (value === null || value === undefined || value === '') {
         throw new Error('Scope ID is required');
       }
-      // Accept both string and number
       return String(value).length >= 1;
     })
     .withMessage('Scope ID must be a valid string or number')
@@ -1102,7 +1149,6 @@ const validateBarcodeScan = [
       if (value === null || value === undefined || value === '') {
         throw new Error('Scope ID is required');
       }
-      // Accept both string and number
       return String(value).length >= 1;
     })
     .withMessage('Scope ID must be a valid string or number')
@@ -1124,7 +1170,6 @@ const validateReceiptPrint = [
       if (value === null || value === undefined || value === '') {
         throw new Error('Scope ID is required');
       }
-      // Accept both string and number
       return String(value).length >= 1;
     })
     .withMessage('Scope ID must be a valid string or number')
@@ -1133,9 +1178,10 @@ const validateReceiptPrint = [
 
 // Weighing scale validation
 const validateWeighingScale = [
+  // ✅ FIX: was isMongoId() — your IDs are integers
   body('itemId')
-    .isMongoId()
-    .withMessage('Item ID must be a valid MongoDB ObjectId'),
+    .isInt({ min: 1 })
+    .withMessage('Item ID must be a valid positive integer'),
   
   body('weight')
     .isFloat({ min: 0 })
@@ -1167,7 +1213,6 @@ const validateDeviceRegistration = [
       if (value === null || value === undefined || value === '') {
         throw new Error('Scope ID is required');
       }
-      // Accept both string and number
       return String(value).length >= 1;
     })
     .withMessage('Scope ID must be a valid string or number')
@@ -1180,30 +1225,55 @@ const validateDeviceRegistration = [
 ];
 
 module.exports = {
+  // ── NEW helpers ──────────────────────────────────────────────
+  handleValidation,
+
+  // ── Auth ─────────────────────────────────────────────────────
   userValidation,
   userUpdateValidation,
   loginValidation,
   refreshValidation,
+
+  // ── Branch / Warehouse ───────────────────────────────────────
   branchValidation,
   warehouseValidation,
+
+  // ── Inventory ────────────────────────────────────────────────
   inventoryItemValidation,
   inventoryItemUpdateValidation,
+
+  // ── Company ──────────────────────────────────────────────────
   companyValidation,
+
+  // ── Sales ────────────────────────────────────────────────────
   validateSale,
   validateSaleUpdate,
   validateReturn,
+
+  // ── POS ──────────────────────────────────────────────────────
   validateHoldBill,
   validateCompleteBill,
+
+  // ── Ledger ───────────────────────────────────────────────────
   validateLedgerEntry,
+  validateLedgerAccount,
+  validateLedgerAccountUpdate,
+  validateLedgerEntryUpdate,
+
+  // ── Transfers ────────────────────────────────────────────────
   validateTransfer,
+  transferValidation,
+  transferStatusValidation,
   validateTransferRejection,
+
+  // ── Hardware ─────────────────────────────────────────────────
   validateHardwareOperation,
   validateBarcodeScan,
   validateReceiptPrint,
   validateWeighingScale,
   validateDeviceRegistration,
-  
-  // Shift validation
+
+  // ── Shifts ───────────────────────────────────────────────────
   validateShift: [
     body('name')
       .trim()
@@ -1217,12 +1287,12 @@ module.exports = {
     body('endTime')
       .matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
       .withMessage('End time must be in HH:MM format'),
+    // ✅ FIX: was isMongoId() — your IDs are integers
     body('branchId')
-      .isMongoId()
+      .isInt({ min: 1 })
       .withMessage('Valid branch ID is required')
   ],
-  
-  // Shift update validation (all fields optional)
+
   validateShiftUpdate: [
     body('name')
       .optional()
@@ -1244,765 +1314,549 @@ module.exports = {
       .isBoolean()
       .withMessage('isActive must be a boolean')
   ],
-  
+
   validateShiftAssignment: [
+    // ✅ FIX: was isMongoId() — your IDs are integers
     body('userId')
-      .isMongoId()
+      .isInt({ min: 1 })
       .withMessage('Valid user ID is required'),
     body('role')
       .isIn(['CASHIER', 'WAREHOUSE_KEEPER'])
       .withMessage('Role must be either CASHIER or WAREHOUSE_KEEPER')
   ],
 
-  // Warehouse Sale Validation
+  // ── Warehouse Sales ──────────────────────────────────────────
   validateWarehouseSale: [
     body('retailerId')
-      .optional({ values: 'falsy' }) // This allows null, undefined, empty string
+      .optional({ values: 'falsy' })
       .custom((value) => {
-        // If retailerId is provided, it must be valid
         if (!value || value === 'null' || value === 'undefined') {
-          return true; // Allow empty/null values
+          return true;
         }
-        // Accept both string and number
         const num = parseInt(value);
         return !isNaN(num) && num > 0;
       })
       .withMessage('Retailer ID must be a valid positive integer'),
-    
+
     body('items')
       .isArray({ min: 1 })
       .withMessage('At least one item is required'),
-    
-    // Accept both itemId and inventoryItemId for flexibility
+
     body('items.*.itemId')
       .optional()
       .custom((value, { req, path }) => {
         const itemIndex = path.match(/\[(\d+)\]/)?.[1];
         const inventoryItemId = req.body.items?.[itemIndex]?.inventoryItemId;
-        // If itemId is not provided, check inventoryItemId
         if (!value && !inventoryItemId) {
-          return false; // At least one must be provided
+          return false;
         }
         return true;
       })
       .withMessage('Item ID is required'),
-    
+
     body('items.*.inventoryItemId')
       .optional()
       .custom((value) => {
-        if (!value) return true; // Optional if itemId is provided
+        if (!value) return true;
         const num = parseInt(value);
         return !isNaN(num) && num > 0;
       })
       .withMessage('Inventory item ID must be a valid positive integer'),
-    
+
     body('items.*.quantity')
       .isFloat({ min: 0.01 })
       .withMessage('Quantity must be greater than 0'),
-    
+
     body('items.*.unitPrice')
       .isFloat({ min: 0 })
       .withMessage('Unit price must be a positive number'),
-    
-    // Make totalPrice optional since frontend calculates it
+
     body('items.*.totalPrice')
       .optional()
       .isFloat({ min: 0 })
       .withMessage('Total price must be a positive number'),
-    
-    // Accept multiple field names for totals
-    body('subtotal')
-      .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Subtotal must be a positive number'),
-    
-    body('totalAmount')
-      .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Total amount must be a positive number'),
-    
-    body('total')
-      .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Total must be a positive number'),
-    
-    body('taxAmount')
-      .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Tax amount must be a positive number'),
-    
-    body('taxRate')
-      .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Tax rate must be a positive number'),
-    
-    body('discountAmount')
-      .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Discount amount must be a positive number'),
-    
-    // Make finalAmount optional
-    body('finalAmount')
-      .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Final amount must be a positive number'),
-    
+
+    body('subtotal').optional().isFloat({ min: 0 }).withMessage('Subtotal must be a positive number'),
+    body('totalAmount').optional().isFloat({ min: 0 }).withMessage('Total amount must be a positive number'),
+    body('total').optional().isFloat({ min: 0 }).withMessage('Total must be a positive number'),
+    body('taxAmount').optional().isFloat({ min: 0 }).withMessage('Tax amount must be a positive number'),
+    body('taxRate').optional().isFloat({ min: 0 }).withMessage('Tax rate must be a positive number'),
+    body('discountAmount').optional().isFloat({ min: 0 }).withMessage('Discount amount must be a positive number'),
+    body('finalAmount').optional().isFloat({ min: 0 }).withMessage('Final amount must be a positive number'),
+
     body('paymentMethod')
       .optional()
       .isIn(['CASH', 'CARD', 'CREDIT', 'PARTIAL_PAYMENT', 'FULLY_CREDIT', 'BANK_TRANSFER', 'CHEQUE', 'MOBILE_MONEY'])
       .withMessage('Payment method must be CASH, CARD, CREDIT, PARTIAL_PAYMENT, FULLY_CREDIT, BANK_TRANSFER, CHEQUE, or MOBILE_MONEY'),
-    
+
     body('paymentAmount')
       .optional()
       .custom((value) => {
-        // Allow any payment amount (can be negative for overpayments creating advance credit)
-        if (value === undefined || value === null || value === '') {
-          return true; // Allow empty values
-        }
+        if (value === undefined || value === null || value === '') return true;
         const num = parseFloat(value);
-        return !isNaN(num); // Allow any number (positive or negative)
+        return !isNaN(num);
       })
       .withMessage('Payment amount must be a valid number'),
-    
+
     body('creditAmount')
       .optional()
       .custom((value) => {
-        // Allow negative credit amount for customer advance credit
-        if (value === undefined || value === null || value === '') {
-          return true; // Allow empty values
-        }
+        if (value === undefined || value === null || value === '') return true;
         const num = parseFloat(value);
-        return !isNaN(num); // Allow any number (positive or negative)
+        return !isNaN(num);
       })
       .withMessage('Credit amount must be a valid number'),
-    
-    body('paymentTerms')
-      .optional()
-      .isLength({ max: 100 })
-      .withMessage('Payment terms must not exceed 100 characters'),
-    
-    body('notes')
-      .optional()
-      .isLength({ max: 500 })
-      .withMessage('Notes must not exceed 500 characters')
+
+    body('paymentTerms').optional().isLength({ max: 100 }).withMessage('Payment terms must not exceed 100 characters'),
+    body('notes').optional().isLength({ max: 500 }).withMessage('Notes must not exceed 500 characters')
   ],
 
-  // Retailer Validation
+  // ── Retailers ────────────────────────────────────────────────
   validateRetailer: [
     body('name')
       .trim()
       .isLength({ min: 2, max: 100 })
       .withMessage('Name must be between 2 and 100 characters'),
-    
+
+    // ✅ FIX: was required — made optional
     body('email')
+      .optional()
       .isEmail()
       .normalizeEmail()
       .withMessage('Please provide a valid email address'),
-    
+
     body('phone')
       .optional()
       .isMobilePhone()
       .withMessage('Please provide a valid phone number'),
-    
+
     body('address')
       .optional()
       .isLength({ max: 200 })
       .withMessage('Address must not exceed 200 characters'),
-    
+
     body('city')
       .optional()
       .isLength({ max: 50 })
       .withMessage('City must not exceed 50 characters'),
-    
+
     body('state')
       .optional()
       .isLength({ max: 50 })
       .withMessage('State must not exceed 50 characters'),
-    
+
     body('zipCode')
       .optional()
       .isLength({ max: 10 })
       .withMessage('ZIP code must not exceed 10 characters'),
-    
+
     body('businessType')
       .optional()
       .isIn(['RETAILER', 'WHOLESALER', 'DISTRIBUTOR', 'OTHER'])
       .withMessage('Business type must be RETAILER, WHOLESALER, DISTRIBUTOR, or OTHER'),
-    
+
     body('taxId')
       .optional()
       .isLength({ max: 20 })
       .withMessage('Tax ID must not exceed 20 characters'),
-    
+
     body('creditLimit')
       .optional()
       .isFloat({ min: 0 })
       .withMessage('Credit limit must be a positive number'),
-    
+
     body('paymentTerms')
       .optional()
-      .isIn(['CASH', 'NET_15', 'NET_30', 'NET_60'])
-      .withMessage('Payment terms must be CASH, NET_15, NET_30, or NET_60'),
-    
+      .isIn(['CASH', 'NET_15', 'NET_30', 'NET_45', 'NET_60'])
+      .withMessage('Payment terms must be CASH, NET_15, NET_30, NET_45, or NET_60'),
+
     body('notes')
       .optional()
       .isLength({ max: 500 })
       .withMessage('Notes must not exceed 500 characters')
   ],
 
-  // Customer Validation
+  // ── Customers ────────────────────────────────────────────────
   validateCustomer: [
     body('name')
       .trim()
       .isLength({ min: 2, max: 100 })
       .withMessage('Name must be between 2 and 100 characters'),
-    
+
+    // ✅ FIX: was required — made optional
     body('email')
+      .optional()
       .isEmail()
       .normalizeEmail()
       .withMessage('Please provide a valid email address'),
-    
+
     body('phone')
       .optional()
       .isMobilePhone()
       .withMessage('Please provide a valid phone number'),
-    
-    body('address')
-      .optional()
-      .isLength({ max: 200 })
-      .withMessage('Address must not exceed 200 characters'),
-    
-    body('city')
-      .optional()
-      .isLength({ max: 50 })
-      .withMessage('City must not exceed 50 characters'),
-    
-    body('state')
-      .optional()
-      .isLength({ max: 50 })
-      .withMessage('State must not exceed 50 characters'),
-    
-    body('zipCode')
-      .optional()
-      .isLength({ max: 10 })
-      .withMessage('ZIP code must not exceed 10 characters'),
-    
+
+    body('address').optional().isLength({ max: 200 }).withMessage('Address must not exceed 200 characters'),
+    body('city').optional().isLength({ max: 50 }).withMessage('City must not exceed 50 characters'),
+    body('state').optional().isLength({ max: 50 }).withMessage('State must not exceed 50 characters'),
+    body('zipCode').optional().isLength({ max: 10 }).withMessage('ZIP code must not exceed 10 characters'),
+
     body('customerType')
       .optional()
       .isIn(['INDIVIDUAL', 'BUSINESS', 'RETAILER', 'WHOLESALER'])
       .withMessage('Customer type must be INDIVIDUAL, BUSINESS, RETAILER, or WHOLESALER'),
-    
-    body('creditLimit')
-      .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Credit limit must be a positive number'),
-    
+
+    body('creditLimit').optional().isFloat({ min: 0 }).withMessage('Credit limit must be a positive number'),
+
     body('paymentTerms')
       .optional()
       .isIn(['CASH', 'NET_15', 'NET_30', 'NET_60'])
       .withMessage('Payment terms must be CASH, NET_15, NET_30, or NET_60'),
-    
-    body('notes')
-      .optional()
-      .isLength({ max: 500 })
-      .withMessage('Notes must not exceed 500 characters')
+
+    body('notes').optional().isLength({ max: 500 }).withMessage('Notes must not exceed 500 characters')
   ],
 
-  // Credit/Debit Transaction Validation
+  // ── Credit/Debit ─────────────────────────────────────────────
   validateCreditDebitTransaction: [
-    body('customerId')
-      .notEmpty()
-      .withMessage('Customer ID is required')
-      .isInt()
-      .withMessage('Customer ID must be a valid integer'),
-    
-    body('transactionType')
-      .isIn(['CREDIT', 'DEBIT'])
-      .withMessage('Transaction type must be CREDIT or DEBIT'),
-    
-    body('amount')
-      .isFloat({ min: 0.01 })
-      .withMessage('Amount must be a positive number'),
-    
-    body('description')
-      .trim()
-      .isLength({ min: 1, max: 200 })
-      .withMessage('Description must be between 1 and 200 characters'),
-    
-    body('referenceType')
-      .optional()
-      .isIn(['SALE', 'RETURN', 'PAYMENT', 'ADJUSTMENT', 'REFUND', 'OTHER'])
-      .withMessage('Reference type must be SALE, RETURN, PAYMENT, ADJUSTMENT, REFUND, or OTHER'),
-    
-    body('referenceId')
-      .optional()
-      .isInt()
-      .withMessage('Reference ID must be a valid integer'),
-    
-    body('paymentMethod')
-      .optional()
-      .isIn(['CASH', 'CARD', 'DIGITAL', 'CREDIT', 'CHEQUE'])
-      .withMessage('Payment method must be CASH, CARD, DIGITAL, CREDIT, or CHEQUE'),
-    
-    body('notes')
-      .optional()
-      .isLength({ max: 500 })
-      .withMessage('Notes must not exceed 500 characters')
+    body('customerId').notEmpty().withMessage('Customer ID is required').isInt().withMessage('Customer ID must be a valid integer'),
+    body('transactionType').isIn(['CREDIT', 'DEBIT']).withMessage('Transaction type must be CREDIT or DEBIT'),
+    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number'),
+    body('description').trim().isLength({ min: 1, max: 200 }).withMessage('Description must be between 1 and 200 characters'),
+    body('referenceType').optional().isIn(['SALE', 'RETURN', 'PAYMENT', 'ADJUSTMENT', 'REFUND', 'OTHER']).withMessage('Reference type must be SALE, RETURN, PAYMENT, ADJUSTMENT, REFUND, or OTHER'),
+    body('referenceId').optional().isInt().withMessage('Reference ID must be a valid integer'),
+    body('paymentMethod').optional().isIn(['CASH', 'CARD', 'DIGITAL', 'CREDIT', 'CHEQUE']).withMessage('Payment method must be CASH, CARD, DIGITAL, CREDIT, or CHEQUE'),
+    body('notes').optional().isLength({ max: 500 }).withMessage('Notes must not exceed 500 characters')
   ],
 
-  // Billing Validation
+  // ── Billing ──────────────────────────────────────────────────
   validateBilling: [
     body('invoiceNumber')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 50) {
-          return true; // Allow valid invoice numbers
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 50) return true;
         throw new Error('Invoice number must be between 1 and 50 characters');
       })
       .withMessage('Invoice number must be between 1 and 50 characters'),
-    
+
     body('clientName')
       .custom((value) => {
-        if (value === null || value === undefined) {
-          return true; // Allow null or undefined values
-        }
-        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 200) {
-          return true; // Allow valid client names
-        }
+        if (value === null || value === undefined) return true;
+        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 200) return true;
         throw new Error('Client name must be between 1 and 200 characters');
       })
       .withMessage('Client name must be between 1 and 200 characters'),
-    
+
     body('clientEmail')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.includes('@') && value.includes('.')) {
-          return true; // Basic email validation
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.includes('@') && value.includes('.')) return true;
         throw new Error('Client email must be a valid email address');
       })
       .withMessage('Client email must be a valid email address'),
-    
+
     body('clientPhone')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length <= 20) {
-          return true; // Allow valid phone numbers
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length <= 20) return true;
         throw new Error('Client phone must not exceed 20 characters');
       })
       .withMessage('Client phone must not exceed 20 characters'),
-    
+
     body('clientAddress')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length <= 500) {
-          return true; // Allow valid addresses
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length <= 500) return true;
         throw new Error('Client address must not exceed 500 characters');
       })
       .withMessage('Client address must not exceed 500 characters'),
-    
+
     body('amount')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
+        if (value === null || value === undefined || value === '') return true;
         const num = parseFloat(value);
-        if (!isNaN(num) && num >= 0) {
-          return true; // Allow valid amounts
-        }
+        if (!isNaN(num) && num >= 0) return true;
         throw new Error('Amount must be a non-negative number');
       })
       .withMessage('Amount must be a non-negative number'),
-    
+
     body('tax')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
+        if (value === null || value === undefined || value === '') return true;
         const num = parseFloat(value);
-        if (!isNaN(num) && num >= 0) {
-          return true; // Allow valid tax amounts
-        }
+        if (!isNaN(num) && num >= 0) return true;
         throw new Error('Tax must be a non-negative number');
       })
       .withMessage('Tax must be a non-negative number'),
-    
+
     body('discount')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
+        if (value === null || value === undefined || value === '') return true;
         const num = parseFloat(value);
-        if (!isNaN(num) && num >= 0) {
-          return true; // Allow valid discount amounts
-        }
+        if (!isNaN(num) && num >= 0) return true;
         throw new Error('Discount must be a non-negative number');
       })
       .withMessage('Discount must be a non-negative number'),
-    
+
     body('dueDate')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.match(/^\d{4}-\d{2}-\d{2}$/)) {
-          return true; // Allow YYYY-MM-DD format
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.match(/^\d{4}-\d{2}-\d{2}$/)) return true;
         throw new Error('Due date must be a valid date in YYYY-MM-DD format');
       })
       .withMessage('Due date must be a valid date in YYYY-MM-DD format'),
-    
+
     body('service')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 200) {
-          return true; // Allow valid services
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 200) return true;
         throw new Error('Service must be between 1 and 200 characters');
       })
       .withMessage('Service must be between 1 and 200 characters'),
-    
+
     body('description')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length <= 1000) {
-          return true; // Allow valid descriptions
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length <= 1000) return true;
         throw new Error('Description must not exceed 1000 characters');
       })
       .withMessage('Description must not exceed 1000 characters'),
-    
+
     body('status')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
+        if (value === null || value === undefined || value === '') return true;
         const validStatuses = ['pending', 'paid', 'overdue', 'cancelled'];
-        const normalizedValue = value.toLowerCase(); // Normalize to lowercase
-        if (validStatuses.includes(normalizedValue)) {
-          return true; // Allow valid statuses (case-insensitive)
-        }
+        if (validStatuses.includes(value.toLowerCase())) return true;
         throw new Error('Status must be pending, paid, overdue, or cancelled');
       })
       .withMessage('Status must be pending, paid, overdue, or cancelled'),
-    
+
     body('paymentMethod')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
+        if (value === null || value === undefined || value === '') return true;
         const validMethods = ['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT', 'CHEQUE', 'MOBILE_MONEY'];
-        if (validMethods.includes(value)) {
-          return true; // Allow valid payment methods
-        }
-        throw new Error('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, CHEQUE, MOBILE_MONEY, FULLY_CREDIT, or PARTIAL_PAYMENT');
+        if (validMethods.includes(value)) return true;
+        throw new Error('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, CHEQUE, or MOBILE_MONEY');
       })
-      .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, CHEQUE, MOBILE_MONEY, FULLY_CREDIT, or PARTIAL_PAYMENT'),
-    
+      .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, CHEQUE, or MOBILE_MONEY'),
+
     body('paymentDate')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.match(/^\d{4}-\d{2}-\d{2}$/)) {
-          return true; // Allow YYYY-MM-DD format
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.match(/^\d{4}-\d{2}-\d{2}$/)) return true;
         throw new Error('Payment date must be a valid date in YYYY-MM-DD format');
       })
       .withMessage('Payment date must be a valid date in YYYY-MM-DD format'),
-    
+
     body('notes')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length <= 500) {
-          return true; // Allow valid notes
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length <= 500) return true;
         throw new Error('Notes must not exceed 500 characters');
       })
       .withMessage('Notes must not exceed 500 characters')
   ],
 
-  // Billing Update Validation (more lenient than create validation)
+  // ── Billing Update ───────────────────────────────────────────
   validateBillingUpdate: [
     body('invoiceNumber')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 50) {
-          return true; // Allow valid invoice numbers
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 50) return true;
         throw new Error('Invoice number must be between 1 and 50 characters');
       })
       .withMessage('Invoice number must be between 1 and 50 characters'),
-    
+
     body('clientName')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined) {
-          return true; // Allow null or undefined values
-        }
-        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 200) {
-          return true; // Allow valid client names
-        }
+        if (value === null || value === undefined) return true;
+        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 200) return true;
         throw new Error('Client name must be between 1 and 200 characters');
       })
       .withMessage('Client name must be between 1 and 200 characters'),
-    
+
     body('clientEmail')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-          return true; // Allow valid email addresses
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return true;
         throw new Error('Client email must be a valid email address');
       })
       .withMessage('Client email must be a valid email address'),
-    
+
     body('clientPhone')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length <= 20) {
-          return true; // Allow valid phone numbers
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length <= 20) return true;
         throw new Error('Client phone must not exceed 20 characters');
       })
       .withMessage('Client phone must not exceed 20 characters'),
-    
+
     body('clientAddress')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length <= 500) {
-          return true; // Allow valid addresses
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length <= 500) return true;
         throw new Error('Client address must not exceed 500 characters');
       })
       .withMessage('Client address must not exceed 500 characters'),
-    
+
     body('amount')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
+        if (value === null || value === undefined || value === '') return true;
         const num = parseFloat(value);
-        if (!isNaN(num) && num >= 0) {
-          return true; // Allow valid amounts
-        }
+        if (!isNaN(num) && num >= 0) return true;
         throw new Error('Amount must be a non-negative number');
       })
       .withMessage('Amount must be a non-negative number'),
-    
+
     body('tax')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
+        if (value === null || value === undefined || value === '') return true;
         const num = parseFloat(value);
-        if (!isNaN(num) && num >= 0) {
-          return true; // Allow valid tax amounts
-        }
+        if (!isNaN(num) && num >= 0) return true;
         throw new Error('Tax must be a non-negative number');
       })
       .withMessage('Tax must be a non-negative number'),
-    
+
     body('discount')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
+        if (value === null || value === undefined || value === '') return true;
         const num = parseFloat(value);
-        if (!isNaN(num) && num >= 0) {
-          return true; // Allow valid discount amounts
-        }
+        if (!isNaN(num) && num >= 0) return true;
         throw new Error('Discount must be a non-negative number');
       })
       .withMessage('Discount must be a non-negative number'),
-    
+
     body('dueDate')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && !isNaN(Date.parse(value))) {
-          return true; // Allow valid dates
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && !isNaN(Date.parse(value))) return true;
         throw new Error('Due date must be a valid date');
       })
       .withMessage('Due date must be a valid date'),
-    
+
     body('service')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 200) {
-          return true; // Allow valid services
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length >= 1 && value.trim().length <= 200) return true;
         throw new Error('Service must be between 1 and 200 characters');
       })
       .withMessage('Service must be between 1 and 200 characters'),
-    
+
     body('description')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length <= 1000) {
-          return true; // Allow valid descriptions
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length <= 1000) return true;
         throw new Error('Description must not exceed 1000 characters');
       })
       .withMessage('Description must not exceed 1000 characters'),
-    
+
     body('status')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
+        if (value === null || value === undefined || value === '') return true;
         const validStatuses = ['pending', 'paid', 'overdue', 'cancelled'];
-        const normalizedValue = value.toLowerCase();
-        if (validStatuses.includes(normalizedValue)) {
-          return true; // Allow valid statuses (case-insensitive)
-        }
+        if (validStatuses.includes(value.toLowerCase())) return true;
         throw new Error('Status must be pending, paid, overdue, or cancelled');
       })
       .withMessage('Status must be pending, paid, overdue, or cancelled'),
-    
+
+    // ✅ FIX: array now matches the error message (added CHEQUE and MOBILE_MONEY)
     body('paymentMethod')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT', 'FULLY_CREDIT', 'PARTIAL_PAYMENT'].includes(value)) {
-          return true; // Allow valid payment methods
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_PAYMENT', 'FULLY_CREDIT', 'PARTIAL_PAYMENT', 'CHEQUE', 'MOBILE_MONEY'].includes(value)) return true;
         throw new Error('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, CHEQUE, MOBILE_MONEY, FULLY_CREDIT, or PARTIAL_PAYMENT');
       })
       .withMessage('Payment method must be CASH, CARD, BANK_TRANSFER, MOBILE_PAYMENT, CHEQUE, MOBILE_MONEY, FULLY_CREDIT, or PARTIAL_PAYMENT'),
-    
+
     body('paymentDate')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && !isNaN(Date.parse(value))) {
-          return true; // Allow valid dates
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && !isNaN(Date.parse(value))) return true;
         throw new Error('Payment date must be a valid date');
       })
       .withMessage('Payment date must be a valid date'),
-    
+
     body('notes')
       .optional()
       .custom((value) => {
-        if (value === null || value === undefined || value === '') {
-          return true; // Allow null, undefined, or empty values
-        }
-        if (typeof value === 'string' && value.trim().length <= 500) {
-          return true; // Allow valid notes
-        }
+        if (value === null || value === undefined || value === '') return true;
+        if (typeof value === 'string' && value.trim().length <= 500) return true;
         throw new Error('Notes must not exceed 500 characters');
       })
       .withMessage('Notes must not exceed 500 characters')
   ],
 
-  // Financial voucher validation
+  // ── Financial Vouchers ───────────────────────────────────────
   financialVoucherValidation: [
     body('type')
       .isIn(['INCOME', 'EXPENSE', 'TRANSFER'])
       .withMessage('Type must be INCOME, EXPENSE, or TRANSFER'),
-    
+
     body('category')
       .isIn(['SALES', 'EXPENSE', 'TRANSFER', 'ADJUSTMENT', 'REFUND', 'RENT', 'FARE', 'UTILITY'])
       .withMessage('Category must be SALES, EXPENSE, TRANSFER, ADJUSTMENT, REFUND, RENT, FARE, or UTILITY'),
-    
+
     body('paymentMethod')
       .isIn(['CASH', 'BANK', 'MOBILE', 'CARD', 'CHEQUE'])
       .withMessage('Payment method must be CASH, BANK, MOBILE, CARD, or CHEQUE'),
-    
+
     body('amount')
       .isFloat({ min: 0.01 })
       .withMessage('Amount must be a positive number greater than 0'),
-    
+
     body('scopeType')
       .isIn(['BRANCH', 'WAREHOUSE'])
       .withMessage('Scope type must be BRANCH or WAREHOUSE'),
-    
-    // FIXED: Accept both string and number for scopeId
+
     body('scopeId')
       .custom((value) => {
         if (value === null || value === undefined || value === '') {
           throw new Error('Scope ID is required');
         }
-        // Accept both string and number
         const strValue = String(value);
         return strValue.length >= 1 && strValue.length <= 255;
       })
       .withMessage('Scope ID must be between 1 and 255 characters')
       .customSanitizer(value => String(value)),
-    
+
     body('description')
       .optional()
       .isString()
       .isLength({ max: 1000 })
       .withMessage('Description must be a string with maximum 1000 characters'),
-    
+
     body('reference')
       .optional()
       .isString()
       .isLength({ max: 255 })
       .withMessage('Reference must be a string with maximum 255 characters'),
-    
+
     body('notes')
       .optional()
       .isString()

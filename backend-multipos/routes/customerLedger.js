@@ -1,23 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const customerLedgerController = require('../controllers/customerLedgerController');
-const auth = require('../middleware/auth');
+const { requireCashier } = require('../middleware/rbac');
+const { checkCashierCustomerEditPermission, checkWarehouseKeeperCustomerEditPermission } = require('../middleware/branchPermissions');
 
-// @route   GET /api/customer-ledger/customers
-// @desc    Get all customers with their transaction summaries
-// @access  Private (Admin, Cashier, Warehouse Keeper)
-router.get('/customers', auth, customerLedgerController.getAllCustomersWithSummaries);
-
-// @route   GET /api/customer-ledger/:customerId
-// @desc    Get comprehensive customer ledger
-// @access  Private (Admin, Cashier, Warehouse Keeper)
-router.get('/:customerId', auth, customerLedgerController.getCustomerLedger);
-
-// @route   GET /api/customer-ledger/:customerId/export
-// @desc    Export customer ledger to PDF
-// @access  Private (Admin, Cashier, Warehouse Keeper)
-router.get('/:customerId/export', auth, customerLedgerController.exportCustomerLedger);
+router.get('/customers', customerLedgerController.getAllCustomersWithSummaries);
+router.get('/:customerId', customerLedgerController.getCustomerLedger);
+router.get('/:customerId/export', customerLedgerController.exportCustomerLedger);
+router.put('/:customerId/update-info', requireCashier, checkCashierCustomerEditPermission, checkWarehouseKeeperCustomerEditPermission, customerLedgerController.updateCustomerLedgerInfo);
 
 module.exports = router;
-
-

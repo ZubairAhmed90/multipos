@@ -39,11 +39,13 @@ class Sale {
     this.creditStatus = data.credit_status;
     this.creditDueDate = data.credit_due_date;
     this.customerId = data.customer_id;
+    this.retailerId = data.retailer_id;
     this.customerName = data.customer_name;
     this.customerPhone = data.customer_phone;
     this.customerInfo = data.customer_info ? JSON.parse(data.customer_info) : null;
     this.notes = data.notes;
     this.status = data.status;
+    this.saleDate = data.sale_date || null;
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
     this.items = data.items || [];
@@ -51,11 +53,12 @@ class Sale {
 
   // Static method to create a new sale with items
   static async create(saleData) {
-    const { 
-      invoiceNo, scopeType, scopeId, userId, shiftId, items, 
-      subtotal, tax, discount, total, paymentMethod, paymentType, paymentStatus, 
+    const {
+      invoiceNo, scopeType, scopeId, userId, shiftId, items,
+      subtotal, tax, discount, total, paymentMethod, paymentType, paymentStatus,
       customerInfo, notes, status = 'COMPLETED', customerName, customerPhone,
-      paymentAmount, creditAmount, oldBalance, runningBalance, creditStatus, creditDueDate, customerId
+      paymentAmount, creditAmount, oldBalance, runningBalance, creditStatus, creditDueDate, customerId, retailerId,
+      saleDate
     } = saleData;
     
     
@@ -66,16 +69,18 @@ class Sale {
       
       // Insert sale with old_balance and running_balance columns
       const [saleResult] = await connection.execute(
-        `INSERT INTO sales (invoice_no, scope_type, scope_id, user_id, shift_id, 
-         subtotal, tax, discount, total, payment_method, payment_type, payment_status, 
-         customer_info, notes, status, customer_name, customer_phone, 
-         payment_amount, credit_amount, old_balance, running_balance, credit_status, credit_due_date, customer_id) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [invoiceNo || null, scopeType || null, scopeId || null, userId || null, shiftId || null, 
-         subtotal || 0, tax || 0, discount || 0, total || 0, paymentMethod || null, 
-         paymentType || null, paymentStatus || null, customerInfo || null, notes || null, status || null, 
-         customerName || null, customerPhone || null, paymentAmount || 0, 
-         creditAmount || 0, oldBalance || 0, runningBalance || 0, creditStatus || 'NONE', creditDueDate || null, customerId || null]
+        `INSERT INTO sales (invoice_no, scope_type, scope_id, user_id, shift_id,
+         subtotal, tax, discount, total, payment_method, payment_type, payment_status,
+         customer_info, notes, status, customer_name, customer_phone,
+         payment_amount, credit_amount, old_balance, running_balance, credit_status, credit_due_date, customer_id, retailer_id,
+         sale_date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [invoiceNo || null, scopeType || null, scopeId || null, userId || null, shiftId || null,
+         subtotal || 0, tax || 0, discount || 0, total || 0, paymentMethod || null,
+         paymentType || null, paymentStatus || null, customerInfo || null, notes || null, status || null,
+         customerName || null, customerPhone || null, paymentAmount || 0,
+         creditAmount || 0, oldBalance || 0, runningBalance || 0, creditStatus || 'NONE', creditDueDate || null, customerId || null, retailerId || null,
+         saleDate || null]
       );
       
       const saleId = saleResult.insertId;
@@ -445,6 +450,7 @@ class Sale {
             'creditStatus': 'credit_status',
             'creditDueDate': 'credit_due_date',
             'customerId': 'customer_id',
+            'retailerId': 'retailer_id',
             'customerName': 'customer_name',
             'customerPhone': 'customer_phone',
             'createdAt': 'created_at',

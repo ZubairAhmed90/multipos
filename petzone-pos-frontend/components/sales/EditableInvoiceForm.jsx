@@ -934,12 +934,6 @@ useEffect(() => {
         </DialogActions>
         </Dialog>
 
-        {/* Print Dialog */}
-// ============================================================
-// REPLACE the PrintDialog block at the bottom of EditableInvoiceForm.jsx
-// (the block starting with: {/* Print Dialog */} )
-// with the following:
-// ============================================================
 
 {/* Print Dialog */}
 {showPrintDialog && (

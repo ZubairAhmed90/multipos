@@ -7,75 +7,29 @@ const { pool } = require('../config/database');
 const getRetailers = async (req, res) => {
   try {
     const { status, businessType, paymentTerms, warehouseId } = req.query;
-    
-    console.log('[Retailers Controller] Request params:', { status, businessType, paymentTerms, warehouseId })
-    console.log('[Retailers Controller] User:', { role: req.user.role, warehouseId: req.user.warehouseId })
-    
-    let whereConditions = [];
-    let params = [];
-    
-    // Apply role-based filtering
+    const whereConditions = [];
+    const params = [];
+
     if (req.user.role === 'WAREHOUSE_KEEPER') {
-      // Warehouse keepers can only see retailers in their warehouse
-      // Use query parameter warehouseId if provided, otherwise use user's warehouseId
-      const targetWarehouseId = warehouseId || req.user.warehouseId;
-      console.log('[Retailers Controller] Target warehouse ID:', targetWarehouseId)
       whereConditions.push('warehouse_id = ?');
-      params.push(targetWarehouseId);
+      params.push(warehouseId || req.user.warehouseId);
     } else if (req.user.role === 'CASHIER') {
-      // Cashiers don't have access to retailers (they use companies)
-      return res.status(403).json({
-        success: false,
-        message: 'Cashiers do not have access to retailers'
-      });
+      return res.status(403).json({ success: false, message: 'Cashiers do not have access to retailers' });
     } else if (req.user.role === 'ADMIN' && warehouseId) {
-      // Admin can filter by specific warehouse if requested
-      console.log('[Retailers Controller] Admin filtering by warehouse:', warehouseId)
       whereConditions.push('warehouse_id = ?');
       params.push(warehouseId);
     }
-    // Admins without warehouseId filter can see all retailers
-    
-    if (status) {
-      whereConditions.push('status = ?');
-      params.push(status);
-    }
-    
-    if (businessType) {
-      whereConditions.push('business_type = ?');
-      params.push(businessType);
-    }
-    
-    if (paymentTerms) {
-      whereConditions.push('payment_terms = ?');
-      params.push(paymentTerms);
-    }
-    
+
+    if (status) { whereConditions.push('status = ?'); params.push(status); }
+    if (businessType) { whereConditions.push('business_type = ?'); params.push(businessType); }
+    if (paymentTerms) { whereConditions.push('payment_terms = ?'); params.push(paymentTerms); }
+
     const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
-    
-    console.log('[Retailers Controller] Final query:', `SELECT * FROM retailers ${whereClause} ORDER BY name ASC`)
-    console.log('[Retailers Controller] Query params:', params)
-    
-    const [retailers] = await pool.execute(`
-      SELECT * FROM retailers 
-      ${whereClause}
-      ORDER BY name ASC
-    `, params);
-    
-    console.log('[Retailers Controller] Found retailers:', retailers.length)
-    console.log('[Retailers Controller] Retailers data:', retailers)
-    
-    res.json({
-      success: true,
-      count: retailers.length,
-      data: retailers
-    });
+    const [retailers] = await pool.execute(`SELECT * FROM retailers ${whereClause} ORDER BY name ASC`, params);
+
+    res.json({ success: true, count: retailers.length, data: retailers });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error retrieving retailers',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error retrieving retailers', error: error.message });
   }
 };
 
@@ -85,29 +39,12 @@ const getRetailers = async (req, res) => {
 const getRetailer = async (req, res) => {
   try {
     const { id } = req.params;
-    
-    const [retailers] = await pool.execute(
-      'SELECT * FROM retailers WHERE id = ?',
-      [id]
-    );
-    
-    if (retailers.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Retailer not found'
-      });
-    }
-    
-    res.json({
-      success: true,
-      data: retailers[0]
-    });
+    const [retailers] = await pool.execute('SELECT * FROM retailers WHERE id = ?', [id]);
+
+    if (retailers.length === 0) return res.status(404).json({ success: false, message: 'Retailer not found' });
+    res.json({ success: true, data: retailers[0] });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error retrieving retailer',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error retrieving retailer', error: error.message });
   }
 };
 
@@ -117,51 +54,18 @@ const getRetailer = async (req, res) => {
 const createRetailer = async (req, res) => {
   try {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation error',
-        errors: errors.array()
-      });
-    }
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation error', errors: errors.array() });
 
-    const {
-      name,
-      email,
-      phone,
-      address,
-      city,
-      state,
-      zipCode,
-      businessType,
-      taxId,
-      creditLimit,
-      paymentTerms,
-      status,
-      notes
-    } = req.body;
+    const { name, email, phone, address, city, state, zipCode, businessType, taxId, creditLimit, paymentTerms, status, notes } = req.body;
 
     const normalize = (v) => (v === undefined || v === '' ? null : v);
     const normalizeId = (v) => (v === undefined || v === '' ? null : v);
-    const safeNumber = (v, fallback = 0) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : fallback;
-    };
+    const safeNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };
 
-    const normalizedPaymentTerms = paymentTerms || 'CASH';
-    const normalizedStatus = status || 'ACTIVE';
-    const normalizedCreditLimit = creditLimit !== undefined && creditLimit !== '' ? safeNumber(creditLimit, 0) : 0;
-
-    // Determine warehouse_id based on user role
     let warehouseId = null;
-  if (req.user.role === 'WAREHOUSE_KEEPER') {
-    warehouseId = normalizeId(req.user.warehouseId);
-  } else if (req.user.role === 'ADMIN') {
-    // Admin can specify warehouse_id in request body, default to null (global)
-    warehouseId = normalizeId(req.body.warehouseId);
-  }
+    if (req.user.role === 'WAREHOUSE_KEEPER') warehouseId = normalizeId(req.user.warehouseId);
+    else if (req.user.role === 'ADMIN') warehouseId = normalizeId(req.body.warehouseId);
 
-    // Build payload with guaranteed non-undefined values
     const payload = {
       warehouseId: normalizeId(warehouseId),
       name: name ?? null,
@@ -173,64 +77,23 @@ const createRetailer = async (req, res) => {
       zipCode: normalize(zipCode),
       businessType: normalize(businessType),
       taxId: normalize(taxId),
-      creditLimit: normalizedCreditLimit ?? 0,
-      paymentTerms: normalizedPaymentTerms ?? 'CASH',
-      status: normalizedStatus ?? 'ACTIVE',
+      creditLimit: (creditLimit !== undefined && creditLimit !== '') ? safeNumber(creditLimit, 0) : 0,
+      paymentTerms: paymentTerms || 'CASH',
+      status: status || 'ACTIVE',
       notes: normalize(notes)
     };
 
-    // Build params and guard against undefined
-    const params = [
-      payload.warehouseId,
-      payload.name,
-      payload.email,
-      payload.phone,
-      payload.address,
-      payload.city,
-      payload.state,
-      payload.zipCode,
-      payload.businessType,
-      payload.taxId,
-      payload.creditLimit,
-      payload.paymentTerms,
-      payload.status,
-      payload.notes
-    ].map(v => (v === undefined ? null : v));
-
-    const hasUndefined = params.some(v => v === undefined);
-    if (hasUndefined) {
-      return res.status(400).json({
-        success: false,
-        message: 'Retailer payload contained undefined',
-        payload
-      });
-    }
+    const params = Object.values(payload).map(v => (v === undefined ? null : v));
 
     const [result] = await pool.execute(`
-      INSERT INTO retailers (
-        warehouse_id, name, email, phone, address, city, state, zip_code, 
-        business_type, tax_id, credit_limit, payment_terms, 
-        status, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO retailers (warehouse_id, name, email, phone, address, city, state, zip_code, business_type, tax_id, credit_limit, payment_terms, status, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, params);
 
-    // Get the created retailer
-    const [retailers] = await pool.execute(
-      'SELECT * FROM retailers WHERE id = ?',
-      [result.insertId]
-    );
-
-    res.status(201).json({
-      success: true,
-      message: 'Retailer created successfully',
-      data: retailers[0]
-    });
+    const [retailers] = await pool.execute('SELECT * FROM retailers WHERE id = ?', [result.insertId]);
+    res.status(201).json({ success: true, message: 'Retailer created successfully', data: retailers[0] });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error creating retailer',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error creating retailer', error: error.message });
   }
 };
 
@@ -240,127 +103,58 @@ const createRetailer = async (req, res) => {
 const updateRetailer = async (req, res) => {
   try {
     const { id } = req.params;
-    const {
-      name,
-      email,
-      phone,
-      address,
-      city,
-      state,
-      zipCode,
-      businessType,
-      taxId,
-      creditLimit,
-      paymentTerms,
-      status,
-      notes
-    } = req.body;
+    const { name, email, phone, address, city, state, zipCode, businessType, taxId, creditLimit, paymentTerms, status, notes } = req.body;
     const normalize = (v) => (v === undefined || v === '' ? null : v);
-    const normalizedPaymentTerms = paymentTerms || 'CASH';
-    const normalizedStatus = status || 'ACTIVE';
 
-    // Check if retailer exists
-    const [existing] = await pool.execute(
-      'SELECT * FROM retailers WHERE id = ?',
-      [id]
-    );
+    const [existing] = await pool.execute('SELECT * FROM retailers WHERE id = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ success: false, message: 'Retailer not found' });
 
-    if (existing.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Retailer not found'
-      });
-    }
-
-    // Build update query dynamically
     const updateFields = [];
     const updateValues = [];
 
-    if (name !== undefined) {
-      updateFields.push('name = ?');
-      updateValues.push(name);
-    }
-    if (email !== undefined) {
-      updateFields.push('email = ?');
-      updateValues.push(normalize(email));
-    }
-    if (phone !== undefined) {
-      updateFields.push('phone = ?');
-      updateValues.push(normalize(phone));
-    }
-    if (address !== undefined) {
-      updateFields.push('address = ?');
-      updateValues.push(normalize(address));
-    }
-    if (city !== undefined) {
-      updateFields.push('city = ?');
-      updateValues.push(normalize(city));
-    }
-    if (state !== undefined) {
-      updateFields.push('state = ?');
-      updateValues.push(normalize(state));
-    }
-    if (zipCode !== undefined) {
-      updateFields.push('zip_code = ?');
-      updateValues.push(normalize(zipCode));
-    }
-    if (businessType !== undefined) {
-      updateFields.push('business_type = ?');
-      updateValues.push(normalize(businessType));
-    }
-    if (taxId !== undefined) {
-      updateFields.push('tax_id = ?');
-      updateValues.push(normalize(taxId));
+    const fieldMap = [
+      ['name', name, name],
+      ['email', email, normalize(email)],
+      ['phone', phone, normalize(phone)],
+      ['address', address, normalize(address)],
+      ['city', city, normalize(city)],
+      ['state', state, normalize(state)],
+      ['zip_code', zipCode, normalize(zipCode)],
+      ['business_type', businessType, normalize(businessType)],
+      ['tax_id', taxId, normalize(taxId)],
+      ['payment_terms', paymentTerms, paymentTerms || 'CASH'],
+      ['status', status, status || 'ACTIVE'],
+      ['notes', notes, normalize(notes)],
+    ];
+
+    for (const [col, raw, val] of fieldMap) {
+      if (raw !== undefined) { updateFields.push(`${col} = ?`); updateValues.push(val); }
     }
     if (creditLimit !== undefined) {
       updateFields.push('credit_limit = ?');
       updateValues.push(creditLimit !== '' && creditLimit !== null ? Number(creditLimit) : 0);
     }
-    if (paymentTerms !== undefined) {
-      updateFields.push('payment_terms = ?');
-      updateValues.push(normalizedPaymentTerms);
-    }
-    if (status !== undefined) {
-      updateFields.push('status = ?');
-      updateValues.push(normalizedStatus);
-    }
-    if (notes !== undefined) {
-      updateFields.push('notes = ?');
-      updateValues.push(normalize(notes));
-    }
 
-    if (updateFields.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No fields to update'
-      });
-    }
+    if (updateFields.length === 0) return res.status(400).json({ success: false, message: 'No fields to update' });
 
     updateValues.push(id);
+    await pool.execute(`UPDATE retailers SET ${updateFields.join(', ')} WHERE id = ?`, updateValues);
 
-    await pool.execute(`
-      UPDATE retailers 
-      SET ${updateFields.join(', ')}
-      WHERE id = ?
-    `, updateValues);
+    const [retailers] = await pool.execute('SELECT * FROM retailers WHERE id = ?', [id]);
 
-    // Get the updated retailer
-    const [retailers] = await pool.execute(
-      'SELECT * FROM retailers WHERE id = ?',
-      [id]
-    );
+    // Cascade name/phone to linked sales records
+    const saleCascadeFields = [];
+    const saleCascadeValues = [];
+    if (name !== undefined) { saleCascadeFields.push('customer_name = ?'); saleCascadeValues.push(name); }
+    if (phone !== undefined) { saleCascadeFields.push('customer_phone = ?'); saleCascadeValues.push(phone); }
+    if (saleCascadeFields.length > 0) {
+      saleCascadeValues.push(id);
+      await pool.execute(`UPDATE sales SET ${saleCascadeFields.join(', ')} WHERE retailer_id = ?`, saleCascadeValues);
+    }
 
-    res.json({
-      success: true,
-      message: 'Retailer updated successfully',
-      data: retailers[0]
-    });
+    res.json({ success: true, message: 'Retailer updated successfully', data: retailers[0] });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error updating retailer',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error updating retailer', error: error.message });
   }
 };
 
@@ -371,51 +165,17 @@ const deleteRetailer = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if retailer exists
-    const [existing] = await pool.execute(
-      'SELECT * FROM retailers WHERE id = ?',
-      [id]
-    );
+    const [existing] = await pool.execute('SELECT * FROM retailers WHERE id = ?', [id]);
+    if (existing.length === 0) return res.status(404).json({ success: false, message: 'Retailer not found' });
 
-    if (existing.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Retailer not found'
-      });
-    }
-
-    // Check if retailer has any sales
-    const [sales] = await pool.execute(
-      'SELECT COUNT(*) as count FROM sales WHERE customer_info LIKE ?',
-      [`%"id":${id}%`]
-    );
-
-    if (sales[0].count > 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot delete retailer with existing sales. Please deactivate instead.'
-      });
-    }
+    const [sales] = await pool.execute('SELECT COUNT(*) as count FROM sales WHERE customer_info LIKE ?', [`%"id":${id}%`]);
+    if (sales[0].count > 0) return res.status(400).json({ success: false, message: 'Cannot delete retailer with existing sales. Please deactivate instead.' });
 
     await pool.execute('DELETE FROM retailers WHERE id = ?', [id]);
-
-    res.json({
-      success: true,
-      message: 'Retailer deleted successfully'
-    });
+    res.json({ success: true, message: 'Retailer deleted successfully' });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error deleting retailer',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error deleting retailer', error: error.message });
   }
 };
 
-module.exports = {
-  getRetailers,
-  getRetailer,
-  createRetailer,
-  updateRetailer,
-  deleteRetailer
-};
+module.exports = { getRetailers, getRetailer, createRetailer, updateRetailer, deleteRetailer };

@@ -144,7 +144,8 @@ const defaultCategories = [
   { value: 'Other', label: 'Other' },
 ]
 
-const getFields = (user, categoryOptions) => {
+
+const getFields = (user, categoryOptions, isEdit = false) => {
   const categoryOpts = categoryOptions && categoryOptions.length > 0 ? categoryOptions : defaultCategories
   const baseFields = [
     { name: 'name', label: 'Product Name', type: 'text', required: true },
@@ -191,29 +192,37 @@ const getFields = (user, categoryOptions) => {
         { value: 'other', label: 'Other' },
       ]
     },
-    { name: 'costPrice', label: 'Cost Price', type: 'number', required: true, step: 0.01 },
+
+    // costPrice — hidden on EDIT
+    ...(!isEdit ? [
+      { name: 'costPrice', label: 'Cost Price', type: 'number', required: true, step: 0.01 },
+    ] : []),
+
     { name: 'sellingPrice', label: 'Selling Price', type: 'number', required: true, step: 0.01 },
     { name: 'currentStock', label: 'Current Stock', type: 'number', required: true },
-    
-    { 
-      name: 'supplierId', 
-      label: 'Supplier', 
-      type: 'custom', 
-      required: false,
-      render: ({ register, errors, setValue, watch }) => (
-        <SupplierField 
-          register={register}
-          errors={errors}
-          setValue={setValue}
-          watch={watch}
-          label="Supplier"
-          required={false}
-        />
-      )
-    },
-    { name: 'supplierName', label: 'Supplier Name (Manual)', type: 'text', required: false },
-    { name: 'purchaseDate', label: 'Purchase Date', type: 'date', required: false },
-    { name: 'purchasePrice', label: 'Purchase Price', type: 'number', required: false, step: 0.01 },
+
+    // supplierId, supplierName, purchaseDate, purchasePrice — hidden on EDIT
+    ...(!isEdit ? [
+      { 
+        name: 'supplierId', 
+        label: 'Supplier', 
+        type: 'custom', 
+        required: false,
+        render: ({ register, errors, setValue, watch }) => (
+          <SupplierField 
+            register={register}
+            errors={errors}
+            setValue={setValue}
+            watch={watch}
+            label="Supplier"
+            required={false}
+          />
+        )
+      },
+      { name: 'supplierName', label: 'Supplier Name (Manual)', type: 'text', required: false },
+      { name: 'purchaseDate', label: 'Purchase Date', type: 'date', required: false },
+      { name: 'purchasePrice', label: 'Purchase Price', type: 'number', required: false, step: 0.01 },
+    ] : []),
   ]
 
   if (user?.role === 'ADMIN') {
@@ -1415,7 +1424,7 @@ const rawInventory = Array.isArray(inventory) ? inventory : []
           open={formDialogOpen}
           onClose={handleFormClose}
           title={isEdit ? 'Edit Inventory Item' : 'Add Inventory Item'}
-          fields={getFields(user, categoriesFromApi)}
+         fields={getFields(user, categoriesFromApi, isEdit)}
           validationSchema={inventorySchema}
           initialData={selectedEntity}
           isEdit={isEdit}

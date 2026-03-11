@@ -1,6 +1,7 @@
 const { validationResult } = require('express-validator');
 const Customer = require('../models/Customer');
 const CreditDebitTransaction = require('../models/CreditDebitTransaction');
+const { pool } = require('../config/database');
 
 // @desc    Create new customer
 // @route   POST /api/customers
@@ -120,9 +121,9 @@ const getCustomer = async (req, res, next) => {
   }
 };
 
-// @desc    Update customer
+// @desc    Update customer (admin only)
 // @route   PUT /api/customers/:id
-// @access  Private (Cashier, Warehouse Keeper, Admin)
+// @access  Private (Admin only)
 const updateCustomer = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -143,17 +144,26 @@ const updateCustomer = async (req, res, next) => {
       });
     }
 
-    // Check if user can update this customer
-    if (req.user.role !== 'ADMIN') {
-      if (req.user.branchId && customer.branchId !== req.user.branchId) {
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied to this customer'
-        });
-      }
-    }
-
     const updatedCustomer = await customer.update(req.body);
+
+    // Cascade: update customer_name / customer_phone in sales records
+    const cascadeFields = [];
+    const cascadeValues = [];
+    if (req.body.name !== undefined) {
+      cascadeFields.push('customer_name = ?');
+      cascadeValues.push(req.body.name);
+    }
+    if (req.body.phone !== undefined) {
+      cascadeFields.push('customer_phone = ?');
+      cascadeValues.push(req.body.phone);
+    }
+    if (cascadeFields.length > 0) {
+      cascadeValues.push(customer.id);
+      await pool.execute(
+        `UPDATE sales SET ${cascadeFields.join(', ')} WHERE customer_id = ?`,
+        cascadeValues
+      );
+    }
 
     res.json({
       success: true,

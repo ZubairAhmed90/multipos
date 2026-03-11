@@ -229,10 +229,11 @@ const DetailedCustomerLedgerPage = () => {
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A'
-    const date = new Date(dateString)
-    const day = String(date.getDate()).padStart(2, '0')
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const year = date.getFullYear()
+    // Parse date part directly — avoids UTC→local shift that shows tomorrow's date
+    const datePart = String(dateString).substring(0, 10) // "2026-03-04"
+    const parts = datePart.split('-')
+    if (parts.length !== 3) return 'N/A'
+    const [year, month, day] = parts
     return `${day}/${month}/${year}`
   }
 

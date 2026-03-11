@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const { body } = require('express-validator');
-const auth = require('../middleware/auth');
 const { requireAdmin } = require('../middleware/rbac');
 const categoryController = require('../controllers/inventoryCategoryController');
 
@@ -21,11 +20,9 @@ const categoryValidation = [
     .withMessage('Status must be ACTIVE or INACTIVE')
 ];
 
-// Everyone (authenticated) can list categories; only admin can manage
-router.get('/', auth, categoryController.listCategories);
-router.post('/', auth, requireAdmin, categoryValidation, categoryController.createCategory);
-router.put('/:id', auth, requireAdmin, categoryValidation, categoryController.updateCategory);
-router.delete('/:id', auth, requireAdmin, categoryController.deleteCategory);
+router.get('/', categoryController.listCategories);
+router.post('/', requireAdmin, categoryValidation, categoryController.createCategory);
+router.put('/:id', requireAdmin, categoryValidation, categoryController.updateCategory);
+router.delete('/:id', requireAdmin, categoryController.deleteCategory);
 
 module.exports = router;
-

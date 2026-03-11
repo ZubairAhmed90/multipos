@@ -14,6 +14,8 @@ export const fetchCustomerLedger = createAsyncThunk(
       if (params.limit) queryParams.append('limit', params.limit)
       if (params.offset) queryParams.append('offset', params.offset)
       if (params.detailed) queryParams.append('detailed', params.detailed)
+      if (params.filterName) queryParams.append('filterName', params.filterName)
+      if (params.filterPhone) queryParams.append('filterPhone', params.filterPhone)
       
       const response = await api.get(`/customer-ledger/${customerId}?${queryParams.toString()}`)
       return response.data

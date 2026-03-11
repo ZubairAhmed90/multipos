@@ -1,7 +1,7 @@
 'use client'
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import api from '../../../../utils/axios'
+import api from '../../../utils/axios'
 import { useRouter } from 'next/navigation'
 import {
   Box,
@@ -75,12 +75,11 @@ import {
   CheckBoxOutlineBlank as CheckBoxOutlineBlankIcon,
   Inventory as InventoryIcon
 } from '@mui/icons-material'
-import PrintDialog from '../../../../components/print/PrintDialog'
-import DashboardLayout from '../../../../components/layout/DashboardLayout'
-import RouteGuard from '../../../../components/auth/RouteGuard'
-import PhysicalScanner from '../../../../components/pos/PhysicalScanner'
-import { fetchInventory } from '../../../store/slices/inventorySlice'
-import { createSale, fetchSales } from '../../../store/slices/salesSlice'
+import PrintDialog from '../../../components/print/PrintDialog'
+import RouteGuard from '../../../components/auth/RouteGuard'
+import PhysicalScanner from '../../../components/pos/PhysicalScanner'
+import { fetchInventory } from '../../store/slices/inventorySlice'
+import { createSale, fetchSales } from '../../store/slices/salesSlice'
 
 // Tab management utilities
 const generateTabId = () => `tab_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -177,6 +176,7 @@ const createEmptyTabState = (overrides = {}) => ({
   taxRate: 0,
   totalDiscount: 0,
   notes: '',
+  saleDate: '',
   ...overrides
 })
 
@@ -314,6 +314,7 @@ function POSTerminal() {
   const [taxRate, setTaxRate] = useState(0) // Tax rate as percentage (0-100)
   const [totalDiscount, setTotalDiscount] = useState(0) // Total discount amount
   const [notes, setNotes] = useState('')
+  const [saleDate, setSaleDate] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [showSettings, setShowSettings] = useState(false)
@@ -403,7 +404,8 @@ const [isProcessingSale, setIsProcessingSale] = useState(false)
       showSettlementOptions,
       taxRate,
       totalDiscount,
-      notes
+      notes,
+      saleDate
     }
 
     const hasChanges = Object.entries(updates).some(([key, value]) => {
@@ -722,6 +724,7 @@ const [isProcessingSale, setIsProcessingSale] = useState(false)
     setTaxRate(newTab.taxRate)
     setTotalDiscount(newTab.totalDiscount)
     setNotes(newTab.notes)
+    setSaleDate(newTab.saleDate || '')
 
   }, [tabCounter])
 
@@ -2681,7 +2684,8 @@ const saleData = {
     name: customerName || 'Walk-in Customer',
     phone: customerPhone || ''
   },
-  notes: notes || 'Sale completed without printing'
+  notes: notes || 'Sale completed without printing',
+  saleDate: saleDate || null
 }
 
       console.log('[POS] Sale data being sent:', saleData);      
@@ -4550,7 +4554,7 @@ const handleSaleWithoutPrint = async () => {
 
     <RouteGuard allowedRoles={['CASHIER', 'ADMIN', 'MANAGER']}>
 
-      <DashboardLayout>
+      
         {/* Admin Mode Indicator */}
         {isAdminMode && scopeInfo && (
           <Box sx={{ 
@@ -5940,6 +5944,22 @@ const handleSaleWithoutPrint = async () => {
 
 
 
+              {/* Sale Date Section */}
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" gutterBottom>
+                  Sale Date <Typography component="span" variant="caption" color="text.secondary">(optional – leave blank for today)</Typography>
+                </Typography>
+                <TextField
+                  fullWidth
+                  type="date"
+                  value={saleDate}
+                  onChange={(e) => setSaleDate(e.target.value)}
+                  inputProps={{ max: new Date().toISOString().split('T')[0] }}
+                  size="small"
+                  helperText={saleDate ? `Backdated to ${saleDate}` : 'Using today\'s date'}
+                />
+              </Box>
+
               {/* Notes Section */}
 
               <Box sx={{ mt: 'auto' }}>
@@ -6982,7 +7002,7 @@ const handleSaleWithoutPrint = async () => {
   </DialogContent>
 </Dialog>
         </Box>
-      </DashboardLayout>
+      
     </RouteGuard>
   )
 }

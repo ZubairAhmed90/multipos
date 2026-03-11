@@ -71,13 +71,13 @@ const getCustomerLedger = async (req, res) => {
       console.log('🔍 Customer filter added for:', customerId);
     }
 
-    // Date filtering
+    // Date filtering — use sale_date when set, else fall back to created_at
     if (startDate) {
-      whereConditions.push('s.created_at >= ?');
+      whereConditions.push('COALESCE(s.sale_date, s.created_at) >= ?');
       params.push(startDate);
     }
     if (endDate) {
-      whereConditions.push('s.created_at <= ?');
+      whereConditions.push('COALESCE(s.sale_date, s.created_at) <= ?');
       params.push(endDate);
     }
 
@@ -226,7 +226,7 @@ const getCustomerLedger = async (req, res) => {
         s.invoice_no,
         s.scope_type,
         s.scope_id,
-        s.created_at as transaction_date,
+        COALESCE(s.sale_date, s.created_at) as transaction_date,
         s.payment_method,
         s.payment_type,
         s.payment_status,
@@ -266,8 +266,8 @@ const getCustomerLedger = async (req, res) => {
       LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
       LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
       ${whereClause}
-      
-      ORDER BY transaction_date DESC
+
+      ORDER BY COALESCE(s.sale_date, s.created_at) DESC, s.id DESC
       LIMIT ? OFFSET ?
     `, [...params, parseInt(limit), parseInt(offset)]);
 
@@ -303,11 +303,13 @@ const getCustomerLedger = async (req, res) => {
     `, params);
 
     // Sort transactions in ascending order by date to process them chronologically
-    const sortedTransactions = [...transactions].sort((a, b) => {
-      const dateA = new Date(a.transaction_date || a.created_at);
-      const dateB = new Date(b.transaction_date || b.created_at);
-      return dateA - dateB; // Ascending order (oldest first)
-    });
+    // Use transaction_date (= COALESCE(sale_date, created_at)) so backdated sales appear in correct sequence
+const sortedTransactions = [...transactions].sort((a, b) => {
+  const dateA = new Date(a.transaction_date || a.created_at || 0);
+  const dateB = new Date(b.transaction_date || b.created_at || 0);
+  if (dateA.getTime() === dateB.getTime()) return (a.transaction_id || 0) - (b.transaction_id || 0);
+  return dateA - dateB;
+});
     
     console.log('🔍 Sorted transactions for balance calculation:', sortedTransactions.map(t => ({
       invoice: t.invoice_no,
@@ -325,11 +327,12 @@ const getCustomerLedger = async (req, res) => {
     }));
 
     // Sort back to descending order for display (newest first)
-    const finalTransactions = [...normalizedAsc].sort((a, b) => {
-      const dateA = new Date(a.transaction_date || a.created_at);
-      const dateB = new Date(b.transaction_date || b.created_at);
-      return dateB - dateA; // Descending order (newest first)
-    });
+const finalTransactions = [...normalizedAsc].sort((a, b) => {
+  const dateA = new Date(a.transaction_date || a.created_at || 0);
+  const dateB = new Date(b.transaction_date || b.created_at || 0);
+  if (dateA.getTime() === dateB.getTime()) return (b.transaction_id || 0) - (a.transaction_id || 0);
+  return dateB - dateA;
+});
 
     // If detailed is requested, fetch items for each transaction
     let detailedTransactions = finalTransactions;
@@ -639,15 +642,15 @@ const getAllCustomersWithSummaries = async (req, res) => {
         SUM(s.subtotal) as total_amount,
         -- Use the latest running_balance for current balance (SIMPLIFIED)
         (
-          SELECT s2.running_balance 
-          FROM sales s2 
-          WHERE s2.customer_name = s.customer_name 
+          SELECT s2.running_balance
+          FROM sales s2
+          WHERE s2.customer_name = s.customer_name
             AND s2.customer_phone = s.customer_phone
-          ORDER BY s2.created_at DESC, s2.id DESC 
+            ORDER BY COALESCE(s2.sale_date, s2.created_at) DESC, s2.id DESC
           LIMIT 1
         ) as current_balance,
-        MAX(s.created_at) as last_transaction_date,
-        MIN(s.created_at) as first_transaction_date
+        MAX(COALESCE(s.sale_date, s.created_at)) as last_transaction_date,
+        MIN(COALESCE(s.sale_date, s.created_at)) as first_transaction_date
       FROM sales s
       ${baseWhereClause}
       GROUP BY s.customer_name, s.customer_phone
@@ -725,13 +728,13 @@ const getAllCustomersWithSummaries = async (req, res) => {
           s.payment_type,
           s.payment_status,
           s.running_balance,
-          s.created_at as transaction_date,
+          COALESCE(s.sale_date, s.created_at) as transaction_date,
           s.customer_name,
           s.customer_phone,
           CONCAT(IFNULL(s.customer_name,''),'|',IFNULL(s.customer_phone,'')) as customer_key
         FROM sales s
         WHERE ${scopedSalesCondition}
-        
+
         ORDER BY transaction_date ASC, transaction_id ASC
       `;
 
@@ -1061,7 +1064,7 @@ const getCustomerSummary = async (customerId, user) => {
     // a more accurate 'outstanding' / current balance than simple aggregates.
     try {
       const [latestRows] = await pool.execute(`
-        SELECT running_balance FROM sales ${summaryWhereClause} ORDER BY created_at DESC LIMIT 1
+        SELECT running_balance FROM sales ${summaryWhereClause} ORDER BY COALESCE(sale_date, created_at) DESC, id DESC LIMIT 1
       `, summaryParams);
 
       const latestRunningBalance = latestRows && latestRows.length > 0 ? latestRows[0].running_balance : null;
@@ -1120,23 +1123,23 @@ const getCustomerLedgerData = async (customerId, user, options = {}) => {
   params.push(customerId, customerId, customerId, customerId);
 
   if (startDate) {
-    whereConditions.push('s.created_at >= ?');
+    whereConditions.push('COALESCE(s.sale_date, s.created_at) >= ?');
     params.push(startDate);
   }
   if (endDate) {
-    whereConditions.push('s.created_at <= ?');
+    whereConditions.push('COALESCE(s.sale_date, s.created_at) <= ?');
     params.push(endDate);
   }
 
   const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
   const [transactions] = await pool.execute(`
-    SELECT 
+    SELECT
       s.id as transaction_id,
       s.invoice_no,
       s.scope_type,
       s.scope_id,
-      s.created_at as transaction_date,
+      COALESCE(s.sale_date, s.created_at) as transaction_date,
       s.payment_method,
       s.payment_status,
       s.payment_type,
@@ -1153,16 +1156,15 @@ const getCustomerLedgerData = async (customerId, user, options = {}) => {
       u.username as cashier_name,
       b.name as branch_name,
       w.name as warehouse_name,
-      CASE 
+      CASE
         WHEN s.payment_type = 'OUTSTANDING_SETTLEMENT' THEN 'SETTLEMENT'
         ELSE 'SALE'
       END as transaction_type
     FROM sales s
     LEFT JOIN users u ON s.user_id = u.id
-    LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
     LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
     ${whereClause}
-    ORDER BY s.created_at DESC
+    ORDER BY COALESCE(s.sale_date, s.created_at) DESC, s.id DESC
     LIMIT ?
   `, [...params, limit]);
 
@@ -1207,11 +1209,11 @@ const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => 
   params.push(customerId, customerId, customerId, customerId);
 
   if (startDate) {
-    whereConditions.push('s.created_at >= ?');
+    whereConditions.push('COALESCE(s.sale_date, s.created_at) >= ?');
     params.push(startDate);
   }
   if (endDate) {
-    whereConditions.push('s.created_at <= ?');
+    whereConditions.push('COALESCE(s.sale_date, s.created_at) <= ?');
     params.push(endDate);
   }
 
@@ -1219,12 +1221,12 @@ const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => 
 
   // ✅ FIXED: USE EXACT SAME QUERY AS getCustomerLedger (including the LEFT JOIN sales_returns)
   const [transactions] = await pool.execute(`
-    SELECT 
+    SELECT
       s.id as transaction_id,
       s.invoice_no,
       s.scope_type,
       s.scope_id,
-      s.created_at as transaction_date,
+      COALESCE(s.sale_date, s.created_at) as transaction_date,
       s.payment_method,
       s.payment_type,
       s.payment_status,
@@ -1264,7 +1266,7 @@ const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => 
     LEFT JOIN branches b ON s.scope_type = 'BRANCH' AND s.scope_id = b.name
     LEFT JOIN warehouses w ON s.scope_type = 'WAREHOUSE' AND s.scope_id = w.name
     ${whereClause}
-    ORDER BY s.created_at ASC  -- ✅ IMPORTANT: Oldest transactions first (ascending order)
+    ORDER BY COALESCE(s.sale_date, s.created_at) ASC, s.id ASC
     LIMIT ?
   `, [...params, limit]);
 
@@ -1279,8 +1281,13 @@ const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => 
   } : null);
 
   // Sort transactions by date in ascending order before processing items
-  // This ensures we process in chronological order even if query ordering somehow fails
-  transactions.sort((a, b) => new Date(a.transaction_date) - new Date(b.transaction_date));
+  // Use transaction_date (COALESCE of sale_date, created_at) so backdated sales are in correct sequence
+transactions.sort((a, b) => {
+  const dateA = new Date(a.transaction_date || a.created_at || 0);
+  const dateB = new Date(b.transaction_date || b.created_at || 0);
+  if (dateA.getTime() === dateB.getTime()) return (a.transaction_id || 0) - (b.transaction_id || 0);
+  return dateA - dateB;
+});
 
   // For each transaction, get the detailed items
   const detailedTransactions = await Promise.all(
@@ -1375,10 +1382,13 @@ const getDetailedCustomerLedgerData = async (customerId, user, options = {}) => 
   );
 
   // ✅ Ensure final array is sorted by transaction date (ascending - oldest first)
-  detailedTransactions.sort((a, b) => 
-    new Date(a.transaction_date) - new Date(b.transaction_date)
-  );
-
+  // Use transaction_date so backdated sales appear in correct chronological position
+detailedTransactions.sort((a, b) => {
+  const dateA = new Date(a.transaction_date || a.created_at || 0);
+  const dateB = new Date(b.transaction_date || b.created_at || 0);
+  if (dateA.getTime() === dateB.getTime()) return (a.transaction_id || 0) - (b.transaction_id || 0);
+  return dateA - dateB;
+});
   // ✅ CRITICAL: DO NOT RECALCULATE BALANCES HERE!
   // Just return the transactions with items, let normalizeLedgerTransactions handle the balances
   // This ensures consistency with getCustomerLedger
@@ -1405,10 +1415,11 @@ const normalizeLedgerTransactions = (transactions = []) => {
   }
 
   // Sort transactions chronologically (oldest first) - required for sequential processing
+  // IMPORTANT: use transaction_date (= COALESCE(sale_date, created_at)) so that backdated sales
+  // slot into the correct position in the running balance chain, not by insertion time.
   const sortedTransactions = [...transactions].sort((a, b) => {
-    const dateA = new Date(a.transaction_date || a.created_at || a.date || 0);
-    const dateB = new Date(b.transaction_date || b.created_at || b.date || 0);
-    // If dates are equal, sort by ID to maintain consistent order
+    const dateA = new Date(a.transaction_date || a.created_at || 0);
+    const dateB = new Date(b.transaction_date || b.created_at || 0);
     if (dateA.getTime() === dateB.getTime()) {
       const idA = a.transaction_id || a.id || 0;
       const idB = b.transaction_id || b.id || 0;
@@ -1648,10 +1659,23 @@ const computeLedgerSummary = (transactions = []) => {
   // Net paid = total paid - total refunded
   const netPaid = totalPaid - totalRefunded;
   
-  // Outstanding balance = latest running_balance from the last transaction
-  const outstandingBalance = totalTransactions > 0
-    ? numeric(transactions[transactions.length - 1].balance ?? transactions[transactions.length - 1].running_balance)
-    : 0;
+  // Outstanding balance = running_balance of the chronologically LATEST transaction.
+  // We find it explicitly rather than trusting array order, so backdated sales that
+  // appear early in the sorted array don't accidentally become the "last" item.
+  let outstandingBalance = 0;
+  if (totalTransactions > 0) {
+    const latest = transactions.reduce((max, t) => {
+      const tDate = new Date(t.transaction_date || t.created_at || 0).getTime();
+      const mDate = new Date(max.transaction_date || max.created_at || 0).getTime();
+      if (tDate > mDate) return t;
+      if (tDate === mDate) {
+        // same date → higher id wins
+        return (t.transaction_id || t.id || 0) > (max.transaction_id || max.id || 0) ? t : max;
+      }
+      return max;
+    });
+    outstandingBalance = numeric(latest.balance ?? latest.running_balance);
+  }
 
   const completedTransactions = transactions.filter((transaction) => {
     const balance = numeric(transaction.balance ?? transaction.running_balance);
@@ -2129,8 +2153,114 @@ const getPaymentStatusDisplay = (status) => {
   return statusMap[status] || status;
 };
 
+// @desc    Update customer info (name + phone) in ledger and linked tables
+// @route   PUT /api/customer-ledger/:customerId/update-info
+// @access  Private (Admin only)
+const updateCustomerLedgerInfo = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { name, phone } = req.body;
+
+    if (!name && !phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one of name or phone must be provided'
+      });
+    }
+
+    // Build update fields for sales table
+    const salesFields = [];
+    const salesValues = [];
+    if (name) {
+      salesFields.push('customer_name = ?');
+      salesValues.push(name);
+    }
+    if (phone) {
+      salesFields.push('customer_phone = ?');
+      salesValues.push(phone);
+    }
+
+    // 1. Find what type this customer is (branch customer or warehouse retailer)
+    //    by looking at existing sales records
+    const [existingSales] = await pool.execute(
+      `SELECT DISTINCT customer_id, retailer_id, scope_type
+       FROM sales
+       WHERE customer_name = ? OR customer_phone = ?
+       LIMIT 1`,
+      [customerId, customerId]
+    );
+
+    let updatedCustomerRecord = null;
+    let updatedRetailerRecord = null;
+
+    if (existingSales.length > 0) {
+      const { customer_id, retailer_id, scope_type } = existingSales[0];
+
+      // 2a. If this is a branch customer, update the customers table
+      if (customer_id) {
+        const customerUpdateFields = [];
+        const customerUpdateValues = [];
+        if (name) { customerUpdateFields.push('name = ?'); customerUpdateValues.push(name); }
+        if (phone) { customerUpdateFields.push('phone = ?'); customerUpdateValues.push(phone); }
+        if (customerUpdateFields.length > 0) {
+          customerUpdateValues.push(customer_id);
+          await pool.execute(
+            `UPDATE customers SET ${customerUpdateFields.join(', ')}, updated_at = NOW() WHERE id = ?`,
+            customerUpdateValues
+          );
+          const [rows] = await pool.execute('SELECT * FROM customers WHERE id = ?', [customer_id]);
+          updatedCustomerRecord = rows[0] || null;
+        }
+      }
+
+      // 2b. If this is a warehouse retailer, update the retailers table
+      if (retailer_id) {
+        const retailerUpdateFields = [];
+        const retailerUpdateValues = [];
+        if (name) { retailerUpdateFields.push('name = ?'); retailerUpdateValues.push(name); }
+        if (phone) { retailerUpdateFields.push('phone = ?'); retailerUpdateValues.push(phone); }
+        if (retailerUpdateFields.length > 0) {
+          retailerUpdateValues.push(retailer_id);
+          await pool.execute(
+            `UPDATE retailers SET ${retailerUpdateFields.join(', ')}, updated_at = NOW() WHERE id = ?`,
+            retailerUpdateValues
+          );
+          const [rows] = await pool.execute('SELECT * FROM retailers WHERE id = ?', [retailer_id]);
+          updatedRetailerRecord = rows[0] || null;
+        }
+      }
+    }
+
+    // 3. Always cascade update customer_name / customer_phone in sales
+    const whereClause = 'customer_name = ? OR customer_phone = ?';
+    salesValues.push(customerId, customerId);
+    const [updateResult] = await pool.execute(
+      `UPDATE sales SET ${salesFields.join(', ')} WHERE ${whereClause}`,
+      salesValues
+    );
+
+    res.json({
+      success: true,
+      message: 'Customer info updated successfully',
+      data: {
+        salesUpdated: updateResult.affectedRows,
+        customerRecord: updatedCustomerRecord,
+        retailerRecord: updatedRetailerRecord
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error in updateCustomerLedgerInfo:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error updating customer info',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getCustomerLedger,
   getAllCustomersWithSummaries,
-  exportCustomerLedger
+  exportCustomerLedger,
+  updateCustomerLedgerInfo
 };

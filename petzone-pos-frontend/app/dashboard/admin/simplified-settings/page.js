@@ -107,7 +107,7 @@
       setEditingSettings(prev => ({
         ...prev,
         [key]: value
-      }));
+      }));  
       
       setChangedSettings(prev => ({
         ...prev,
@@ -115,52 +115,30 @@
       }));
     };
 
-    const handleSaveSettings = async () => {
-      if (!selectedBranch) return;
+const handleSaveSettings = async () => {
+  if (!selectedBranch) return;
+  if (Object.keys(changedSettings).length === 0) {
+    setSettingsDialogOpen(false);
+    return;
+  }
 
-      console.log('Branch changedSettings:', changedSettings);
+  setSaving(true);
+  try {
+    await api.put(`/branches/${selectedBranch.id}/settings`, {
+      settings: editingSettings  // ← send full UI state
+    });
 
-      if (Object.keys(changedSettings).length === 0) {
-        console.log('No changes to save');
-        setSettingsDialogOpen(false);
-        return;
-      }
-
-      setSaving(true);
-      try {
-        // Get latest settings from DB
-        const latestResponse = await api.get(`/branches/${selectedBranch.id}/settings`);
-        const latestSettings = { ...latestResponse.data.data.settings };
-
-        // Strip any backward-compat aggregate fields
-        delete latestSettings.allowBranchTransfersCRUD;
-        delete latestSettings.allowCashierCRUD;
-
-        // Merge latest with only what the user changed
-        const settingsToSave = {
-          ...latestSettings,
-          ...changedSettings
-        };
-
-        // Save
-        await api.put(`/branches/${selectedBranch.id}/settings`, {
-          settings: settingsToSave
-        });
-
-        // Refresh branches list
-        const refreshResponse = await api.get('/branches');
-        onBranchesChange(refreshResponse.data.data || []);
-
-        setChangedSettings({});
-        setSettingsDialogOpen(false);
-        setError(null);
-      } catch (err) {
-        console.error('Save error:', err);
-        setError('Failed to save branch settings');
-      } finally {
-        setSaving(false);
-      }
-    };
+    const refreshResponse = await api.get('/branches');
+    onBranchesChange(refreshResponse.data.data || []);
+    setChangedSettings({});
+    setSettingsDialogOpen(false);
+    setError(null);
+  } catch (err) {
+    setError('Failed to save branch settings');
+  } finally {
+    setSaving(false);
+  }
+};
 
     const getSettingsSummary = (branch) => {
       const settings = branch.settings || {};
@@ -171,113 +149,125 @@
       return { enabled, total, percentage };
     };
 
-    // Branch settings configuration with company permissions
-    const settingsConfig = [
-      { type: 'section', section: 'Cashier Permissions' },
-      {
-        key: 'allowCashierInventoryEdit',
-        label: 'Allow Cashier Inventory Edit',
-        description: 'Cashiers can add/edit inventory items',
-        type: 'switch'
-      },
-      {
-        key: 'allowCashierSalesEdit',
-        label: 'Allow Cashier Sales Edit',
-        description: 'Cashiers can add/edit sales (if off: view only)',
-        type: 'switch'
-      },
-      {
-        key: 'allowCashierSalesDelete',
-        label: 'Allow Cashier Sales Delete',
-        description: 'Cashiers can delete sales (requires sales edit permission)',
-        type: 'switch'
-      },
-      {
-        key: 'allowCashierReturns',
-        label: 'Allow Cashier Returns',
-        description: 'Cashiers can process returns',
-        type: 'switch'
-      },
-      {
-        key: 'allowCashierCustomers',
-        label: 'Allow Cashier Customers',
-        description: 'Cashiers can manage customers',
-        type: 'switch'
-      },
-      {
-        key: 'allowCashierPOS',
-        label: 'Allow Cashier POS',
-        description: 'Cashiers can use POS system',
-        type: 'switch'
-      },
-      {
-        key: 'allowCashierLedger',
-        label: 'Allow Cashier Ledger',
-        description: 'Cashiers can access ledger',
-        type: 'switch'
-      },
-      {
-        key: 'openAccountSystem',
-        label: 'Open Account System',
-        description: 'Enable open account functionality',
-        type: 'switch'
-      },
+// ONLY the settingsConfig array inside SimplifiedBranchSettings component
 
-      // Company Management Section
-      { type: 'section', section: 'Company Management' },
-      {
-        key: 'allowCompanyCreate',
-        label: 'Allow Company Creation',
-        description: 'Branch users can add new companies',
-        type: 'switch'
-      },
-      {
-        key: 'allowCompanyEdit',
-        label: 'Allow Company Edit',
-        description: 'Branch users can edit existing companies',
-        type: 'switch'
-      },
-      {
-        key: 'allowCompanyDelete',
-        label: 'Allow Company Delete',
-        description: 'Branch users can delete companies',
-        type: 'switch'
-      },
+const settingsConfig = [
+  { type: 'section', section: 'Cashier Permissions' },
+  {
+    key: 'allowCashierInventoryAdd',
+    label: 'Allow Cashier Inventory Add',
+    description: 'Cashiers can add NEW inventory items',
+    type: 'switch'
+  },
+  {
+    key: 'allowCashierInventoryEdit',
+    label: 'Allow Cashier Inventory Edit',
+    description: 'Cashiers can EDIT existing inventory items',
+    type: 'switch'
+  },
+  {
+    key: 'allowCashierSalesEdit',
+    label: 'Allow Cashier Sales Edit',
+    description: 'Cashiers can add/edit sales (if off: view only)',
+    type: 'switch'
+  },
+  {
+    key: 'allowCashierSalesDelete',
+    label: 'Allow Cashier Sales Delete',
+    description: 'Cashiers can delete sales (requires sales edit permission)',
+    type: 'switch'
+  },
+  {
+    key: 'allowCashierReturns',
+    label: 'Allow Cashier Returns',
+    description: 'Cashiers can process returns',
+    type: 'switch'
+  },
+  {
+    key: 'allowCashierCustomers',
+    label: 'Allow Cashier Customers',
+    description: 'Cashiers can manage customers',
+    type: 'switch'
+  },
+  {
+    key: 'allowCashierPOS',
+    label: 'Allow Cashier POS',
+    description: 'Cashiers can use POS system',
+    type: 'switch'
+  },
+  {
+    key: 'allowCashierLedger',
+    label: 'Allow Cashier Ledger',
+    description: 'Cashiers can access ledger',
+    type: 'switch'
+  },
+  {
+    key: 'openAccountSystem',
+    label: 'Open Account System',
+    description: 'Enable open account functionality',
+    type: 'switch'
+  },
 
-      // Transfer Settings Section
-      { type: 'section', section: 'Transfer Settings' },
-      {
-        key: 'allowBranchTransfers',
-        label: 'Allow Branch Transfers',
-        description: 'Allow transfers from this branch',
-        type: 'switch'
-      },
-      {
-        key: 'allowBranchToBranchTransfers',
-        label: 'Allow Branch to Branch Transfers',
-        description: 'Allow transfers from branch to other branches',
-        type: 'switch'
-      },
-      {
-        key: 'allowBranchToWarehouseTransfers',
-        label: 'Allow Branch to Warehouse Transfers',
-        description: 'Allow transfers from branch to warehouse',
-        type: 'switch'
-      },
-      {
-        key: 'requireApprovalForBranchTransfers',
-        label: 'Require Approval for Branch Transfers',
-        description: 'Require admin approval for branch transfers',
-        type: 'switch'
-      },
-      {
-        key: 'maxTransferAmount',
-        label: 'Maximum Transfer Amount',
-        description: 'Maximum amount allowed for transfers',
-        type: 'number'
-      }
-    ];
+  { type: 'section', section: 'Customer Management' },
+  {
+    key: 'allowCashierCustomerEdit',
+    label: 'Allow Cashier Customer Edit',
+    description: 'Cashiers can edit customer name and phone number',
+    type: 'switch'
+  },
 
+  { type: 'section', section: 'Company Management' },
+  {
+    key: 'allowCompanyCreate',
+    label: 'Allow Company Creation',
+    description: 'Branch users can add new companies',
+    type: 'switch'
+  },
+  {
+    key: 'allowCompanyEdit',
+    label: 'Allow Company Edit',
+    description: 'Branch users can edit existing companies',
+    type: 'switch'
+  },
+  {
+    key: 'allowCompanyDelete',
+    label: 'Allow Company Delete',
+    description: 'Branch users can delete companies',
+    type: 'switch'
+  },
+
+  { type: 'section', section: 'Transfer Settings' },
+  {
+    key: 'allowBranchTransfers',
+    label: 'Allow Branch Transfers',
+    description: 'Allow transfers from this branch',
+    type: 'switch'
+  },
+  {
+    key: 'allowBranchToBranchTransfers',
+    label: 'Allow Branch to Branch Transfers',
+    description: 'Allow transfers from branch to other branches',
+    type: 'switch'
+  },
+  {
+    key: 'allowBranchToWarehouseTransfers',
+    label: 'Allow Branch to Warehouse Transfers',
+    description: 'Allow transfers from branch to warehouse',
+    type: 'switch'
+  },
+  {
+    key: 'requireApprovalForBranchTransfers',
+    label: 'Require Approval for Branch Transfers',
+    description: 'Require admin approval for branch transfers',
+    type: 'switch'
+  },
+  {
+    key: 'maxTransferAmount',
+    label: 'Maximum Transfer Amount',
+    description: 'Maximum amount allowed for transfers',
+    type: 'number'
+  }
+];
     return (
       <Box>
         <Box sx={{ mb: 3 }}>
@@ -497,52 +487,30 @@
       }));
     };
 
-    const handleSaveSettings = async () => {
-      if (!selectedWarehouse) return;
+const handleSaveSettings = async () => {
+  if (!selectedWarehouse) return;
+  if (Object.keys(changedSettings).length === 0) {
+    setSettingsDialogOpen(false);
+    return;
+  }
 
-      console.log('Warehouse changedSettings:', changedSettings);
+  setSaving(true);
+  try {
+    await api.put(`/warehouses/${selectedWarehouse.id}/settings`, {
+      settings: editingSettings
+    });
 
-      if (Object.keys(changedSettings).length === 0) {
-        console.log('No changes to save');
-        setSettingsDialogOpen(false);
-        return;
-      }
-
-      setSaving(true);
-      try {
-        // Get latest settings from DB
-        const latestResponse = await api.get(`/warehouses/${selectedWarehouse.id}/settings`);
-        const latestSettings = { ...latestResponse.data.data.settings };
-
-        // Strip backward-compat aggregate fields
-        delete latestSettings.allowWarehouseCompanyCRUD;
-        delete latestSettings.allowWarehouseRetailerCRUD;
-
-        // Merge latest with only what the user changed
-        const settingsToSave = {
-          ...latestSettings,
-          ...changedSettings
-        };
-
-        // Save
-        await api.put(`/warehouses/${selectedWarehouse.id}/settings`, {
-          settings: settingsToSave
-        });
-
-        // Refresh warehouses list
-        const refreshResponse = await api.get('/warehouses');
-        onWarehousesChange(refreshResponse.data.data || []);
-
-        setChangedSettings({});
-        setSettingsDialogOpen(false);
-        setError(null);
-      } catch (err) {
-        console.error('Save error:', err);
-        setError('Failed to save warehouse settings');
-      } finally {
-        setSaving(false);
-      }
-    };
+    const refreshResponse = await api.get('/warehouses');
+    onWarehousesChange(refreshResponse.data.data || []);
+    setChangedSettings({});
+    setSettingsDialogOpen(false);
+    setError(null);
+  } catch (err) {
+    setError('Failed to save warehouse settings');
+  } finally {
+    setSaving(false);
+  }
+};
 
     const getSettingsSummary = (warehouse) => {
       const settings = warehouse.settings || {};
@@ -554,129 +522,143 @@
     };
 
     // Warehouse settings configuration with granular permissions
-    const settingsConfig = [
-      { type: 'section', section: 'Basic Warehouse Operations' },
-      {
-        key: 'allowWarehouseInventoryAdd',
-        label: 'Allow Warehouse Inventory ADD',
-        description: 'Warehouse keepers can add new inventory items',
-        type: 'switch'
-      },
-      {
-        key: 'allowWarehouseReturns',
-        label: 'Allow Warehouse Returns',
-        description: 'Warehouse keepers can process returns',
-        type: 'switch'
-      },
-      {
-        key: 'allowWarehouseSales',
-        label: 'Allow Warehouse Sales Management',
-        description: 'Warehouse keepers can view and manage sales',
-        type: 'switch'
-      },
-      {
-        key: 'allowWarehouseLedgerEdit',
-        label: 'Allow Ledger Edit',
-        description: 'Enable warehouse keeper to edit ledger accounts and entries',
-        type: 'switch'
-      },
-      {
-        key: 'requireApprovalForTransfers',
-        label: 'Require Approval for Transfers',
-        description: 'Transfers need approval before processing',
-        type: 'switch'
-      },
-      {
-        key: 'autoStockAlerts',
-        label: 'Auto Stock Alerts',
-        description: 'Enable automatic stock level alerts',
-        type: 'switch'
-      },
+// Replace ONLY the settingsConfig array inside SimplifiedWarehouseSettings component
 
-      { type: 'section', section: 'Company Management' },
-      {
-        key: 'allowCompanyCreate',
-        label: 'Allow Company Creation',
-        description: 'Warehouse keepers can add new companies',
-        type: 'switch'
-      },
-      {
-        key: 'allowCompanyEdit',
-        label: 'Allow Company Edit',
-        description: 'Warehouse keepers can edit existing companies',
-        type: 'switch'
-      },
-      {
-        key: 'allowCompanyDelete',
-        label: 'Allow Company Delete',
-        description: 'Warehouse keepers can delete companies',
-        type: 'switch'
-      },
+const settingsConfig = [
+  { type: 'section', section: 'Basic Warehouse Operations' },
+  {
+    key: 'allowWarehouseInventoryAdd',
+    label: 'Allow Warehouse Inventory Add',
+    description: 'Warehouse keepers can add NEW inventory items',
+    type: 'switch'
+  },
+  {
+    key: 'allowWarehouseInventoryEdit',
+    label: 'Allow Warehouse Inventory Edit',
+    description: 'Warehouse keepers can EDIT existing inventory items',
+    type: 'switch'
+  },
+  {
+    key: 'allowWarehouseReturns',
+    label: 'Allow Warehouse Returns',
+    description: 'Warehouse keepers can process returns',
+    type: 'switch'
+  },
+  {
+    key: 'allowWarehouseSales',
+    label: 'Allow Warehouse Sales Management',
+    description: 'Warehouse keepers can view and manage sales',
+    type: 'switch'
+  },
+  {
+    key: 'allowWarehouseLedgerEdit',
+    label: 'Allow Ledger Edit',
+    description: 'Enable warehouse keeper to edit ledger accounts and entries',
+    type: 'switch'
+  },
+  {
+    key: 'requireApprovalForTransfers',
+    label: 'Require Approval for Transfers',
+    description: 'Transfers need approval before processing',
+    type: 'switch'
+  },
+  {
+    key: 'autoStockAlerts',
+    label: 'Auto Stock Alerts',
+    description: 'Enable automatic stock level alerts',
+    type: 'switch'
+  },
 
-      { type: 'section', section: 'Retailer Management' },
-      {
-        key: 'allowRetailerCreate',
-        label: 'Allow Retailer Creation',
-        description: 'Warehouse keepers can add new retailers',
-        type: 'switch'
-      },
-      {
-        key: 'allowRetailerEdit',
-        label: 'Allow Retailer Edit',
-        description: 'Warehouse keepers can edit existing retailers',
-        type: 'switch'
-      },
-      {
-        key: 'allowRetailerDelete',
-        label: 'Allow Retailer Delete',
-        description: 'Warehouse keepers can delete retailers',
-        type: 'switch'
-      },
+  { type: 'section', section: 'Company Management' },
+  {
+    key: 'allowCompanyCreate',
+    label: 'Allow Company Creation',
+    description: 'Warehouse keepers can add new companies',
+    type: 'switch'
+  },
+  {
+    key: 'allowCompanyEdit',
+    label: 'Allow Company Edit',
+    description: 'Warehouse keepers can edit existing companies',
+    type: 'switch'
+  },
+  {
+    key: 'allowCompanyDelete',
+    label: 'Allow Company Delete',
+    description: 'Warehouse keepers can delete companies',
+    type: 'switch'
+  },
 
-      { type: 'section', section: 'Transfer Settings' },
-      {
-        key: 'allowWarehouseTransfers',
-        label: 'Allow Warehouse Transfers',
-        description: 'Allow transfers from this warehouse',
-        type: 'switch'
-      },
-      {
-        key: 'allowWarehouseToWarehouseTransfers',
-        label: 'Allow Warehouse to Warehouse Transfers',
-        description: 'Allow transfers from warehouse to other warehouses',
-        type: 'switch'
-      },
-      {
-        key: 'allowWarehouseToBranchTransfers',
-        label: 'Allow Warehouse to Branch Transfers',
-        description: 'Allow transfers from warehouse to branch',
-        type: 'switch'
-      },
-      {
-        key: 'requireApprovalForWarehouseTransfers',
-        label: 'Require Approval for Warehouse Transfers',
-        description: 'Require admin approval for warehouse transfers',
-        type: 'switch'
-      },
-      {
-        key: 'maxTransferAmount',
-        label: 'Maximum Transfer Amount',
-        description: 'Maximum amount allowed for transfers',
-        type: 'number'
-      },
-      {
-        key: 'autoApproveSmallTransfers',
-        label: 'Auto-Approve Small Transfers',
-        description: 'Auto-approve transfers under threshold',
-        type: 'switch'
-      },
-      {
-        key: 'smallTransferThreshold',
-        label: 'Small Transfer Threshold',
-        description: 'Amount threshold for auto-approval',
-        type: 'number'
-      }
-    ];
+  { type: 'section', section: 'Retailer Management' },
+  {
+    key: 'allowRetailerCreate',
+    label: 'Allow Retailer Creation',
+    description: 'Warehouse keepers can add new retailers',
+    type: 'switch'
+  },
+  {
+    key: 'allowRetailerEdit',
+    label: 'Allow Retailer Edit',
+    description: 'Warehouse keepers can edit existing retailers',
+    type: 'switch'
+  },
+  {
+    key: 'allowRetailerDelete',
+    label: 'Allow Retailer Delete',
+    description: 'Warehouse keepers can delete retailers',
+    type: 'switch'
+  },
+  {
+    key: 'allowRetailerCustomerEdit',
+    label: 'Allow Retailer/Customer Edit',
+    description: 'Warehouse keepers can edit retailer and customer name/phone',
+    type: 'switch'
+  },
+
+  { type: 'section', section: 'Transfer Settings' },
+  {
+    key: 'allowWarehouseTransfers',
+    label: 'Allow Warehouse Transfers',
+    description: 'Allow transfers from this warehouse',
+    type: 'switch'
+  },
+  {
+    key: 'allowWarehouseToWarehouseTransfers',
+    label: 'Allow Warehouse to Warehouse Transfers',
+    description: 'Allow transfers from warehouse to other warehouses',
+    type: 'switch'
+  },
+  {
+    key: 'allowWarehouseToBranchTransfers',
+    label: 'Allow Warehouse to Branch Transfers',
+    description: 'Allow transfers from warehouse to branch',
+    type: 'switch'
+  },
+  {
+    key: 'requireApprovalForWarehouseTransfers',
+    label: 'Require Approval for Warehouse Transfers',
+    description: 'Require admin approval for warehouse transfers',
+    type: 'switch'
+  },
+  {
+    key: 'maxTransferAmount',
+    label: 'Maximum Transfer Amount',
+    description: 'Maximum amount allowed for transfers',
+    type: 'number'
+  },
+  {
+    key: 'autoApproveSmallTransfers',
+    label: 'Auto-Approve Small Transfers',
+    description: 'Auto-approve transfers under threshold',
+    type: 'switch'
+  },
+  {
+    key: 'smallTransferThreshold',
+    label: 'Small Transfer Threshold',
+    description: 'Amount threshold for auto-approval',
+    type: 'number'
+  }
+];
 
     return (
       <Box>

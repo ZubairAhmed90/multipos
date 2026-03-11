@@ -2,43 +2,29 @@ const express = require('express');
 const router = express.Router();
 const branchController = require('../controllers/branchController');
 const { getBranchSettings, updateBranchSettings } = require('../controllers/simplifiedBranchSettingsController');
-const auth = require('../middleware/auth');
-const { requireAdmin, requireWarehouseKeeper, requireCashier, requireBranchSettingsAccess } = require('../middleware/rbac');
+const { requireAdmin, requireCashier, requireBranchSettingsAccess } = require('../middleware/rbac');
 const { branchValidation } = require('../middleware/validation');
+// auth is already applied globally in server.js — do NOT import or use it here
 
-// @route   GET /api/branches
-// @desc    Get all branches
-// @access  Private (Admin, Warehouse Keeper, Cashier)
-router.get('/', auth, requireCashier, branchController.getBranches);
+// GET /api/branches
+router.get('/', requireCashier, branchController.getBranches);
 
-// @route   GET /api/branches/:id
-// @desc    Get single branch
-// @access  Private (Admin, Warehouse Keeper, Cashier)
-router.get('/:id', auth, requireCashier, branchController.getBranch);
+// GET /api/branches/:id
+router.get('/:id', requireCashier, branchController.getBranch);
 
-// @route   POST /api/branches
-// @desc    Create new branch
-// @access  Private (Admin only)
-router.post('/', auth, requireAdmin, branchValidation, branchController.createBranch);
+// POST /api/branches
+router.post('/', requireAdmin, branchValidation, branchController.createBranch);
 
-// @route   PUT /api/branches/:id
-// @desc    Update branch
-// @access  Private (Admin only)
-router.put('/:id', auth, requireAdmin, branchValidation, branchController.updateBranch);
+// PUT /api/branches/:id
+router.put('/:id', requireAdmin, branchValidation, branchController.updateBranch);
 
-// @route   GET /api/branches/:id/settings
-// @desc    Get branch settings
-// @access  Private (Admin, Cashier for own branch)
-router.get('/:id/settings', auth, requireBranchSettingsAccess, getBranchSettings);
+// GET /api/branches/:id/settings
+router.get('/:id/settings', requireBranchSettingsAccess, getBranchSettings);
 
-// @route   PUT /api/branches/:id/settings
-// @desc    Update branch settings only
-// @access  Private (Admin only)
-router.put('/:id/settings', auth, requireAdmin, updateBranchSettings);
+// PUT /api/branches/:id/settings
+router.put('/:id/settings', requireAdmin, updateBranchSettings);
 
-// @route   DELETE /api/branches/:id
-// @desc    Delete branch
-// @access  Private (Admin only)
-router.delete('/:id', auth, requireAdmin, branchController.deleteBranch);
+// DELETE /api/branches/:id
+router.delete('/:id', requireAdmin, branchController.deleteBranch);
 
 module.exports = router;
